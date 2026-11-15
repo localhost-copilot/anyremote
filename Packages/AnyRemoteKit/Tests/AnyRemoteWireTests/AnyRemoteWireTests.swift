@@ -30,17 +30,36 @@ private func sampleFrame(sequence: UInt32 = 7, keyframe: Bool = true, payloadSiz
             sequence: 0xAABB_CCDD, captureTimeNanos: 1, flags: .keyframe,
             pixelWidth: 0x0102, pixelHeight: 0x0304, scale: 2,
             parameterSets: [Data([0x40])],
-            lengthPrefixedNALUnits: Data([0, 0, 0, 1, 0x26])
+            lengthPrefixedNALUnits: Data([0, 0, 0, 1, 0x26]),
+            captureLeadMicros: 0x0506
         )
         let expected: [UInt8] = [
-            0x41, 0x56, 0x01, 0x01,             // magic, version, flags
+            0x41, 0x56, 0x02, 0x01,             // magic, version, flags
             0xAA, 0xBB, 0xCC, 0xDD,             // sequence
             0, 0, 0, 0, 0, 0, 0, 1,             // capture time
             0x01, 0x02, 0x03, 0x04, 0x02,       // width, height, scale
+            0x05, 0x06,                         // capture lead
             0x01, 0x00, 0x01, 0x40,             // one parameter set
             0, 0, 0, 1, 0x26,                   // NAL units
         ]
         #expect(try frame.serialized() == Data(expected))
+    }
+
+    @Test func readsVersion1() throws {
+        // Hosts before the capture lead: no lead field.
+        let data = Data([
+            0x41, 0x56, 0x01, 0x00, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0x27, 0x10,
+            0x01, 0x02, 0x03, 0x04, 0x02, 0x00, 0, 0, 0, 1, 0x26,
+        ])
+        let frame = try EncodedVideoFrame(serialized: data)
+        #expect(frame.sequence == 9 && frame.captureLeadMicros == 0 && frame.handedOverTimeNanos == 10_000)
+    }
+
+    @Test func handedOverTimeSubtractsTheLead() {
+        var frame = sampleFrame()
+        frame.captureTimeNanos = 20_000_000
+        frame.captureLeadMicros = 9_000
+        #expect(frame.handedOverTimeNanos == 11_000_000)
     }
 
     @Test func rejectsTruncatedNALUnit() throws {

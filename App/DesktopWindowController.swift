@@ -369,11 +369,13 @@ final class DesktopWindowController: NSWindowController, NSWindowDelegate, Remot
             && abs(videoPixels.height - CGFloat(summary.pixelSize.height)) < 1
         var lines = ["viewer \(summary)"]
         if let report = hostReport {
-            lines.append(String(format: "host capture %.2f wait %.2f encode %.2f/%.2f · %.0f Mbps target",
-                                report.captureP50, report.waitP50, report.encodeP50, report.encodeP95,
-                                Double(report.bitRate) / 1_000_000))
+            lines.append(String(format: "host %@ lead %.2f wait %.2f encode %.2f/%.2f · %.0f Mbps target",
+                                report.chip ?? "?", report.captureP50, report.waitP50, report.encodeP50,
+                                report.encodeP95, Double(report.bitRate) / 1_000_000))
         }
         let rtt = connection.client.roundTripMilliseconds.map { String(format: "%.2f ms", $0) } ?? "–"
+        let pacing = surface.frameLayer.pacingDescription
+        if !pacing.isEmpty { lines.append(pacing) }
         lines.append("""
         desktop \(Int(remotePointSize.width))×\(Int(remotePointSize.height))pt @\(remoteScale)x · \
         shown \(Int(videoPixels.width))×\(Int(videoPixels.height))px @\(Int(backing))x · \

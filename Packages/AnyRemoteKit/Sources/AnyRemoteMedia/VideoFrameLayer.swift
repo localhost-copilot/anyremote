@@ -152,7 +152,7 @@ final class NV24MetalContext: @unchecked Sendable {
     """
 }
 
-/// Presents decoded frames as soon as they arrive (latest wins): `444f`, or
+/// Presents decoded frames, paced (see `FramePacer`), latest wins: `444f`, or
 /// premultiplied BGRA for alpha streams (the layer is then non-opaque).
 ///
 /// The drawable is sized to the frame's pixels. When the hosting view's
@@ -168,8 +168,11 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
 
     private let renderQueue = DispatchQueue(label: "anyremote.render", qos: .userInteractive)
     private let lock = NSLock()
-    private var pending: DecodedFrame?
+    /// Frames waiting for their presentation time, oldest first. Under `lock`.
+    private var waiting: [(frame: DecodedFrame, due: UInt64, paced: Bool)] = []
     private var inFlight = false
+    private var wakeScheduledFor: UInt64 = 0
+    private let pacer = FramePacer()
     private var lastGeometry: (Int, Int, Int) = (0, 0, 0)
     private var lastFrame: DecodedFrame?
     private var targetSize: CGSize?
@@ -220,17 +223,14 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         minificationFilter = .linear
     }
 
+    /// Frame pacing state, for statistics.
+    public var pacingDescription: String { pacer.description }
+
     /// Thread-safe.
     public func enqueue(_ frame: DecodedFrame) {
-        lock.lock()
-        if inFlight {
-            pending = frame
-            lock.unlock()
-            return
-        }
-        inFlight = true
-        lock.unlock()
-        renderQueue.async { self.render(frame) }
+        let displayTime = remoteClock?.localTime(fromSender: frame.captureTimeNanos)
+        let due = pacer.due(displayTime: displayTime, decoded: frame.decodedTimeNanos)
+        add(frame, due: due ?? frame.decodedTimeNanos, paced: true)
     }
 
     /// Redraws the most recent frame, e.g. after the layer was resized.
@@ -238,19 +238,72 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         lock.lock()
         let frame = lastFrame
         lock.unlock()
-        if let frame { enqueue(frame) }
+        if let frame { add(frame, due: 0, paced: false) }
+    }
+
+    private func add(_ frame: DecodedFrame, due: UInt64, paced: Bool) {
+        lock.lock()
+        waiting.append((frame, due, paced))
+        lock.unlock()
+        renderQueue.async { self.pump() }
+    }
+
+    /// Render queue. Renders the newest frame that is due, unless one is
+    /// still on its way to the screen; otherwise wakes up when one is due.
+    private func pump() {
+        let now = HostClock.nowNanos()
+        lock.lock()
+        guard !inFlight else { return lock.unlock() }
+        // A timer fires a little early; within 0.3 ms counts as due.
+        guard let index = waiting.lastIndex(where: { $0.due <= now + 300_000 }) else {
+            if let next = waiting.map(\.due).min(), next != wakeScheduledFor {
+                wakeScheduledFor = next
+                lock.unlock()
+                renderQueue.asyncAfter(deadline: DispatchTime(uptimeNanoseconds: next)) { self.pump() }
+                return
+            }
+            return lock.unlock()
+        }
+        let chosen = waiting[index]
+        let skipped = waiting[..<index].filter(\.paced).count
+        waiting.removeFirst(index + 1)
+        inFlight = true
+        lock.unlock()
+        for _ in 0..<skipped { stats?.recordSkipped() }
+        if chosen.paced { stats?.record(.hold, from: chosen.frame.decodedTimeNanos, to: now) }
+        let held = chosen.paced && now > chosen.frame.decodedTimeNanos + 500_000
+        render(chosen.frame, startedAt: held ? 0 : now)
     }
 
     private func finish() {
         lock.lock()
-        let next = pending
-        pending = nil
-        if next == nil { inFlight = false }
+        inFlight = false
         lock.unlock()
-        if let next { renderQueue.async { self.render(next) } }
+        renderQueue.async { self.pump() }
     }
 
-    private func render(_ frame: DecodedFrame) {
+    private var lastCadence: (captured: UInt64, presented: UInt64)? // under `lock`
+
+    /// Smoothness: a frame that reaches the screen a refresh or more after
+    /// the previous one, although the host captured it about one frame
+    /// later, shows as a stutter.
+    private func recordCadence(captured: UInt64, presented: UInt64) {
+        lock.lock()
+        let previous = lastCadence
+        lastCadence = (captured, presented)
+        lock.unlock()
+        guard let last = previous, captured > last.captured, presented > last.presented else { return }
+        let captureGap = Double(captured - last.captured) / 1_000_000
+        let presentGap = Double(presented - last.presented) / 1_000_000
+        // Only while content moves continuously.
+        guard captureGap < 50 else { return }
+        stats?.record(.captureGap, milliseconds: captureGap)
+        stats?.record(.presentGap, milliseconds: presentGap)
+        if presentGap - captureGap > 12 { stats?.recordHitch() }
+    }
+
+    /// - Parameter startedAt: when a frame that wasn't held back was taken; 0 if it was.
+    private func render(_ frame: DecodedFrame, startedAt: UInt64) {
         guard let context = NV24MetalContext.shared else { return finish() }
         let width = frame.pixelWidth
         let height = frame.pixelHeight
@@ -324,8 +377,10 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
             withExtendedLifetime(retained) {}
             let presented = HostClock.nanos(fromSeconds: drawable.presentedTime)
             if presented > 0 {
+                self?.pacer.presented(startedAt: startedAt, presented: presented)
+                self?.recordCadence(captured: frame.captureTimeNanos, presented: presented)
                 stats?.record(.present, from: frame.decodedTimeNanos, to: presented)
-                if let captured = remoteClock?.localTime(fromSender: frame.captureTimeNanos) {
+                if let captured = remoteClock?.localTime(fromSender: frame.handedOverTimeNanos) {
                     stats?.record(.total, from: captured, to: presented)
                 }
             }
@@ -365,5 +420,121 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
             plane, &texture
         )
         return status == kCVReturnSuccess ? texture : nil
+    }
+}
+
+/// Paces presentation so motion is as even on this screen as on the host's.
+///
+/// The host's display times are exactly one refresh apart, but frames reach
+/// this Mac with a few milliseconds of jitter (encode, network, decode).
+/// Presented on arrival, a frame that lands near this screen's compositor
+/// deadline makes it one refresh and misses the next, so some refreshes show
+/// two new frames (one never seen) and others none: a stutter, 1-2 times a
+/// second measured between two Macs. Instead each frame is due at its host
+/// display time plus `delay`, the 95th percentile of recent arrivals (at most
+/// 5 ms more than the median), so the due times are as even as the host's;
+/// one that arrives later than that is shown on arrival. Due times that would fall just before the compositor's
+/// deadline are moved just past it, so jitter never decides which refresh a
+/// frame makes. Costs the jitter (the 95th percentile minus each frame's
+/// own arrival).
+///
+/// Off unless `ANYREMOTE_PACING=1`: measured between two Macs (M4 host, 60 Hz
+/// viewer) it added 5-6 ms to every frame and did not reliably reduce
+/// stutters (windowed 0.41 → 0.61/s, full screen 1.00 → 0.44/s).
+final class FramePacer: @unchecked Sendable {
+    private static let enabled = ProcessInfo.processInfo.environment["ANYREMOTE_PACING"] == "1"
+    private let lock = NSLock()
+    /// Arrival (decoded) − host display time, nanoseconds; may be negative.
+    private var arrivals: [Int64] = []
+    private var delay: Int64?
+    private var sinceUpdate = 0
+    /// Presentation feedback.
+    private var lastPresented: UInt64 = 0
+    private var refreshGaps: [UInt64] = []
+    private var refresh: UInt64 = 16_666_667
+    private var fixedRefresh = false
+    /// Render start → on glass for frames started at random phases: the
+    /// shortest is how long before a refresh the compositor's deadline is.
+    private var deadlineLeads: [UInt64] = []
+    private var deadlineLead: UInt64?
+    private var pushing = false
+
+    private static let window = 120
+    /// The most frame pacing adds to the typical frame.
+    private static let maximumHold: Int64 = 5_000_000
+    private static let margin: Int64 = 2_000_000
+
+    /// When `decoded`, a frame shown on the host at `displayTime` (this
+    /// Mac's clock), should be presented; nil: right away.
+    func due(displayTime: UInt64?, decoded: UInt64) -> UInt64? {
+        guard Self.enabled, let displayTime else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        let arrival = Int64(bitPattern: decoded) &- Int64(bitPattern: displayTime)
+        // A pause (static content, a reconnect) isn't jitter.
+        if abs(arrival) < 200_000_000 {
+            arrivals.append(arrival)
+            if arrivals.count > Self.window { arrivals.removeFirst(arrivals.count - Self.window) }
+        }
+        sinceUpdate += 1
+        if arrivals.count >= 30, delay == nil || sinceUpdate >= 15 {
+            sinceUpdate = 0
+            let sorted = arrivals.sorted()
+            // Rare stragglers are shown on arrival rather than delaying every frame.
+            let typical = sorted[sorted.count / 2]
+            delay = min(sorted[Int(Double(sorted.count - 1) * 0.95)], typical + Self.maximumHold) + 300_000
+        }
+        guard let delay else { return nil }
+        var due = UInt64(bitPattern: Int64(bitPattern: displayTime) &+ delay)
+        if due <= decoded { return nil }
+        // Keep clear of the compositor's deadline (fixed refresh rates only).
+        if fixedRefresh, let deadlineLead, lastPresented > 0 {
+            let deadline = lastPresented &- deadlineLead
+            let period = Int64(refresh)
+            let untilDeadline = ((Int64(bitPattern: deadline) &- Int64(bitPattern: due)) % period + period) % period
+            // Hysteresis: once pushing, keep pushing a little longer.
+            let zone = Self.margin + (pushing ? 1_000_000 : 0)
+            pushing = untilDeadline < zone
+            if pushing { due += UInt64(untilDeadline) + 500_000 }
+        }
+        return due
+    }
+
+    var description: String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard Self.enabled else { return "" }
+        guard let delay else { return "pacing warming up" }
+        let deadline = deadlineLead.map { String(format: "%.1f", Double($0) / 1e6) } ?? "?"
+        return String(format: "pacing +%.1f ms · refresh %.2f ms%@ · deadline −%@ ms%@",
+                      Double(delay) / 1e6, Double(refresh) / 1e6, fixedRefresh ? "" : " (variable)",
+                      deadline, pushing ? " · pushed" : "")
+    }
+
+    /// - Parameter startedAt: when rendering began, for frames not held back; else 0.
+    func presented(startedAt: UInt64, presented: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        if lastPresented > 0, presented > lastPresented {
+            let gap = presented - lastPresented
+            if gap > 4_000_000, gap < 25_000_000 {
+                refreshGaps.append(gap)
+                if refreshGaps.count > 60 { refreshGaps.removeFirst() }
+                if refreshGaps.count >= 20 {
+                    let sorted = refreshGaps.sorted()
+                    refresh = sorted[sorted.count / 2]
+                    fixedRefresh = sorted[sorted.count * 9 / 10] - sorted[sorted.count / 10] < 500_000
+                }
+            }
+        }
+        lastPresented = max(lastPresented, presented)
+        // Learned from frames presented on arrival (random phases), not held ones.
+        if deadlineLead == nil, startedAt > 0, presented > startedAt {
+            deadlineLeads.append(presented - startedAt)
+            if deadlineLeads.count >= 30 {
+                let sorted = deadlineLeads.sorted()
+                deadlineLead = sorted[sorted.count / 20]
+            }
+        }
     }
 }

@@ -17,8 +17,17 @@ public struct EncodedVideoFrame: Equatable, Sendable {
 
     /// Wrapping per-stream frame counter.
     public var sequence: UInt32
-    /// Host monotonic capture time in nanoseconds (sender clock domain).
+    /// Host monotonic time in nanoseconds (sender clock domain) at which the
+    /// host shows this frame on its own screen: ScreenCaptureKit's timestamp,
+    /// exactly one refresh apart for continuous motion.
     public var captureTimeNanos: UInt64
+    /// How long before `captureTimeNanos` the frame was handed to the host
+    /// (SCK delivers frames ahead of their display time), in microseconds.
+    public var captureLeadMicros: UInt16
+    /// When the frame was captured (handed over), in the sender clock.
+    public var handedOverTimeNanos: UInt64 {
+        captureTimeNanos - min(captureTimeNanos, UInt64(captureLeadMicros) * 1000)
+    }
     public var flags: Flags
     /// Encoded picture size in pixels.
     public var pixelWidth: UInt16
@@ -38,8 +47,10 @@ public struct EncodedVideoFrame: Equatable, Sendable {
         pixelHeight: UInt16,
         scale: UInt8,
         parameterSets: [Data],
-        lengthPrefixedNALUnits: Data
+        lengthPrefixedNALUnits: Data,
+        captureLeadMicros: UInt16 = 0
     ) {
+        self.captureLeadMicros = captureLeadMicros
         self.sequence = sequence
         self.captureTimeNanos = captureTimeNanos
         self.flags = flags
@@ -54,7 +65,8 @@ public struct EncodedVideoFrame: Equatable, Sendable {
     public var hasAlpha: Bool { flags.contains(.alpha) }
 
     static let magic: UInt16 = 0x4156 // "AV"
-    static let version: UInt8 = 1
+    /// 2 added `captureLeadMicros`.
+    static let version: UInt8 = 2
 
     public func serialized() throws -> Data {
         guard parameterSets.count <= Int(UInt8.max) else { throw WireError.oversized }
@@ -67,6 +79,7 @@ public struct EncodedVideoFrame: Equatable, Sendable {
         writer.u16(pixelWidth)
         writer.u16(pixelHeight)
         writer.u8(scale)
+        writer.u16(captureLeadMicros)
         writer.u8(UInt8(parameterSets.count))
         for set in parameterSets {
             guard set.count <= Int(UInt16.max) else { throw WireError.oversized }
@@ -81,13 +94,14 @@ public struct EncodedVideoFrame: Equatable, Sendable {
         var reader = ByteReader(data)
         guard try reader.u16() == Self.magic else { throw WireError.badMagic }
         let version = try reader.u8()
-        guard version == Self.version else { throw WireError.unsupportedVersion(version) }
+        guard version == 1 || version == Self.version else { throw WireError.unsupportedVersion(version) }
         flags = Flags(rawValue: try reader.u8())
         sequence = try reader.u32()
         captureTimeNanos = try reader.u64()
         pixelWidth = try reader.u16()
         pixelHeight = try reader.u16()
         scale = try reader.u8()
+        captureLeadMicros = version >= 2 ? try reader.u16() : 0
         guard pixelWidth > 0, pixelHeight > 0, scale > 0 else {
             throw WireError.invalidField("geometry")
         }

@@ -234,6 +234,20 @@ the workload drew), encode 11.5–13 ms, total p50 18–22 ms at 30–55 Mbps
 own). Across a real network add
 one-way network latency to *receive*.
 
+Full desktop between two Macs (M4 Mac mini host running testufo, M6 viewer
+on a 60 Hz 4K screen, wired LAN, RTT ~1 ms), 60 fps, no loss. "Behind the
+host" is from the host showing a frame on its own screen to this Mac
+showing it:
+
+| Viewer | Host pixels | Encode | Decode → glass | Behind the host p50 / p95 | Stutters |
+|---|---|---|---|---|---|
+| Window (1618×910 pt) | 3236×1820 | 8.3 ms | 8.0 ms | 10.2 / 18.1 ms | 0.4/s |
+| Full screen | 3840×2160 | 12.2 ms | 3.5 ms | 9.8 / 16.2 ms | 1.0/s |
+
+Full screen skips WindowServer's composition (decode → glass 8 → 3.5 ms),
+but dynamic resolution then makes the host's desktop the whole screen, and
+the larger frame takes 4 ms longer to encode.
+
 VideoToolbox findings behind the encoder settings (each measured
 before/after):
 
@@ -251,6 +265,20 @@ before/after):
   (1/60) drops frames whose timestamps arrive slightly early: only ~49 of
   ~58 drawn frames were delivered (35–50 fps). 1/90 delivers every one;
   1/120 also lets some duplicates through on window capture.
+- ScreenCaptureKit stamps each frame with the time the host shows it, and
+  hands it over before that: 9 ms on average, up to 15 ms. Frames carry that
+  lead (`captureLeadMicros`), so latency counts from the handover while the
+  stamps, exactly one refresh apart, still give the host's cadence.
+- Encoding time follows the pixel count: 3236×1820 4:4:4 takes 9.7 ms on
+  M6, 4:2:0 8.8 ms; `PrioritizeEncodingSpeedOverQuality`,
+  `MaximizePowerEfficiency = false` and an expected rate of 240 change
+  nothing. Two parallel half-height sessions take 8.8 ms, four 8.9 ms: one
+  encode engine, so tiles only overlap a little. Chips with two engines
+  (Max) may differ.
+- Frame pacing on the viewer (hold each frame until its host display time
+  plus the 95th-percentile arrival, `ANYREMOTE_PACING=1`) added 5–6 ms and
+  did not reliably cut stutters (windowed 0.41 → 0.61/s, full screen
+  1.00 → 0.44/s), so frames are shown on arrival.
 - Sparse updates (e.g. typing) encode on a down-clocked engine: 800×600 takes
   ~10 ms instead of ~4.5 ms.
 
@@ -292,7 +320,7 @@ project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated)
 xcodegen generate
 open AnyRemote.xcodeproj            # signed build with your team (Developer ID for distribution)
 
-swift test --package-path Packages/AnyRemoteKit     # 40 tests incl. VT round trips and a network session
+swift test --package-path Packages/AnyRemoteKit     # 42 tests incl. VT round trips and a network session
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 ```
@@ -351,7 +379,11 @@ the real network path against this Mac's own host service:
 - `--connect host[:port] --code CODE` — another Mac
 - `--permission-guide` — Settings with the permission card (kept up)
 - `--discovery-test`, `--exit-after <seconds>`
-- `ANYREMOTE_STATS_STDOUT=1` prints pipeline statistics every second,
+- `--fullscreen` (with `--desktop`) makes the desktop window full screen
+- `ANYREMOTE_STATS_STDOUT=1` prints pipeline statistics every second
+  (`lead`: how far ahead of its display time SCK delivered a frame; `hold`:
+  frame pacing; `capgap`/`pregap`: host and local frame intervals; `hitch`:
+  frames shown a refresh late although sent on time; the host's chip),
   `ANYREMOTE_HOME=<dir>` uses a separate settings directory
 
 Keep workloads visible when measuring: macOS throttles occluded windows, and

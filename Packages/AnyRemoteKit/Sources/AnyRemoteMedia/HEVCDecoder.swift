@@ -10,8 +10,10 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 public struct DecodedFrame: @unchecked Sendable {
     public let pixelBuffer: CVPixelBuffer
     public let sequence: UInt32
-    /// Sender clock domain.
+    /// The host's display time for the frame (see `EncodedVideoFrame`).
     public let captureTimeNanos: UInt64
+    /// When the host was handed the frame, in the sender clock.
+    public var handedOverTimeNanos: UInt64 = 0
     /// Receiver clock domain.
     public let receivedTimeNanos: UInt64
     public let decodedTimeNanos: UInt64
@@ -73,6 +75,7 @@ public final class HEVCDecoder: @unchecked Sendable {
 
         let sequence = frame.sequence
         let captureTime = frame.captureTimeNanos
+        let handedOver = frame.handedOverTimeNanos
         let scale = frame.scale
         let hasAlpha = frame.hasAlpha
         // No `_1xRealTimePlayback`: it lets VT clock the decoder down to just
@@ -87,7 +90,7 @@ public final class HEVCDecoder: @unchecked Sendable {
                 self.onNeedsKeyframe?()
                 return
             }
-            self.output(DecodedFrame(
+            var decoded = DecodedFrame(
                 pixelBuffer: imageBuffer,
                 sequence: sequence,
                 captureTimeNanos: captureTime,
@@ -95,7 +98,9 @@ public final class HEVCDecoder: @unchecked Sendable {
                 decodedTimeNanos: HostClock.nowNanos(),
                 scale: scale,
                 hasAlpha: hasAlpha
-            ))
+            )
+            decoded.handedOverTimeNanos = handedOver
+            self.output(decoded)
         }
         if status != noErr {
             log.error("decode submit failed: \(status)")

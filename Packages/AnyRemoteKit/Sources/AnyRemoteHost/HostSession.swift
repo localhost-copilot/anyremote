@@ -709,6 +709,14 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
+    static let chip: String = {
+        var size = 0
+        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        var bytes = [CChar](repeating: 0, count: max(size, 1))
+        sysctlbyname("machdep.cpu.brand_string", &bytes, &size, nil, 0)
+        return String(cString: bytes)
+    }()
+
     private func sendReports() {
         for stream in streams.values {
             let summary = stream.sender.stats.drain()
@@ -717,7 +725,7 @@ final class HostSession: @unchecked Sendable {
                 captureP50: summary.p50[.capture] ?? 0, waitP50: summary.p50[.encodeWait] ?? 0,
                 encodeP50: summary.p50[.encode] ?? 0, encodeP95: summary.p95[.encode] ?? 0,
                 framesPerSecond: summary.framesPerSecond, megabitsPerSecond: summary.megabitsPerSecond,
-                bitRate: stream.bitRate)))
+                bitRate: stream.bitRate, chip: Self.chip)))
         }
     }
 

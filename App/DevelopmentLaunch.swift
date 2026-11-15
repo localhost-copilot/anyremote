@@ -15,6 +15,7 @@ import AppKit
 ///         [--test-display WxH]              ...of a virtual display made for the test (so dynamic
 ///                                           resolution leaves this Mac's own screens alone)
 ///         [--desktop-size WxH]              then resize the desktop window to that content size
+///         [--fullscreen]                    make the desktop window full screen
 ///         [--shortcut-test]                 post ⌘Tab and ⌘Space and print what the desktop forwards
 ///     -DesktopFitsWindow NO                 turn dynamic resolution off for this launch
 ///     --connect host[:port] --code CODE     connect to another Mac
@@ -93,6 +94,12 @@ enum DevelopmentLaunch {
                     let visible = screen.visibleFrame
                     window.setContentSize(NSSize(width: 800, height: 450))
                     window.setFrameTopLeftPoint(NSPoint(x: visible.maxX - window.frame.width, y: visible.minY + window.frame.height))
+                }
+                if arguments.contains("--fullscreen") {
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(1))
+                        desktop.window?.toggleFullScreen(nil)
+                    }
                 }
                 if arguments.contains("--shortcut-test") {
                     desktop.inputTap = { event in

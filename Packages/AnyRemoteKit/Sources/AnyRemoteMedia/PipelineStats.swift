@@ -7,8 +7,9 @@ import Foundation
 /// sender reports its own stages separately.
 public final class PipelineStats: @unchecked Sendable {
     public enum Stage: String, CaseIterable, Sendable {
-        /// SCK presentation time → frame handed to us.
-        case capture
+        /// Frame handed to us → its display time on the host (SCK delivers
+        /// frames this far ahead of their own timestamps).
+        case capture = "lead"
         /// Frame handed to us → submitted to the encoder (waiting for the busy encoder).
         case encodeWait = "wait"
         /// Submitted → encoder output.
@@ -21,6 +22,12 @@ public final class PipelineStats: @unchecked Sendable {
         case receive
         /// SCK presentation time → physically presented (loopback only).
         case total
+        /// Decoded → handed to the GPU: time held back by frame pacing.
+        case hold
+        /// Between consecutive frames' capture times (the host's cadence).
+        case captureGap = "capgap"
+        /// Between consecutive frames reaching the screen here.
+        case presentGap = "pregap"
     }
 
     public struct Summary: Sendable, CustomStringConvertible {
@@ -31,11 +38,16 @@ public final class PipelineStats: @unchecked Sendable {
         public var keyframes: Int = 0
         public var droppedFrames: Int = 0
         public var pixelSize: (width: Int, height: Int) = (0, 0)
+        /// Decoded frames replaced by a newer one before they could be shown.
+        public var skippedFrames: Int = 0
+        /// Frames shown a refresh or more late although the host sent them on time.
+        public var hitches: Int = 0
 
         public var description: String {
             var parts = [String(format: "%dx%d %.1ffps %.1fMbps key=%d drop=%d",
                                 pixelSize.width, pixelSize.height, framesPerSecond, megabitsPerSecond,
-                                keyframes, droppedFrames)]
+                                keyframes, droppedFrames)
+                         + (skippedFrames + hitches > 0 ? " skip=\(skippedFrames) hitch=\(hitches)" : "")]
             for stage in Stage.allCases {
                 guard let p50 = p50[stage], let p95 = p95[stage] else { continue }
                 parts.append(String(format: "%@ %.2f/%.2f", stage.rawValue, p50, p95))
@@ -50,6 +62,8 @@ public final class PipelineStats: @unchecked Sendable {
     private var bytes = 0
     private var keyframes = 0
     private var dropped = 0
+    private var skipped = 0
+    private var hitches = 0
     private var pixelSize: (Int, Int) = (0, 0)
     private var windowStart = HostClock.nowNanos()
 
@@ -69,6 +83,24 @@ public final class PipelineStats: @unchecked Sendable {
         bytes += count
         if keyframe { keyframes += 1 }
         pixelSize = (width, height)
+        lock.unlock()
+    }
+
+    public func record(_ stage: Stage, milliseconds: Double) {
+        lock.lock()
+        samples[stage, default: []].append(milliseconds)
+        lock.unlock()
+    }
+
+    public func recordSkipped() {
+        lock.lock()
+        skipped += 1
+        lock.unlock()
+    }
+
+    public func recordHitch() {
+        lock.lock()
+        hitches += 1
         lock.unlock()
     }
 
@@ -93,6 +125,10 @@ public final class PipelineStats: @unchecked Sendable {
         summary.megabitsPerSecond = Double(bytes) * 8 / seconds / 1_000_000
         summary.keyframes = keyframes
         summary.droppedFrames = dropped
+        summary.skippedFrames = skipped
+        summary.hitches = hitches
+        skipped = 0
+        hitches = 0
         summary.pixelSize = pixelSize
         samples.removeAll(keepingCapacity: true)
         frames = 0

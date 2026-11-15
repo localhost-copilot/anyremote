@@ -176,7 +176,7 @@ public final class DisplayCaptureSession: NSObject, FrameCapturing, SCStreamOutp
         else { return }
         handler(CapturedFrame(
             pixelBuffer: pixelBuffer,
-            captureTimeNanos: HostClock.nanos(from: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)),
+            captureTimeNanos: WindowCaptureSession.displayTime(of: sampleBuffer),
             deliveredTimeNanos: HostClock.nowNanos(),
             pointSize: CGSize(width: CGFloat(configuredPixelSize.width) / scale,
                               height: CGFloat(configuredPixelSize.height) / scale),

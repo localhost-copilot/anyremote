@@ -229,7 +229,7 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
                   CVPixelBufferGetHeight(pixelBuffer) == configuredPixelSize.height else { return }
             handler(CapturedFrame(
                 pixelBuffer: pixelBuffer,
-                captureTimeNanos: HostClock.nanos(from: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)),
+                captureTimeNanos: Self.displayTime(of: sampleBuffer),
                 deliveredTimeNanos: HostClock.nowNanos(),
                 pointSize: CGSize(width: CGFloat(configuredPixelSize.width) / crop.scale,
                                   height: CGFloat(configuredPixelSize.height) / crop.scale),
@@ -264,11 +264,21 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
 
         handler(CapturedFrame(
             pixelBuffer: pixelBuffer,
-            captureTimeNanos: HostClock.nanos(from: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)),
+            captureTimeNanos: Self.displayTime(of: sampleBuffer),
             deliveredTimeNanos: HostClock.nowNanos(),
             pointSize: windowPoints,
             scale: scale
         ))
+    }
+
+    /// SCK stamps a frame with the time it is shown on the host's screen.
+    /// That is usually still ahead when the frame is handed over (measured:
+    /// 9 ms on average, up to 15 ms); the encoder sends the difference so the
+    /// viewer counts latency from the handover. The stamps themselves are
+    /// exactly one refresh apart, which the viewer paces presentation by.
+    static func displayTime(of sampleBuffer: CMSampleBuffer) -> UInt64 {
+        let shown = HostClock.nanos(from: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        return shown > 0 ? shown : HostClock.nowNanos()
     }
 
     /// Queue-confined. Coalesces resize requests while one is in flight.

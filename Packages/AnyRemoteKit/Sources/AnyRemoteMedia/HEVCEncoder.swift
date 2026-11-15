@@ -263,7 +263,9 @@ public final class HEVCEncoder: @unchecked Sendable {
                 pixelHeight: UInt16(height),
                 scale: scale,
                 parameterSets: parameterSets,
-                lengthPrefixedNALUnits: payload
+                lengthPrefixedNALUnits: payload,
+                captureLeadMicros: UInt16(clamping: (captured.captureTimeNanos
+                    - min(captured.captureTimeNanos, captured.deliveredTimeNanos)) / 1000)
             ),
             capturedTimeNanos: captured.captureTimeNanos,
             deliveredTimeNanos: captured.deliveredTimeNanos,

@@ -64,7 +64,7 @@ public final class WindowStreamSender: @unchecked Sendable {
         self.streamID = streamID
         self.stats = stats
         let encoder = HEVCEncoder(configuration: configuration) { output in
-            stats.record(.capture, from: output.capturedTimeNanos, to: output.deliveredTimeNanos)
+            stats.record(.capture, from: output.deliveredTimeNanos, to: output.capturedTimeNanos)
             stats.record(.encodeWait, from: output.deliveredTimeNanos, to: output.submittedTimeNanos)
             stats.record(.encode, from: output.submittedTimeNanos, to: output.encodedTimeNanos)
             do {
@@ -198,7 +198,7 @@ public final class WindowStreamReceiver: @unchecked Sendable {
                 stats.recordFrame(bytes: data.count, keyframe: frame.isKeyframe,
                                   width: Int(frame.pixelWidth), height: Int(frame.pixelHeight))
             }
-            if let captured = remoteClock?.localTime(fromSender: frame.captureTimeNanos) {
+            if let captured = remoteClock?.localTime(fromSender: frame.handedOverTimeNanos) {
                 stats.record(.receive, from: captured, to: received)
             }
             guard gate.admit(isKeyframe: frame.isKeyframe) else {

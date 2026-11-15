@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 6
+public let anyRemoteProtocolVersion: UInt16 = 7
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -264,9 +264,12 @@ public struct HostStreamReport: Codable, Equatable, Sendable {
     public var framesPerSecond: Double
     public var megabitsPerSecond: Double
     public var bitRate: Int
+    /// The host's processor, e.g. "Apple M4 Pro" (older hosts: nil).
+    public var chip: String?
 
     public init(captureP50: Double, waitP50: Double, encodeP50: Double, encodeP95: Double,
-                framesPerSecond: Double, megabitsPerSecond: Double, bitRate: Int) {
+                framesPerSecond: Double, megabitsPerSecond: Double, bitRate: Int, chip: String? = nil) {
+        self.chip = chip
         self.captureP50 = captureP50
         self.waitP50 = waitP50
         self.encodeP50 = encodeP50

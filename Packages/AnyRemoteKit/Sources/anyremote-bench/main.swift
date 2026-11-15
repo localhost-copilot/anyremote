@@ -185,7 +185,7 @@ func runNetwork(_ options: Options, syntheticWindowID: CGWindowID?) async throws
         case .streamEnded(let streamID, let reason):
             print("stream \(streamID) ended: \(reason)")
         case .hostReport(_, let report):
-            print(String(format: "  host: capture %.2f wait %.2f encode %.2f/%.2f %.1ffps %.1fMbps (target %d)",
+            print(String(format: "  host: lead %.2f wait %.2f encode %.2f/%.2f %.1ffps %.1fMbps (target %d)",
                          report.captureP50, report.waitP50, report.encodeP50, report.encodeP95,
                          report.framesPerSecond, report.megabitsPerSecond, report.bitRate / 1_000_000))
         case .disconnected(let reason):
