@@ -5,133 +5,205 @@ display. The viewer lists every window on the host, opens any of them as a
 local window and resizes it freely; the host window is resized to match, so
 frames are presented pixel-for-pixel, like a native window. Menus, popovers
 and other child windows appear as local child windows, and the host app's
-menu bar becomes the viewer's native menu bar.
+menu bar becomes the viewer's native menu bar. The host's whole desktop is
+one click away too.
 
-Latency and image quality target Apple's Screen Sharing high-performance mode
-(see the sibling `iScreenSharing` client): HEVC 4:4:4, real-time hardware
-encode/decode, Metal presentation on arrival. Apple's protocol has no
-window-level mode, so AnyRemote uses its own host agent and protocol for
-windows and for the full desktop alike; no second app is involved.
+- **Windows, not screens** — each remote window is a real local window with
+  its own Dock icon, ⌘Tab entry and menu bar.
+- **Full desktop** — the whole screen, sized to your window (dynamic
+  resolution) or scaled, with system shortcuts forwarded.
+- **Low latency, sharp text** — HEVC 4:4:4, hardware encode and decode,
+  Metal presentation on arrival; about 10 ms behind the host's own screen on
+  a wired LAN.
+- **Several viewers** — up to four Macs can view and control one Mac at
+  once.
+- **Encrypted, paired once** — a 100-bit pairing code and AES-256-GCM for
+  everything; pairing works both ways.
+- **Shared clipboard**, English or Simplified Chinese interface.
 
-Every AnyRemote instance is both a host (others may control this Mac) and a
-viewer. Up to four Macs can be connected to a host at once, and each can
-see and control it. Viewers of the same display share one capture and one
-encode (the media engine has room for one 4K desktop at full rate, not two):
-each gets the same video, sealed with its own session key. The first viewer
-leads: its window size sets the dynamic resolution, and the stream runs at
-the bit rate the slowest viewer's network allows. A fifth viewer can only get
-in by taking over, which ends the longest-connected session.
+Latency and image quality target Apple's Screen Sharing high-performance
+mode. Apple's protocol has no window-level mode, so AnyRemote uses its own
+host agent and protocol for windows and the full desktop alike. Every
+AnyRemote instance is both a host (others may control this Mac) and a
+viewer.
+
+## Install
+
+Requires macOS 15 or later, Apple silicon or Intel.
+
+1. Download `AnyRemote-<version>.zip` from
+   [Releases](https://github.com/localhost-copilot/anyremote/releases) and
+   unzip it into `/Applications`.
+2. The app is signed with a self-signed certificate, not notarized, so
+   macOS refuses to open the download. Clear the quarantine flag once:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/AnyRemote.app
+   ```
+
+3. Open AnyRemote on **every** Mac involved. If permissions are missing,
+   Settings opens with a checklist: grant **Screen Recording** and
+   **Accessibility**, and allow **Local Network** when asked. Updates keep
+   the grants, since every release is signed with the same certificate.
+
+## Getting started
+
+1. On the Mac to be controlled, the menu bar icon shows its pairing code
+   (`XXXXX-XXXXX-XXXXX-XXXXX`), whether it can be controlled and who is
+   controlling it (each viewer with **Disconnect**).
+2. On the controlling Mac, open the window picker (⌃⌥⌘0 from anywhere). It
+   lists *My Macs* (paired) and *Nearby* (unpaired, found with Bonjour).
+   Select a Mac and enter its code once. **Add by address** covers Macs on
+   other networks; **Edit Address…** in a Mac's context menu changes it
+   later (for instance when the other Mac is on another subnet and was
+   added under its router's address).
+3. Pairing works both ways: unless *Also let … control this Mac* is turned
+   off, the Mac that entered the code hands its own code to the other over
+   the encrypted connection, and appears there in *My Macs* (with a
+   notification). A reset code follows on the next connection; turning
+   *Let … Control This Mac* off in a Mac's context menu withdraws it.
+4. Pick a window. Type to filter, arrows to select, Return or double-click
+   to open.
 
 ## Using it
 
-1. On each Mac: open AnyRemote. If permissions are missing, Settings opens
-   with a checklist: grant **Screen Recording** and **Accessibility**, allow
-   **Local Network** when asked. Settings shows the exact app copy that
-   needs the grants; macOS keys them to that copy's signature.
-2. The menu bar icon shows whether this Mac can be controlled, who controls
-   it right now (with **Disconnect**) and the pairing code
-   (`XXXXX-XXXXX-XXXXX-XXXXX`).
-3. On the controlling Mac, the window picker (⌃⌥⌘0 from anywhere) lists
-   *My Macs* (paired) and *Nearby* (unpaired, Bonjour); **Add by address**
-   covers other networks. Selecting an unpaired Mac asks for its code once.
-   Pairing works both ways: unless *Also let … control this Mac* is turned
-   off, the Mac that entered the code hands its own code to the other over
-   the encrypted connection, and appears there in *My Macs* (with a
-   notification). It is sent again on every connection, so a reset code
-   follows; turning *Let … Control This Mac* off in a Mac's context menu
-   withdraws it.
-4. The picker selects and connects the last used Mac, focuses the search
-   field and groups windows by app. Type to filter, arrows to select,
-   Return or double-click to open; the picker stays open behind the new
-   window (the AnyRemote Dock icon or ⌃⌥⌘0 brings it forward). An already
-   open window is brought forward instead of opened twice.
-5. **Apps** (next to **Windows** above the grid) lists the host's apps
-   (`/Applications`, `/System/Applications`, their Utilities, `~/Applications`
-   and anything running). Opening one launches it there, or brings it
-   forward if it's running, and its front window opens here as a mirror; an
-   app with no window gets a new one, as if its Dock icon was clicked.
-   *All | Running* narrows the list to running apps; a running app's context
-   menu has *Quit* and *Force Quit* (on the host).
+### Windows
 
-6. **Full Desktop** (toolbar, or ⌃⌥⌘D) shows the host's whole screen in an
-   AnyRemote window over the same encrypted connection: the main display, or
-   another one from the button's menu when the host has several. From a
-   mirror, ⌃⌥⌘D opens the display that window is on. With **Fit Desktop to
-   Window** (⌃⌥⌘R, on by default) the host's desktop takes the window's size
-   — resize it, zoom it or make it full screen and the host rearranges for
-   it, always 1:1 at 2x — and gets its own resolution back when the window
-   closes. Turned off, the window keeps the display's aspect ratio and
-   scales the picture (area-filtered when smaller). Every key goes to the
-   host (⌘M and ⌃⌘F included), except ⌃⌥⌘ shortcuts; with **Send System
-   Shortcuts to Desktop** (⌃⌥⌘K, on by default) so do ⌘Tab, ⌘Space,
-   Mission Control and screenshots while the desktop window is in front.
-   Mirrors and desktops can be open at the same time; windows opened on the
-   desktop stay there.
+The picker connects to the last used Mac, groups windows by app and stays
+open behind a new window (the AnyRemote Dock icon or ⌃⌥⌘0 brings it back).
+An already open window is brought forward instead of opened twice.
 
-If the host lacks Accessibility, mirrors show a banner saying input won't
-work; the picker shows the same, live, until it is granted.
+A mirror behaves like a local window. Dragging it moves only the mirror:
+the host window stays where it is, so it never ends up partly off its
+display. Its title bar buttons act on it: close closes the host window (a
+save sheet appears as usual), minimize minimizes the mirror only, green
+enters full screen on this Mac (the host window is resized to this screen)
+and ⌥-green zooms. ⌘M and ⌃⌘F act on the mirror too. If the host window gets
+minimized or goes full screen on the host, the host undoes it and the mirror
+does it instead.
 
-"This Mac" is not listed: controlling a Mac from itself feeds the injected
-clicks back into the mirror. `ANYREMOTE_LOOPBACK=1` lists it for
-development. There, `ANYREMOTE_NO_HOST_FOCUS=1` also stops the host from
-activating the mirrored app, so the remote menu bar can be tried out.
+A window that appears on the host within 3 s of a click, key or menu command
+in a mirror opens as a new mirror: a new document, a Settings window, or
+another app's window such as Finder revealing a file. Windows that appear on
+their own stay on the host and can be opened from the picker. Sheets are
+captured with their parent window.
 
-A mirror behaves like a local window. Dragging it (by the title bar,
-toolbar or any area the app treats as draggable) moves only the mirror: the
-host window stays where it is, so it never ends up partly off its display.
-Its title bar buttons act on it:
-close closes the host window (and with it the mirror; a save sheet appears
-as usual), minimize minimizes the mirror only, green enters full screen on
-this Mac (the host window is resized to this screen) and ⌥-green zooms. ⌘M
-and ⌃⌘F act on the mirror too. If the host window gets minimized or goes
-full screen on the host (Window menu, a title bar double-click), the host
-undoes it and the mirror does it instead.
+Each remote app with windows open here gets its own Dock icon and ⌘Tab entry,
+like Parallels' Coherence mode: a small stand-in app (`DockProxy/`) named
+"App (Mac)" with the app's icon. Clicking it brings that app's windows
+forward, its Dock menu lists them, and Quit closes them on this Mac only
+(Settings → General → *Show Remote Apps in the Dock*).
 
-A window that appears on the host within 3 s of a click, key or menu
-command in a mirror opens as a new mirror: a new document, a Settings
-window, or another app's window such as Finder revealing a file. Windows
-that appear on their own stay on the host and can be opened from the
-picker.
+### Apps
 
-Each remote app with windows open here gets its own Dock icon and ⌘Tab
-entry, like Parallels' Coherence mode: a small stand-in app (`DockProxy/`)
-generated under `~/Library/Application Support/<bundle ID>/Dock/` with the
-app's icon (badged with a display) and the name "App (Mac)". Clicking it
-brings that app's windows forward, its Dock menu lists them, and Quit closes
-them on this Mac only. Settings → General → *Show Remote Apps in the Dock*.
+**Apps** (next to **Windows** above the grid) lists the host's apps
+(`/Applications`, `/System/Applications`, their Utilities, `~/Applications`
+and anything running). Opening one launches it there, or brings it forward,
+and its front window opens here; an app with no window gets a new one, as if
+its Dock icon was clicked. *All | Running* narrows the list; a running app's
+context menu has *Quit* and *Force Quit* (on the host).
 
-The clipboard is shared both ways while connected (Settings → General →
-*Share Clipboard*): text, rich text, HTML, images (TIFF is sent as PNG) and
-links, up to 16 MB. Contents marked concealed or transient (password
-managers) and copied files stay on their Mac. On connecting, this Mac's
-clipboard is sent to the host.
+### Full desktop
 
-A window attached to another (a sheet) is captured by ScreenCaptureKit
-together with its parent; such a capture switches to a display capture of
-just that window, cropped to its frame.
+**Full Desktop** (toolbar, or ⌃⌥⌘D) shows the host's whole screen: the main
+display, or another one from the button's menu. From a mirror, ⌃⌥⌘D opens
+the display that window is on.
 
-The interface is in English; Settings → General → Language switches to
-Simplified Chinese (or the system language) after a restart.
+- **Fit Desktop to Window** (⌃⌥⌘R, on by default): the host's desktop takes
+  the window's size — resize it, zoom it or make it full screen and the host
+  rearranges for it, always 1:1 at 2x — and gets its own resolution back
+  when the window closes. Turned off, the window keeps the display's aspect
+  ratio and scales the picture (area-filtered, so text stays crisp).
+- Every key goes to the host (⌘M and ⌃⌘F included), except ⌃⌥⌘ shortcuts.
+  With **Send System Shortcuts to Desktop** (⌃⌥⌘K, on by default) so do
+  ⌘Tab, ⌘Space, Mission Control and screenshots while the desktop window is
+  in front.
 
-While a mirror is key, every key goes to the host (⌘Q quits the *remote*
-app). AnyRemote's own commands use ⌃⌥⌘: Hosts ⌃⌥⌘0, Statistics ⌃⌥⌘I,
-Full Desktop ⌃⌥⌘D, Close on This Mac ⌃⌥⌘W (the host window stays open; also in
-the picker's and the menu bar icon's menus).
+Mirrors and desktops can be open at the same time.
 
-Settings → *HiDPI virtual display*: on a headless Mac mini (or one with a 1x
-monitor) shared windows move to a 1920×1200 pt virtual display rendered at
-2x, so they are sharp and can be larger than the physical screen. They move
-back when the mirror closes; the display disappears with the last stream.
+### Several viewers
 
-## Architecture
+Up to four Macs can be connected to one Mac at once, and each can see and
+control it. Viewers of the same display share one capture and one encode,
+so a second viewer costs the host almost nothing. The first viewer leads:
+its window size sets the dynamic resolution (the others see it scaled), and
+the stream runs at the bit rate the slowest viewer's network allows. A fifth
+viewer can only get in by taking over, which ends the longest-connected
+session.
+
+### Keyboard
+
+While a mirror or desktop is in front, every key goes to the host (⌘Q quits
+the *remote* app). AnyRemote's own commands use ⌃⌥⌘:
+
+| Shortcut | Command |
+|---|---|
+| ⌃⌥⌘0 | Window picker |
+| ⌃⌥⌘D | Full desktop |
+| ⌃⌥⌘R | Fit desktop to window |
+| ⌃⌥⌘K | Send system shortcuts to desktop |
+| ⌃⌥⌘W | Close on this Mac (the host window stays open) |
+| ⌃⌥⌘I | Statistics overlay |
+
+Keys are sent as virtual key codes, so the host's keyboard layout and input
+method apply.
+
+### Clipboard, displays, language
+
+- The clipboard is shared both ways while connected (Settings → General →
+  *Share Clipboard*): text, rich text, HTML, images and links, up to 16 MB.
+  Concealed or transient contents (password managers) and copied files stay
+  on their Mac.
+- Settings → *HiDPI virtual display*: on a headless Mac mini (or one with a
+  1x monitor) shared windows move to a 1920×1200 pt virtual display rendered
+  at 2x, so they are sharp and can be larger than the physical screen. They
+  move back when the mirror closes.
+- The interface is in English; Settings → General → Language switches to
+  Simplified Chinese (or the system language) after a restart.
+
+## Troubleshooting
+
+- **Input doesn't work.** The host lacks Accessibility; mirrors and the
+  picker say so until it is granted.
+- **"Couldn't connect" across subnets.** Use **Add by address** or **Edit
+  Address…** with the other Mac's own IP (port 47800 by default).
+- **Connected but black.** The statistics overlay (⌃⌥⌘I) shows a line like
+  `udp in 0 · … · host sends video to none`: the video's UDP does not get
+  through (a firewall, or security software filtering local UDP), while the
+  TCP control connection does.
+- **"This Mac" is not in the list.** Controlling a Mac from itself feeds
+  injected clicks back into the mirror; see Development for the loopback
+  mode.
+
+## Limitations
+
+- Trackpad gestures (pinch, rotate, swipe) are not forwarded; scrolling is.
+- Drag and drop between Macs is not implemented.
+- Windows hidden behind others still stream, but macOS throttles occluded
+  windows' rendering.
+- On the host, macOS covers each shared window's close/minimize/zoom buttons
+  with a purple sharing indicator. It is a system privacy indicator with no
+  API to turn it off; the viewer sees the normal buttons.
+- Full desktop: keys outside the window server's hot keys (Touch ID, the
+  power key) still act on this Mac. Dynamic resolution rearranges the host's
+  windows like any resolution change.
+- Two viewers opening the same *window* each get their own capture, and
+  resizing it from both fights; only desktops are shared.
+- Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
+  there is no FEC.
+- The virtual display sits right of the main display; on a Mac with a real
+  monitor the pointer can wander onto it while a mirror is open.
+
+## How it works
 
 ```
 host                                                viewer
-SCK desktopIndependentWindow (444f / BGRA+alpha)
+SCK window or display capture (444f / BGRA+alpha)
  → VTCompressionSession HEVC RExt 4:4:4 or HEVC+alpha
- → EncodedVideoFrame → 1372-byte fragments
+   (desktops: four strips, one session each)
+ → EncodedVideoFrame → fragments
  → AES-GCM datagram envelope ──── UDP ────→ replay check → VideoReassembler
-                                            → KeyframeGate → VTDecompressionSession
+   (one per viewer)                         → KeyframeGate → VTDecompressionSession
                                             → VideoFrameLayer (CAMetalLayer)
 AX geometry / focus / menus  ←── TCP control (AES-GCM) ──  input, resize, focus,
 CGEvent injection                                          menu picks, reports
@@ -139,67 +211,48 @@ cursor (CGSCurrentCursorSeed) ────────────────�
 ```
 
 - **Control** — TCP (Network.framework, no-delay, keepalive,
-  `interactiveVideo` service class), length-prefixed frames, JSON messages
+  `interactiveVideo` service class), length-prefixed JSON messages
   (`ControlMessage`). Ordered and reliable: input, resize, menus, cursor.
 - **Video** — a plain UDP socket (8 MB buffers, `SO_TRAFFIC_CLASS` video
-  interactive, non-blocking). The viewer sends a sealed keepalive every
-  500 ms; the host learns the viewer's address from it (NAT-safe).
-  Fragments are dropped, never retransmitted; the reassembler keeps only the
-  newest frame and abandoned frames trigger rate-limited keyframe requests.
+  interactive). The viewer sends a sealed keepalive every 500 ms; the host
+  learns the viewer's address from it (NAT-safe). Fragments are dropped,
+  never retransmitted; the reassembler keeps only the newest frame, and an
+  abandoned frame triggers a rate-limited keyframe request for that stream
+  (for a desktop, that strip).
+- **Strips** — a desktop goes out as four horizontal strips, like Apple
+  Screen Sharing's tiles: one capture, a GPU blit of the strips
+  ScreenCaptureKit reports as changed, one HEVC session and stream ID per
+  strip. Typing costs a quarter of a full-screen encode. The viewer shows a
+  host frame once all its strips are decoded (or after 10 ms), so a frame
+  never shows half old.
+- **Sessions** — each viewer has its own session and keys. A display
+  stream is shared: one capture and encode, an audience of sessions, each
+  sealing the same datagrams with its own key. Stream IDs are unique across
+  sessions.
 - **Clock sync** — ping/pong; the minimum-RTT sample gives the host↔viewer
-  clock offset, so `receive` and `total` latency are measured across
-  machines.
-- **Bitrate** — receiver reports every second; ×0.75 on loss, +10% after four
-  clean seconds, 6–80 Mbps (child windows ≤20 Mbps).
-- **Input** — mouse/scroll/keys as `CGEvent`s posted at the HID tap, at
-  points relative to the window's top-left (the origin is frozen during a
-  press so title-bar drags work, and the mirror follows the host window
-  while it moves). Focus via AX `AXFrontmost` + `AXMain` + `AXRaise`. Keys
-  are virtual key codes, so the host's keyboard layout applies.
+  clock offset, so latency is measured across machines.
+- **Bitrate** — receiver reports every second; ×0.75 on loss, +10% after
+  four clean seconds; windows 6–80 Mbps, desktops up to 120 Mbps, child
+  windows ≤20 Mbps. A shared stream runs at its viewers' lowest rate.
+- **Input** — mouse, scroll and keys as `CGEvent`s posted at the HID tap, at
+  points relative to the window's top-left (frozen during a press so
+  title-bar drags work). Focus via AX `AXFrontmost` + `AXMain` + `AXRaise`.
 - **Child windows** — every 33 ms (8 ms while a button is down) the host
   looks for same-process windows on menu/popup layers, or non-standard
-  layer-0 windows near the main window (sheets, popovers), plus the
-  Open/Save panel service. Each streams as HEVC with alpha and is shown as a
-  borderless, non-activating local child window at the matching offset.
-- **New windows** — the host remembers which layer-0 windows were on
-  screen. One that appears within 3 s of viewer input, is at least 160×100
-  pt and is a standard window to Accessibility (checked again for 1.5 s,
-  since new windows reach AX late) is opened like a picked window.
-- **Window state** — the host sends the title bar button rects; the viewer
-  handles them locally, and a host-side minimize/full screen is reverted
-  and forwarded as `windowStateRequest`.
-- **Menu bar** — read through AX (`AXUIElementCopyMultipleAttributeValues`)
-  as a `MenuNode` tree, rebuilt as native `NSMenu`s while the mirror is key
-  and refreshed on every open; choosing an item presses it on the host.
-- **Full desktop** — `openDisplay` starts a `.display` stream: an SCK
-  display capture (`SCContentFilter(display:)`, no cursor, 444f, native pixel
-  size) through the same encoder, fragmenter and datagram channel as windows
-  (50 Mbps start, up to 120 Mbps). Input points are relative to the
-  display's top-left; nothing is focused or kept in place. The host follows
-  display mode changes (resolution, scale) every 33 ms, reconfigures the
-  capture and sends `streamMoved`; a display that goes away ends the stream.
-  The viewer clamps the pointer to the display and draws the host cursor
-  locally, as for mirrors.
+  layer-0 windows near the main window (sheets, popovers). Each streams as
+  HEVC with alpha and is shown as a borderless, non-activating child window.
+- **Menu bar** — read through AX as a `MenuNode` tree, rebuilt as native
+  `NSMenu`s while the mirror is key; choosing an item presses it on the host.
 - **Dynamic resolution** — `desktopSize` asks for a desktop of the viewer
-  window's size (points). The host makes a HiDPI `CGVirtualDisplay` of that
-  size, moves it to the display's place and has the display mirror it
-  (`.forSession`, so macOS undoes it if the app quits), selects its 2x mode
-  explicitly (mirroring otherwise picks the same pixels at 1x), and switches
-  the capture over within the same stream; later sizes just change its
-  mode. `desktopSize(nil)`, closing the window or disconnecting releases
-  the mirror. Requests are coalesced and clamped to 640×400–3840×2400 pt.
-- **System shortcuts** — while a desktop window is key and the app active,
-  the viewer turns off the window server's global hot keys for its
-  connection (private `CGSSetGlobalHotKeyOperatingMode`, like remote desktop
-  clients do), so ⌘Tab and friends arrive as ordinary key events and are
-  forwarded. They come back on as soon as another window or app is in
-  front; the window server restores them if the app dies.
-- **Downscaling** — a desktop shown smaller than its pixels is drawn at the
-  window's own pixel size with an area (box) filter of up to 6×6 bilinear
-  taps per output pixel in the NV24 shader, instead of a single bilinear
-  sample scaled by the compositor, so text stays crisp without shimmer.
-- **Virtual display** — private `CGVirtualDisplay` (hiDPI), forced into an
-  extended (non-mirrored) arrangement right of the main display.
+  window's size. The host makes a HiDPI `CGVirtualDisplay` of that size,
+  puts it in the display's place, has the display mirror it (`.forSession`,
+  so macOS undoes it if the app quits) and switches the capture over within
+  the same stream. Requests are coalesced and clamped to 640×400–3840×2400
+  pt.
+- **System shortcuts** — while a desktop window is key, the viewer turns off
+  the window server's global hot keys for its connection (private
+  `CGSSetGlobalHotKeyOperatingMode`), so ⌘Tab and friends arrive as ordinary
+  key events and are forwarded.
 
 ### Security
 
@@ -208,128 +261,27 @@ derive a pre-shared key from it with HKDF-SHA256; each connection mixes in
 two fresh 32-byte nonces to derive four AES-256-GCM keys (control and
 datagram, each direction). Control frames use implicit counter nonces; video
 datagrams carry an explicit counter (authenticated, 1024-entry replay
-window). A wrong code fails at the first sealed frame and the host says so.
-Resetting the code in Settings disconnects the current viewer. A code
-received for two-way pairing is stored like one typed in; a withdrawal only
-removes Macs that were added that way. Settings and
-saved hosts are JSON files (mode 0600) in
+window). A wrong code fails at the first sealed frame. Resetting the code in
+Settings disconnects every viewer. A code received through two-way pairing is
+stored like one typed in; a withdrawal only removes Macs added that way.
+Settings and saved hosts are JSON files (mode 0600) in
 `~/Library/Application Support/AnyRemote`.
 
-## Measured (M6 Mac18,5, macOS 27, 60 Hz display, network loopback)
+### Performance
 
-Synthetic 940×700 pt window (1880×1400 px) scrolling dense text every
-refresh, viewer and host in one app talking over UDP/TCP (127.0.0.1 and the
-LAN address). Milliseconds, p50 / p95.
+Full desktop between two Macs (M4 Mac mini host, M6 viewer, wired LAN, RTT
+~1 ms), 3840×2160, 60 fps, no loss: about 10 ms p50 behind the host showing
+the frame on its own screen. Measurements, strip timings and the
+VideoToolbox findings behind the encoder settings are in
+[docs/performance.md](docs/performance.md).
 
-| Stage | |
-|---|---|
-| Host encode (capture → encoded) | 5.8–6.8 / 6.3–8.2 |
-| Receive (capture → reassembled on viewer, clock-synced) | 6.7–7.5 / 7.4–9.7 |
-| Decode | 1.2–1.4 |
-| Present (decoded → on glass, 60 Hz) | 9–15 |
-| **Total (capture → on glass)** | **18–26 / 25–45** |
-| Control RTT | 0.3–0.5 |
-| Mirror resize → host window applied → new frames | 20–24 |
-
-~48–58 fps at 5–15 Mbps for this workload, no loss.
-
-Full desktop, 1920×1080 pt @2x (3840×2160 px, 4:4:4), shown scaled in a
-1612×907 pt window, loopback with a 60 Hz workload: 51–61 fps (as many as
-the workload drew), encode 11.5–13 ms, total p50 18–22 ms at 30–55 Mbps
-(viewer and host share one media engine here; across two Macs each has its
-own). Across a real network add
-one-way network latency to *receive*.
-
-Full desktop between two Macs (M4 Mac mini host running testufo, M6 viewer
-on a 60 Hz 4K screen, wired LAN, RTT ~1 ms), 60 fps, no loss. "Behind the
-host" is from the host showing a frame on its own screen to this Mac
-showing it:
-
-| Viewer | Host pixels | Encode | Decode → glass | Behind the host p50 / p95 | Stutters |
-|---|---|---|---|---|---|
-| Window (1618×910 pt) | 3236×1820 | 8.3 ms | 8.0 ms | 10.2 / 18.1 ms | 0.4/s |
-| Full screen | 3840×2160 | 12.2 ms | 3.5 ms | 9.8 / 16.2 ms | 1.0/s |
-
-Full screen skips WindowServer's composition (decode → glass 8 → 3.5 ms),
-but dynamic resolution then makes the host's desktop the whole screen, and
-the larger frame takes 4 ms longer to encode.
-
-Desktops go out as four horizontal strips, like Apple Screen Sharing's
-four tiles: one capture, and each strip its own HEVC session and stream ID.
-VideoToolbox's encode time follows the frame's pixel count, not how much
-changed, so a full 4K frame cost 10–15 ms even for one typed letter. Only
-strips that ScreenCaptureKit reports as changed are copied out (a GPU blit)
-and encoded, and the strips of a full-screen change encode, travel and
-decode overlapped. Every strip carries the host frame's display time and the
-set of strips sent with it; the viewer shows a host frame once all of them
-are decoded (or after 10 ms, or when a newer one starts), drawing every
-strip's latest picture into one drawable, so a frame never shows half old.
-Capture → decoded, no network (`anyremote-bench --tiles`, 3840×2160):
-
-| Host | Workload | Whole frame p50 / p95 | 4 strips p50 / p95 |
-|---|---|---|---|
-| M6 | typing | 15.3 / 32.0 ms | 9.6 / 10.2 ms |
-| M6 | full-screen motion | 14.6 / 18.5 ms | 11.3 / 13.9 ms |
-| M4 | typing | 21.0 / 32.6 ms | 11.3 / 20.4 ms |
-| M4 | full-screen motion | 15.1 / 16.7 ms | 14.0 / 15.1 ms |
-
-Eight strips gave nothing more for full-screen motion. `ANYREMOTE_TILES=1`
-on the host sends whole frames (any 2–8 sets the strip count).
-
-VideoToolbox findings behind the encoder settings (each measured
-before/after):
-
-- `RealTime` is off and `PrioritizeEncodingSpeedOverQuality` on. In
-  real-time mode VT runs the engine just fast enough for the expected rate,
-  so a frame takes ~9–12 ms however small: a 3840×528 strip took 11.6 ms,
-  as long as a whole 4K frame, and an idle M4 host took 22–35 ms per strip.
-  Without it time follows the pixels (M6: strip 3.7 ms, four strips at once
-  7.8 ms, 4K frame 8.7 ms), and the 4K frame decodes at 46.4 dB PSNR
-  instead of 45.4 (with ~13% more bits than asked for). `RealTime` off
-  without the speed priority encodes best (53.5 dB) but takes 14.5 ms.
-  Capture → decoded with four strips (`anyremote-bench --tiles` vs
-  `--realtime`): typing 16.2 → 9.8 ms, scrolling 13.2 → 8.7 ms,
-  full-screen motion 16.0 → 10.3 ms.
-- In real-time mode, `kVTCompressionPropertyKey_ExpectedFrameRate` acts as a latency budget:
-  VT clocks the encoder down until one frame takes ~1/rate. 60 → 120 halved
-  encode time (1280×800: 16.8 → 8.6 ms). 240 gave nothing further.
-- Removing `kVTDecodeFrame_1xRealTimePlayback` cut decode ~20%.
-- Any color-tagging compression property (primaries, transfer, matrix) adds
-  ~2.5 ms per 4K frame.
-- `EnableLowLatencyRateControl` silently downgrades to 4:2:0. Don't use it.
-- In full screen, any view over the video (the statistics overlay was an
-  `NSTextField`) made the window server composite instead of showing the
-  video directly each time it changed: one stutter a second (1.05/s → 0.10/s
-  once the text was drawn into the video frames themselves).
-- `displaySyncEnabled = false` on the windowed layer: decode → glass 25 → 7 ms.
-  `ANYREMOTE_DISPLAY_SYNC=1` restores vsync for comparison.
-- ScreenCaptureKit's `minimumFrameInterval` at exactly the refresh period
-  (1/60) drops frames whose timestamps arrive slightly early: only ~49 of
-  ~58 drawn frames were delivered (35–50 fps). 1/90 delivers every one;
-  1/120 also lets some duplicates through on window capture.
-- ScreenCaptureKit stamps each frame with the time the host shows it, and
-  hands it over before that: 9 ms on average, up to 15 ms. Frames carry that
-  lead (`captureLeadMicros`), so latency counts from the handover while the
-  stamps, exactly one refresh apart, still give the host's cadence.
-- In real-time mode, 3236×1820 4:4:4 takes 9.7 ms on M6, 4:2:0 8.8 ms;
-  `PrioritizeEncodingSpeedOverQuality`, `MaximizePowerEfficiency = false`
-  and an expected rate of 240 change nothing there. Two parallel half-height sessions take 8.8 ms, four 8.9 ms: one
-  encode engine, so tiles only overlap a little. Chips with two engines
-  (Max) may differ.
-- Frame pacing on the viewer (hold each frame until its host display time
-  plus the 95th-percentile arrival, `ANYREMOTE_PACING=1`) added 5–6 ms and
-  did not reliably cut stutters (windowed 0.41 → 0.61/s, full screen
-  1.00 → 0.44/s), so frames are shown on arrival.
-- Sparse updates (e.g. typing) were slow for the same reason (real-time
-  mode): 800×600 took ~10 ms instead of ~4.5 ms.
-
-## Layout
+## Development
 
 ```
 App/                        AppKit + SwiftUI app
   AppDelegate               host service + viewer, menus, ⌃⌥⌘ commands
   HostsView / ViewerModel   window picker: My Macs / Nearby, grouped searchable grid, pairing
-  StatusMenu                menu bar icon (sharing state, controller, pairing code), ⌃⌥⌘0 hot key
+  StatusMenu                menu bar icon (sharing state, viewers, pairing code), ⌃⌥⌘0 hot key
   FriendlyText              user-facing wording for wire/system errors
   AppLanguage               interface language (English default; Simplified Chinese in Settings › General)
   Resources/*.lproj         string tables; keys are the English source strings
@@ -340,119 +292,104 @@ App/                        AppKit + SwiftUI app
   ChildWindowController     menus/popovers/sheets as local child windows
   RemoteSurfaceView         Metal surface + mouse/scroll; KeyForwarder
   RemoteMenuBar             host menu bar as native NSMenus
-  HostSettingsView          sharing + controller, permission checklist, pairing code, display
+  HostSettingsView          sharing + viewers, permission checklist, pairing code, display
   DevelopmentLaunch         test/measurement launch modes
+DockProxy/                  stand-in app behind each remote app's Dock icon
 Packages/AnyRemoteKit/
   AnyRemoteWire             messages, framing, pairing, AES-GCM channel, reassembly
   AnyRemoteNetwork          TCP control connection, UDP socket, Bonjour, storage
-  AnyRemoteMedia            capture, encoder, decoder, Metal layer, stats, clocks
+  AnyRemoteMedia            capture, encoder (whole/strips), decoder, Metal layer, stats, clocks
   AnyRemoteWindowControl    AX window geometry/focus, menu bar reader
   AnyRemoteHost             host service + sessions, input, cursor, virtual display
   AnyRemoteClient           viewer-side connection, paired-host store
   CGVirtualDisplayPrivate   private CGVirtualDisplay declarations
   AnyRemoteDiagnostics      synthetic workload window
-  anyremote-bench           headless benchmark (loopback, --network, --host, --connect)
-project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated)
+  anyremote-bench           headless benchmark (loopback, --network, --host, --connect, --tiles)
+docs/performance.md         measurements and encoder findings
+project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated, not committed)
+scripts/                    release, signing identity, icons
 ```
 
-## Build, run, test
+### Build and test
 
 ```sh
 xcodegen generate
-open AnyRemote.xcodeproj            # signed build with your team (Developer ID for distribution)
+open AnyRemote.xcodeproj            # or build from the command line:
+xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
+    -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 48 tests incl. VT round trips and a network session
+swift test --package-path Packages/AnyRemoteKit     # 48 tests incl. VT round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
 ```
 
-The Debug configuration builds **AnyRemote Dev** (`com.localhost-copilot.anyremote.dev`),
-so development builds never take over the installed app's privacy grants.
-Its icon is orange instead of blue, to tell the two apart in the Dock and in
-the privacy lists. `scripts/make-icon.sh` redraws both icons
-(`scripts/make-icon.swift`) into `App/Assets.xcassets`.
+The Debug configuration builds **AnyRemote Dev**
+(`com.localhost-copilot.anyremote.dev`, orange icon), so development builds
+never take over the installed app's privacy grants. `scripts/make-icon.sh`
+redraws both icons into `App/Assets.xcassets`.
 
-Distribution zip, and optionally install it here and restart it:
+### Releases
 
 ```sh
-scripts/release.sh             # build/dist/AnyRemote-<version>.zip
-scripts/release.sh --install   # also replace /Applications/AnyRemote.app
+scripts/release.sh             # build/dist/AnyRemote-<version>.zip (universal)
+scripts/release.sh --install   # also replace /Applications/AnyRemote.app and restart it
 ```
 
-Screen Recording and Accessibility are keyed by the app's signature. An
-ad-hoc signature changes with every build, so each update lost them. The
-script signs with a stable local identity instead (`scripts/signing-identity.sh`
-creates it once: a self-signed code-signing certificate in its own keychain
-under `~/Library/Application Support/AnyRemoteSigning`, never committed), so
-permissions survive updates on every Mac that installs the zip. Other Macs
-need the zip from the Mac that holds that identity.
+The version is `MARKETING_VERSION` in `project.yml`. Screen Recording and
+Accessibility are keyed by the app's signature, and an ad-hoc signature
+changes with every build. The script signs with a stable local identity
+instead (`scripts/signing-identity.sh` creates it once: a self-signed
+code-signing certificate in its own keychain under
+`~/Library/Application Support/AnyRemoteSigning`, never committed), so
+permissions survive updates. Releases must be built on the Mac that holds
+that identity.
 
-Granting them: Settings → *Turn On…* asks macOS for the permission, which
-adds AnyRemote to the list switched off, then opens that list in System
-Settings with a small card beside it (its icon drags into the list as a
-fallback). It notices the switch and moves on. Accessibility also covers
-posting events, so that row turns on without a relaunch. At launch, entries
-left by an earlier signature, listed as on but without effect, are removed
-once per signature (`tccutil reset`), so turning a permission on is always one
-switch.
+Granting permissions: Settings → *Turn On…* asks macOS, which adds AnyRemote
+to the list switched off, then opens that list in System Settings with a
+small card beside it. At launch, entries left by an earlier signature are
+removed once per signature (`tccutil reset`), so turning a permission on is
+always one switch.
 
-Development launch arguments (see `App/DevelopmentLaunch.swift`), all through
-the real network path against this Mac's own host service:
+### Development launch arguments
 
+See `App/DevelopmentLaunch.swift`. All go through the real network path,
+against this Mac's own host service unless `--connect` is given.
+
+- `--connect host[:port] --code CODE` — another Mac
 - `--synthetic 940x700 [--resize-test] [--display-test]`
 - `--input-test` — clicks, keys, wheel and a context menu into a recorder
   window; prints what arrived and whether the menu showed as a child window
 - `--open <app> [--title <text>] [--menu-test [--choose Menu/Item]]`
-- `--launch <app>` — opens the app on the host through the Apps list and
-  prints when its window arrives
-- `--quit <app>` — quits a running app on the host through the Apps list
-- `--desktop [--display <n>]` — shows the host's full desktop and checks that
-  a pointer move lands on the matching display point (on this Mac it only
-  moves the pointer; with `ANYREMOTE_LOOPBACK=1` the host leaves the viewer's
-  own windows out of the picture, so it doesn't show itself endlessly).
-  `--test-display WxH` shows a virtual display made for the test instead;
+- `--launch <app>` / `--quit <app>` — through the Apps list
+- `--desktop [--display <n>] [--fullscreen]` — the host's full desktop; checks
+  that a pointer move lands on the matching display point.
+  `--test-display WxH` shows a virtual display made for the test;
   `--desktop-size 1280x720,1600x1000,off` then resizes the window through
-  those sizes (dynamic resolution) and prints the display list after each.
-  In loopback, dynamic resolution only applies to such test displays, as
-  the viewer's window would sit on the display it resizes.
-  `--shortcut-test` posts ⌘Tab and ⌘Space and prints what was forwarded.
-  `-DesktopFitsWindow NO` turns dynamic resolution off for one launch
-- `--connect host[:port] --code CODE` — another Mac
-- `--permission-guide` — Settings with the permission card (kept up)
+  those sizes and prints the display list after each. `--shortcut-test`
+  posts ⌘Tab and ⌘Space and prints what was forwarded.
+  `-DesktopFitsWindow NO` turns dynamic resolution off for one launch.
+- `--permission-guide` — Settings with the permission card
 - `--discovery-test`, `--exit-after <seconds>`
-- `--fullscreen` (with `--desktop`) makes the desktop window full screen
+
+Environment:
+
+- `ANYREMOTE_LOOPBACK=1` lists this Mac itself. The host then leaves the
+  viewer's own windows out of a desktop (no endless mirror), and dynamic
+  resolution only applies to test displays. `ANYREMOTE_NO_HOST_FOCUS=1` also
+  stops the host from activating the mirrored app.
 - `ANYREMOTE_STATS_STDOUT=1` prints pipeline statistics every second
   (`lead`: how far ahead of its display time SCK delivered a frame; `hold`:
   frame pacing; `capgap`/`pregap`: host and local frame intervals; `hitch`:
-  frames shown a refresh late although sent on time; the host's chip),
-  `ANYREMOTE_HOME=<dir>` uses a separate settings directory,
-  `ANYREMOTE_DROP=0.02` drops that share of the video datagrams arriving
-  at the viewer (simulated loss)
+  frames shown a refresh late although sent on time).
+- `ANYREMOTE_STATS=1` starts with the statistics overlay on.
+- `ANYREMOTE_HOME=<dir>` uses a separate settings directory.
+- `ANYREMOTE_DROP=0.02` drops that share of the video datagrams arriving at
+  the viewer (simulated loss).
+- `ANYREMOTE_TILES=1` on the host sends desktops as whole frames (2–8 sets the
+  strip count).
+- `ANYREMOTE_DISPLAY_SYNC=1` restores vsync on the windowed layer.
+- `ANYREMOTE_PACING=1` holds frames until their host display time.
 
 Keep workloads visible when measuring: macOS throttles occluded windows, and
 an occluded mirror is never presented.
-
-When mirroring this Mac's own windows, focusing the host window activates
-that app, so the mirror stops being key; that only affects this loopback.
-
-## Limitations
-
-- Trackpad gestures (pinch, rotate, swipe) are not forwarded; scrolling is.
-- Keys are sent as virtual key codes: the host's input source decides the
-  characters. Input-method composition happens on the host.
-- Windows hidden behind others still stream (ScreenCaptureKit captures them),
-  but macOS throttles occluded windows' rendering.
-- Drag and drop between Macs is not implemented.
-- On the host, macOS covers each shared window's close/minimize/zoom buttons
-  with a purple sharing indicator while it is captured. It is a system
-  privacy indicator with no API to turn it off; it isn't in the captured
-  image, so the viewer sees the normal buttons.
-- Full desktop: keys outside the window server's hot keys (Touch ID, the
-  power key) still act on this Mac. Dynamic resolution rearranges the
-  host's windows like any resolution change; when two viewers show the
-  same display, only the first one's window size applies.
-- Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
-  there is no FEC.
-- The virtual display sits right of the main display; on a Mac with a real
-  monitor the pointer can wander onto it while a mirror is open.
