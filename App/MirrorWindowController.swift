@@ -14,7 +14,7 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// is adopted when the live resize ends. Dragging the host window's own title
 /// bar moves the host window, and the local window follows it.
 @MainActor
-final class MirrorWindowController: NSWindowController, NSWindowDelegate, RemoteInputSink {
+final class MirrorWindowController: NSWindowController, NSWindowDelegate, RemoteInputSink, RemoteKeyTarget {
     private(set) var stream: StreamDescription
     unowned let connection: HostConnection
     var onClose: (() -> Void)?
@@ -114,32 +114,15 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         noticeView?.removeFromSuperview()
         noticeView = nil
         guard let text, let content = window?.contentView else { return }
-        let label = NSTextField(wrappingLabelWithString: "⚠︎ " + text + " " + String(localized: "Grant it in AnyRemote › Settings on that Mac."))
-        label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.textColor = .white
-        label.alignment = .center
-        let background = NSVisualEffectView()
-        background.material = .hudWindow
-        background.appearance = NSAppearance(named: .vibrantDark)
-        background.blendingMode = .withinWindow
-        background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 8
-        background.translatesAutoresizingMaskIntoConstraints = false
-        label.translatesAutoresizingMaskIntoConstraints = false
-        background.addSubview(label)
-        content.addSubview(background)
+        let banner = NoticeBanner.make(text: "⚠︎ " + text + " " + String(localized: "Grant it in AnyRemote › Settings on that Mac."))
+        content.addSubview(banner)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 12),
-            label.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -12),
-            label.topAnchor.constraint(equalTo: background.topAnchor, constant: 8),
-            label.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -8),
-            background.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            background.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
-            background.widthAnchor.constraint(lessThanOrEqualTo: content.widthAnchor, constant: -24),
-            background.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
+            banner.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            banner.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+            banner.widthAnchor.constraint(lessThanOrEqualTo: content.widthAnchor, constant: -24),
+            banner.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
         ])
-        noticeView = background
+        noticeView = banner
     }
 
     private func updateTitle() {

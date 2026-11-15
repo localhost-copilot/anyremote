@@ -472,8 +472,7 @@ private struct WindowPicker: View {
         ToolbarItemGroup {
             Button { Task { await connection.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .help("Refresh the window list")
-            Button { FullDesktop.open(connection) } label: { Label("Full Desktop", systemImage: "display") }
-                .help("Open the whole desktop in Screen Sharing (or iScreenSharing, if installed)")
+            FullDesktopButton(connection: connection)
             Button { model.disconnect(target) } label: { Label("Disconnect", systemImage: "xmark.circle") }
                 .help("Disconnect from this Mac and close all of its windows")
         }
@@ -760,19 +759,34 @@ private struct RenameSheet: View {
     }
 }
 
-/// Full-desktop sessions use Apple's Screen Sharing protocol, through
-/// iScreenSharing (high-performance mode) when it is installed.
-enum FullDesktop {
-    static let iScreenSharingBundleID = "com.wangkai.iShareScreen"
+/// Opens the host's whole desktop in an AnyRemote window. With several
+/// displays, it opens the main one; its menu picks another.
+struct FullDesktopButton: View {
+    let connection: HostConnection
 
-    @MainActor
-    static func open(_ connection: HostConnection) {
-        guard let host = connection.hostAddressForURL, let url = URL(string: "vnc://\(host)") else { return }
-        let workspace = NSWorkspace.shared
-        if let app = workspace.urlForApplication(withBundleIdentifier: iScreenSharingBundleID) {
-            workspace.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+    var body: some View {
+        let displays = connection.displays
+        if displays.count > 1 {
+            Menu {
+                ForEach(displays, id: \.displayID) { display in
+                    Button(Self.title(display)) { connection.openDesktop(displayID: display.displayID) }
+                }
+            } label: {
+                Label("Full Desktop", systemImage: "display.2")
+            } primaryAction: {
+                connection.openDesktop()
+            }
+            .help("Show the whole desktop of this Mac; choose a display from the menu")
         } else {
-            workspace.open(url)
+            Button { connection.openDesktop() } label: { Label("Full Desktop", systemImage: "display") }
+                .help("Show the whole desktop of this Mac")
+                .disabled(connection.state != .connected)
         }
+    }
+
+    private static func title(_ display: DisplaySummary) -> String {
+        let name = display.name ?? String(localized: "Display")
+        let size = "\(Int(display.frame.width))×\(Int(display.frame.height))"
+        return display.isMain == true ? String(localized: "\(name) (\(size), main)") : "\(name) (\(size))"
     }
 }

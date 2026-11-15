@@ -297,6 +297,12 @@ public final class RemoteHostClient: @unchecked Sendable {
 
     public func openWindow(_ windowID: UInt32) { send(.openWindow(windowID: windowID)) }
 
+    /// Streams a whole host display (full desktop).
+    public func openDisplay(_ displayID: UInt32) { send(.openDisplay(displayID: displayID)) }
+
+    /// Dynamic resolution: the host desktop takes this size (points), or its own with nil.
+    public func setDesktopSize(streamID: UInt16, size: CGSize?) { send(.desktopSize(streamID: streamID, size: size)) }
+
     public func listApplications() async throws -> ApplicationListing {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in

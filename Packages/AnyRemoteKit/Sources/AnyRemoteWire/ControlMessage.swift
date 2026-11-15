@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 5
+public let anyRemoteProtocolVersion: UInt16 = 6
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -89,13 +89,19 @@ public struct DisplaySummary: Codable, Hashable, Sendable {
     public var visibleFrame: CGRect
     public var scale: Double
     public var isVirtual: Bool
+    /// The display's name ("Built-in Retina Display", "LG UltraFine").
+    public var name: String?
+    public var isMain: Bool?
 
-    public init(displayID: UInt32, frame: CGRect, visibleFrame: CGRect, scale: Double, isVirtual: Bool) {
+    public init(displayID: UInt32, frame: CGRect, visibleFrame: CGRect, scale: Double, isVirtual: Bool,
+                name: String? = nil, isMain: Bool? = nil) {
         self.displayID = displayID
         self.frame = frame
         self.visibleFrame = visibleFrame
         self.scale = scale
         self.isVirtual = isVirtual
+        self.name = name
+        self.isMain = isMain
     }
 }
 
@@ -118,15 +124,20 @@ public struct HostWelcome: Codable, Equatable, Sendable {
     }
 }
 
-/// A video stream of one host surface: the opened window, or one of its child
-/// windows (menus, popovers, sheets, tooltips, panels).
+/// A video stream of one host surface: the opened window, one of its child
+/// windows (menus, popovers, sheets, tooltips, panels), or a whole display.
 public struct StreamDescription: Codable, Equatable, Sendable {
     public enum Role: String, Codable, Sendable {
         case window
         case child
+        /// A whole display (full desktop). `windowID` is the display ID,
+        /// `frame` the display's frame, and input points are relative to
+        /// its top-left corner.
+        case display
     }
 
     public var streamID: UInt16
+    /// The window ID, or the display ID for `.display` streams.
     public var windowID: UInt32
     public var role: Role
     /// For children: the stream of the opened window they belong to.
@@ -309,6 +320,12 @@ public enum ControlMessage: Codable, Equatable, Sendable {
 
     // Streams
     case openWindow(windowID: UInt32)
+    /// Streams a whole display (full desktop), at its own resolution.
+    case openDisplay(displayID: UInt32)
+    /// Dynamic resolution for a display stream: the host shows its desktop
+    /// at this size (points, rendered at 2x) in place of the display, or,
+    /// with nil, gives the display its own resolution back.
+    case desktopSize(streamID: UInt16, size: CGSize?)
     case streamStarted(StreamDescription)
     /// The surface moved or changed title on the host.
     case streamMoved(streamID: UInt16, frame: CGRect, title: String)

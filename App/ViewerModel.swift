@@ -22,6 +22,7 @@ final class ViewerModel {
     @ObservationIgnored private let browser = HostBrowser()
     @ObservationIgnored let hostService: HostService
     @ObservationIgnored var onOpenedMirror: ((MirrorWindowController) -> Void)?
+    @ObservationIgnored var onOpenedDesktop: ((DesktopWindowController) -> Void)?
 
     init(hostService: HostService) {
         self.hostService = hostService
@@ -121,6 +122,9 @@ final class ViewerModel {
 
     func connection(for target: HostTarget) -> HostConnection? { connections[target.id] }
 
+    /// The connection of the Mac selected in the picker.
+    var selectedConnection: HostConnection? { selection.flatMap { connections[$0] } }
+
     /// Connects with the stored code, or `code` when pairing; `sharesBack`
     /// then says whether that Mac may also control this one.
     func connect(_ target: HostTarget, code providedCode: PairingCode? = nil, sharesBack: Bool? = nil,
@@ -129,6 +133,7 @@ final class ViewerModel {
         connections[target.id]?.disconnect()
         let connection = HostConnection(target: target, code: code)
         connection.onOpenedMirror = { [weak self] mirror in self?.onOpenedMirror?(mirror) }
+        connection.onOpenedDesktop = { [weak self] desktop in self?.onOpenedDesktop?(desktop) }
         connections[target.id] = connection
         lastError = nil
         do {
@@ -229,6 +234,7 @@ final class ViewerModel {
     }
 
     var allMirrors: [MirrorWindowController] { connections.values.flatMap(\.openMirrors) }
+    var allDesktops: [DesktopWindowController] { connections.values.flatMap(\.openDesktops) }
 
     /// Called before a window opens from the picker; `keepPicker` when ⌥ was held.
     @ObservationIgnored var onPickedWindow: ((_ keepPicker: Bool) -> Void)?

@@ -11,6 +11,12 @@ import AppKit
 ///                                           mirror a window of this Mac (or of the --connect host)
 ///     --launch <application>                open an app on the host and mirror its first window
 ///     --quit <application>                  quit a running app on the host
+///     --desktop [--display <index>]         show the host's whole desktop (main display, or the n-th)
+///         [--test-display WxH]              ...of a virtual display made for the test (so dynamic
+///                                           resolution leaves this Mac's own screens alone)
+///         [--desktop-size WxH]              then resize the desktop window to that content size
+///         [--shortcut-test]                 post ⌘Tab and ⌘Space and print what the desktop forwards
+///     -DesktopFitsWindow NO                 turn dynamic resolution off for this launch
 ///     --connect host[:port] --code CODE     connect to another Mac
 ///     --discovery-test                      print the hosts Bonjour finds
 ///     --permission-guide                    show Settings and the permission guide card
@@ -20,6 +26,8 @@ import AppKit
 /// ANYREMOTE_HOME to use a separate settings directory.
 @MainActor
 enum DevelopmentLaunch {
+    private static var testDisplay: VirtualDisplay?
+
     /// Returns true when the arguments asked for a development launch.
     static func run(arguments: [String], app: AppDelegate) -> Bool {
         func value(_ flag: String) -> String? {
@@ -63,9 +71,97 @@ enum DevelopmentLaunch {
         let connectAddress = value("--connect")
         let launch = value("--launch")
         let quit = value("--quit")
+        let desktop = arguments.contains("--desktop")
+        var testDisplayID: UInt32?
+        if let size = value("--test-display").flatMap(parseSize),
+           let display = VirtualDisplay(pointSize: size, maximumPointSize: size, name: "AnyRemote Test", productID: 0xFFFF) {
+            display.makeExtended()
+            testDisplay = display
+            testDisplayID = display.displayID
+            print("dev: test display \(display.displayID) \(display.bounds)")
+        }
+        // Several sizes, comma-separated; "off" gives the display its own size back.
+        let desktopSizes = value("--desktop-size")?.split(separator: ",").map { $0 == "off" ? nil : parseSize(String($0)) } ?? []
         guard synthetic != nil || recorder != nil || application != nil || connectAddress != nil || launch != nil
-                || quit != nil
+                || quit != nil || desktop
         else { return false }
+        if desktop {
+            app.developmentDesktopHandler = { desktop in
+                print("dev: desktop opened \(desktop.stream.title) \(desktop.stream.frame)")
+                // Keep a synthetic workload unoccluded (occluded windows are throttled).
+                if synthetic != nil, let window = desktop.window, let screen = window.screen {
+                    let visible = screen.visibleFrame
+                    window.setContentSize(NSSize(width: 800, height: 450))
+                    window.setFrameTopLeftPoint(NSPoint(x: visible.maxX - window.frame.width, y: visible.minY + window.frame.height))
+                }
+                if arguments.contains("--shortcut-test") {
+                    desktop.inputTap = { event in
+                        if case let .key(keyCode, down, _, modifiers) = event {
+                            print("dev: forwarded key \(keyCode) down=\(down) flags=\(String(modifiers, radix: 16))")
+                        }
+                    }
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(2))
+                        NSApp.activate()
+                        desktop.window?.makeKeyAndOrderFront(nil)
+                        try? await Task.sleep(for: .milliseconds(500))
+                        for _ in 0..<20 where !NSApp.isActive {
+                            NSRunningApplication.current.activate(options: [])
+                            try? await Task.sleep(for: .milliseconds(250))
+                        }
+                        desktop.window?.makeKeyAndOrderFront(nil)
+                        try? await Task.sleep(for: .milliseconds(300))
+                        print("dev: key window is desktop: \(NSApp.keyWindow === desktop.window), active \(NSApp.isActive)")
+                        // Without the capture these would act on this Mac.
+                        guard NSApp.keyWindow === desktop.window, NSApp.isActive else { return }
+                        for keyCode: CGKeyCode in [48, 49] { // Tab, Space
+                            let source = CGEventSource(stateID: .hidSystemState)
+                            for down in [true, false] {
+                                let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: down)
+                                event?.flags = .maskCommand
+                                event?.post(tap: .cghidEventTap)
+                                try? await Task.sleep(for: .milliseconds(80))
+                            }
+                            try? await Task.sleep(for: .milliseconds(400))
+                        }
+                        let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+                        print("dev: frontmost after shortcuts: \(front)")
+                    }
+                    return
+                }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(3))
+                    let content = desktop.window?.contentLayoutRect.size ?? .zero
+                    print("dev: desktop window content \(Int(content.width))x\(Int(content.height)) "
+                          + "drawable \(desktop.surface.frameLayer.drawableSize)")
+                    // Pointer mapping: a move to a display point must land there on the host.
+                    let target = CGPoint(x: 321, y: 234)
+                    desktop.sendInput(.mouseMove(point: target, pressedButtons: 0, modifiers: 0))
+                    try? await Task.sleep(for: .milliseconds(300))
+                    let location = CGEvent(source: nil)?.location ?? .zero
+                    let origin = desktop.stream.frame.origin
+                    print("dev: desktop input moved to \(location) (wanted \(CGPoint(x: origin.x + target.x, y: origin.y + target.y)))")
+                    for desktopSize in desktopSizes {
+                    guard let window = desktop.window else { return }
+                    if let desktopSize {
+                        window.setContentSize(desktopSize)
+                        print("dev: desktop window resized to \(desktopSize)")
+                    } else {
+                        desktop.connection.client.setDesktopSize(streamID: desktop.streamID, size: nil)
+                        print("dev: desktop size off")
+                    }
+                    try? await Task.sleep(for: .seconds(3))
+                    print("dev: desktop now \(desktop.stream.frame) drawable \(desktop.surface.frameLayer.drawableSize) window \(window.windowNumber)")
+                    var ids = [CGDirectDisplayID](repeating: 0, count: 16), count: UInt32 = 0
+                    CGGetOnlineDisplayList(16, &ids, &count)
+                    print("dev: displays now " + ids.prefix(Int(count)).map { id in
+                        let mode = CGDisplayCopyDisplayMode(id)
+                        return "\(id) \(CGDisplayBounds(id)) px \(mode?.pixelWidth ?? 0)x\(mode?.pixelHeight ?? 0) mirrors \(CGDisplayMirrorsDisplay(id))"
+                    }.joined(separator: ", "))
+                    }
+                }
+            }
+        }
 
         let model = app.viewerModel
         var syntheticWindowID = recorder.map { UInt32($0.windowNumber) }
@@ -126,6 +222,13 @@ enum DevelopmentLaunch {
                 print("dev: connect failed: \(model.lastError ?? "unknown")"); return
             }
             print("dev: connected to \(connection.hostName)")
+            if desktop {
+                let displays = connection.displays
+                print("dev: displays " + displays.map { "\($0.displayID) \($0.name ?? "?") \($0.frame)" }.joined(separator: ", "))
+                let index = value("--display").flatMap(Int.init) ?? 0
+                connection.openDesktop(displayID: testDisplayID ?? (displays.indices.contains(index) ? displays[index].displayID : nil))
+                return
+            }
             if let quit {
                 await connection.loadApplications()
                 guard let match = connection.applications?.applications.first(where: {

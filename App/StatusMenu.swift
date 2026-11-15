@@ -65,7 +65,8 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         open.keyEquivalent = "0"
         open.keyEquivalentModifierMask = [.control, .option, .command]
         menu.addItem(open)
-        let mirrors = viewer().allMirrors.sorted { ($0.window?.title ?? "") < ($1.window?.title ?? "") }
+        let mirrors = ((viewer().allDesktops as [NSWindowController]) + viewer().allMirrors)
+            .sorted { ($0.window?.title ?? "") < ($1.window?.title ?? "") }
         for mirror in mirrors {
             let title = mirror.window?.title ?? String(localized: "Window")
             let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -110,11 +111,11 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     @objc private func enableSharing() { settings.setEnabled(true); updateIcon() }
 
     @objc private func closeMirror(_ sender: NSMenuItem) {
-        (sender.representedObject as? MirrorWindowController)?.close()
+        (sender.representedObject as? NSWindowController)?.close()
     }
 
     @objc private func focusMirror(_ sender: NSMenuItem) {
-        guard let mirror = sender.representedObject as? MirrorWindowController else { return }
+        guard let mirror = sender.representedObject as? NSWindowController else { return }
         NSApp.activate()
         mirror.window?.makeKeyAndOrderFront(nil)
     }

@@ -66,11 +66,16 @@ final class HostConnection {
     private(set) var missingPermissions: [String] = []
     @ObservationIgnored let client: RemoteHostClient
     @ObservationIgnored private var mirrors: [UInt16: MirrorWindowController] = [:]
+    /// Full desktops (whole host displays) shown here, by stream.
+    @ObservationIgnored private var desktops: [UInt16: DesktopWindowController] = [:]
+    /// Host displays currently shown as full desktops.
+    private(set) var openDisplayIDs: Set<UInt32> = []
     @ObservationIgnored private var children: [UInt16: ChildWindowController] = [:]
     @ObservationIgnored private var pendingOpen: Set<UInt32> = []
     @ObservationIgnored private var cursorImages: [UInt32: NSCursor] = [:]
     @ObservationIgnored private(set) var currentCursor: NSCursor?
     @ObservationIgnored var onOpenedMirror: ((MirrorWindowController) -> Void)?
+    @ObservationIgnored var onOpenedDesktop: ((DesktopWindowController) -> Void)?
     @ObservationIgnored var onClosed: (() -> Void)?
     @ObservationIgnored private var pasteboard: PasteboardBridge?
     @ObservationIgnored private var sharingObserver: NSObjectProtocol?
@@ -83,6 +88,31 @@ final class HostConnection {
 
     var hostName: String { welcome?.hostName ?? target.name }
     var openMirrors: [MirrorWindowController] { Array(mirrors.values) }
+    var openDesktops: [DesktopWindowController] { Array(desktops.values) }
+
+    /// The host's displays, main display first.
+    var displays: [DisplaySummary] {
+        let displays = listing?.displays ?? welcome?.displays ?? []
+        return displays.sorted { ($0.isMain ?? false) && !($1.isMain ?? false) }
+    }
+
+    /// Shows a whole host display here (the main one by default). One that
+    /// is already open is brought forward.
+    func openDesktop(displayID: UInt32? = nil) {
+        guard let displayID = displayID ?? displays.first?.displayID else { return }
+        if let existing = desktops.values.first(where: { $0.displayID == displayID }) {
+            NSApp.activate()
+            existing.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        client.openDisplay(displayID)
+    }
+
+    /// The host display a mirrored window is on.
+    func displayID(containing frame: CGRect) -> UInt32? {
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        return (displays.first { $0.frame.contains(center) } ?? displays.first { $0.frame.intersects(frame) })?.displayID
+    }
 
     /// Closes the mirror only; the window stays open on the host.
     func closeMirror(windowID: UInt32) {
@@ -133,6 +163,7 @@ final class HostConnection {
     func disconnect() {
         stopClipboardSharing()
         for mirror in mirrors.values { mirror.close() }
+        for desktop in desktops.values { desktop.close() }
         client.disconnect()
         state = .disconnected
     }
@@ -174,6 +205,7 @@ final class HostConnection {
             if listing.missingPermissions != missingPermissions {
                 missingPermissions = listing.missingPermissions
                 for mirror in mirrors.values { mirror.updateNotice() }
+                for desktop in desktops.values { desktop.updateNotice() }
             }
         } catch {
             log.error("listing failed: \(error.localizedDescription, privacy: .public)")
@@ -189,7 +221,6 @@ final class HostConnection {
         client.openWindow(window.windowID)
     }
 
-    /// Host address usable outside AnyRemote (e.g. `vnc://`).
     /// Why input won't reach the host, if it can't: shown on mirrors and in the picker.
     var inputBlockedReason: String? {
         if missingPermissions.contains("accessibility") || missingPermissions.contains("post-events") {
@@ -202,17 +233,6 @@ final class HostConnection {
         missingPermissions.contains("screen-recording") ? String(localized: "\(hostName) hasn’t given AnyRemote Screen Recording permission, so window contents can’t be shown.") : nil
     }
 
-    var hostAddressForURL: String? {
-        if case let .hostPort(host, _) = target.endpoint {
-            let text = "\(host)"
-            return text.contains(":") ? "[\(text)]" : text
-        }
-        if case let .service(name, _, _, _) = target.endpoint {
-            return name.replacingOccurrences(of: " ", with: "-") + ".local"
-        }
-        return nil
-    }
-
     // MARK: Events
 
     private func handle(_ event: RemoteHostClient.Event) {
@@ -221,10 +241,14 @@ final class HostConnection {
             break
         case .disconnected(let reason):
             stopClipboardSharing()
-            let hadMirrors = !mirrors.isEmpty
+            let hadMirrors = !mirrors.isEmpty || !desktops.isEmpty
             for mirror in mirrors.values { mirror.hostDisconnected(reason: reason) }
             mirrors.removeAll()
             openWindowIDs.removeAll()
+            let closing = desktops.values
+            desktops.removeAll()
+            openDisplayIDs.removeAll()
+            for desktop in closing { desktop.close() }
             if hadMirrors, state != .disconnected {
                 let alert = NSAlert()
                 alert.messageText = String(localized: "Disconnected from “\(hostName)”")
@@ -244,6 +268,8 @@ final class HostConnection {
                 for child in children.values where child.parentStreamID == streamID { child.reposition() }
             } else if let child = children[streamID] {
                 child.hostFrameChanged(frame)
+            } else if let desktop = desktops[streamID] {
+                desktop.hostFrameChanged(frame, title: title)
             }
         case let .streamEnded(streamID, reason):
             if let mirror = mirrors.removeValue(forKey: streamID) {
@@ -253,6 +279,10 @@ final class HostConnection {
                 log.notice("open failed: \(reason, privacy: .public)")
             }
             if let child = children.removeValue(forKey: streamID) { child.close() }
+            if let desktop = desktops.removeValue(forKey: streamID) {
+                openDisplayIDs.remove(desktop.displayID)
+                desktop.hostEnded(reason: reason)
+            }
         case let .resizeApplied(streamID, size):
             mirrors[streamID]?.hostResizeApplied(size)
         case .cursor(let image):
@@ -261,6 +291,7 @@ final class HostConnection {
             mirrors[streamID]?.menuBarArrived(applicationName: applicationName, menus: menus)
         case let .hostReport(streamID, report):
             mirrors[streamID]?.hostReport = report
+            desktops[streamID]?.hostReport = report
         case let .windowControls(streamID, controls):
             mirrors[streamID]?.controls = controls
         case let .windowStateRequest(streamID, request):
@@ -298,6 +329,24 @@ final class HostConnection {
             mirror.showWindow(nil)
             mirror.start()
             onOpenedMirror?(mirror)
+        case .display:
+            if let existing = desktops[description.streamID] {
+                existing.window?.makeKeyAndOrderFront(nil)
+                return
+            }
+            let desktop = DesktopWindowController(connection: self, description: description)
+            desktop.onClose = { [weak self] in
+                guard let self else { return }
+                self.desktops[description.streamID] = nil
+                self.openDisplayIDs.remove(description.windowID)
+                self.client.detach(streamID: description.streamID)
+            }
+            desktops[description.streamID] = desktop
+            openDisplayIDs.insert(description.windowID)
+            NSApp.activate()
+            desktop.showWindow(nil)
+            desktop.start()
+            onOpenedDesktop?(desktop)
         case .child:
             guard let parentID = description.parentStreamID, let parent = mirrors[parentID] else {
                 client.send(.closeStream(streamID: description.streamID))
@@ -320,6 +369,7 @@ final class HostConnection {
             currentCursor = cursor
         }
         for mirror in mirrors.values { mirror.cursorChanged() }
+        for desktop in desktops.values { desktop.cursorChanged() }
         for child in children.values { child.cursorChanged() }
     }
 }

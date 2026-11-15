@@ -11,7 +11,7 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// and a viewer (this Mac controls others).
 @main
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let hostService = HostService()
     private lazy var viewer = ViewerModel(hostService: hostService)
     private lazy var hostSettings = HostSettingsModel(service: hostService)
@@ -23,9 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: StatusMenuController?
     private var dockProxies: DockProxies?
     private var pickerHotKey: GlobalHotKey?
+    private var shortcutCapture: SystemShortcutCapture?
     private var isDevelopmentLaunch = false
     /// Development launches observe mirrors as they open.
     var developmentMirrorHandler: ((MirrorWindowController) -> Void)?
+    var developmentDesktopHandler: ((DesktopWindowController) -> Void)?
 
     static func main() {
         setvbuf(stdout, nil, _IOLBF, 0)
@@ -52,11 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hostSettings.onStatusChange = { [weak self] _ in self?.statusMenu?.updateIcon() }
         pickerHotKey = GlobalHotKey.pickerShortcut { [weak self] in self?.showHosts() }
         dockProxies = DockProxies(viewer: { [unowned self] in viewer })
-        keyForwarder.install(target: { NSApp.keyWindow?.windowController as? MirrorWindowController })
+        keyForwarder.install(target: { NSApp.keyWindow?.windowController as? any RemoteKeyTarget })
         viewer.onOpenedMirror = { [weak self] mirror in
             mirror.onMenuBarChange = { [weak self] mirror in self?.updateRemoteMenus(for: mirror) }
             self?.developmentMirrorHandler?(mirror)
         }
+        viewer.onOpenedDesktop = { [weak self] desktop in self?.developmentDesktopHandler?(desktop) }
+        shortcutCapture = SystemShortcutCapture { NSApp.keyWindow?.windowController is DesktopWindowController }
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil,
                                                queue: .main) { [weak self] note in
             let window = note.object as? NSWindow
@@ -86,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
+        shortcutCapture?.release()
         dockProxies?.quitAll()
         hostService.stop()
     }
@@ -143,11 +148,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.keyWindow?.windowController as? MirrorWindowController
     }
 
-    @objc private func toggleStatistics(_ sender: Any?) { keyMirror?.toggleStatistics() }
-    @objc private func closeMirror(_ sender: Any?) { keyMirror?.close() }
+    private var keyDesktop: DesktopWindowController? {
+        NSApp.keyWindow?.windowController as? DesktopWindowController
+    }
 
+    @objc private func toggleStatistics(_ sender: Any?) {
+        keyMirror?.toggleStatistics()
+        keyDesktop?.toggleStatistics()
+    }
+
+    @objc private func closeMirror(_ sender: Any?) {
+        keyMirror?.close()
+        keyDesktop?.close()
+    }
+
+    /// The desktop of the display the key mirror's window is on, or of the
+    /// Mac selected in the picker.
     @objc private func openFullDesktop(_ sender: Any?) {
-        if let mirror = keyMirror { FullDesktop.open(mirror.connection) }
+        if let mirror = keyMirror {
+            mirror.connection.openDesktop(displayID: mirror.connection.displayID(containing: mirror.stream.frame))
+        } else if let connection = viewer.selectedConnection {
+            connection.openDesktop()
+        }
+    }
+
+    @objc private func toggleFitDesktop(_ sender: Any?) { DesktopPreferences.fitsWindow.toggle() }
+    @objc private func toggleCaptureShortcuts(_ sender: Any?) { DesktopPreferences.capturesSystemShortcuts.toggle() }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(toggleFitDesktop(_:)):
+            menuItem.state = DesktopPreferences.fitsWindow ? .on : .off
+            return true
+        case #selector(toggleCaptureShortcuts(_:)):
+            menuItem.state = DesktopPreferences.capturesSystemShortcuts ? .on : .off
+            return shortcutCapture?.isAvailable ?? false
+        case #selector(openFullDesktop(_:)):
+            return keyMirror != nil || viewer.selectedConnection?.state == .connected
+        case #selector(toggleStatistics(_:)), #selector(closeMirror(_:)):
+            return keyMirror != nil || keyDesktop != nil
+        default:
+            return true
+        }
     }
 
     private func makeMainMenu() -> NSMenu {
@@ -192,6 +234,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(String(localized: "Open Remote Window…"), #selector(showHosts), "0")
         add(String(localized: "Show Statistics"), #selector(toggleStatistics(_:)), "i")
         add(String(localized: "Open Full Desktop"), #selector(openFullDesktop(_:)), "d")
+        add(String(localized: "Fit Desktop to Window"), #selector(toggleFitDesktop(_:)), "r")
+        add(String(localized: "Send System Shortcuts to Desktop"), #selector(toggleCaptureShortcuts(_:)), "k")
         remoteMenu.addItem(.separator())
         add(String(localized: "Close on This Mac"), #selector(closeMirror(_:)), "w")
         remoteItem.submenu = remoteMenu

@@ -18,6 +18,12 @@ private final class OnceFlag: @unchecked Sendable {
     }
 }
 
+/// Matches `AreaParameters` in the shader (float2 + int, 16-byte stride).
+private struct AreaParameters {
+    var footprint: SIMD2<Float>
+    var taps: Int32
+}
+
 private struct RetainedTextures: @unchecked Sendable {
     let textures: [CVMetalTexture]
 }
@@ -29,6 +35,8 @@ final class NV24MetalContext: @unchecked Sendable {
     let commandQueue: MTLCommandQueue
     let pipeline: MTLRenderPipelineState
     let alphaPipeline: MTLRenderPipelineState
+    /// 4:4:4 with an area (box) filter, for pictures drawn smaller than their pixels.
+    let areaPipeline: MTLRenderPipelineState
     let textureCache: CVMetalTextureCache
 
     private init?() {
@@ -37,7 +45,8 @@ final class NV24MetalContext: @unchecked Sendable {
               let library = try? device.makeLibrary(source: Self.shaderSource, options: nil),
               let vertex = library.makeFunction(name: "fullscreenVertex"),
               let fragment = library.makeFunction(name: "nv24Fragment"),
-              let alphaFragment = library.makeFunction(name: "bgraFragment") else { return nil }
+              let alphaFragment = library.makeFunction(name: "bgraFragment"),
+              let areaFragment = library.makeFunction(name: "nv24AreaFragment") else { return nil }
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
@@ -46,8 +55,13 @@ final class NV24MetalContext: @unchecked Sendable {
         alphaDescriptor.vertexFunction = vertex
         alphaDescriptor.fragmentFunction = alphaFragment
         alphaDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        let areaDescriptor = MTLRenderPipelineDescriptor()
+        areaDescriptor.vertexFunction = vertex
+        areaDescriptor.fragmentFunction = areaFragment
+        areaDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         var cache: CVMetalTextureCache?
         guard let pipeline = try? device.makeRenderPipelineState(descriptor: descriptor),
+              let areaPipeline = try? device.makeRenderPipelineState(descriptor: areaDescriptor),
               let alphaPipeline = try? device.makeRenderPipelineState(descriptor: alphaDescriptor),
               CVMetalTextureCacheCreate(nil, nil, device, nil, &cache) == kCVReturnSuccess,
               let cache else { return nil }
@@ -55,6 +69,7 @@ final class NV24MetalContext: @unchecked Sendable {
         self.commandQueue = commandQueue
         self.pipeline = pipeline
         self.alphaPipeline = alphaPipeline
+        self.areaPipeline = areaPipeline
         self.textureCache = cache
     }
 
@@ -82,6 +97,43 @@ final class NV24MetalContext: @unchecked Sendable {
         constexpr sampler textureSampler(address::clamp_to_edge, filter::linear);
         const float y = luma.sample(textureSampler, input.textureCoordinate).r;
         const float2 uv = chroma.sample(textureSampler, input.textureCoordinate).rg - 0.5;
+        const float3 rgb = float3(
+            y + 1.5748 * uv.y,
+            y - 0.187324 * uv.x - 0.468124 * uv.y,
+            y + 1.8556 * uv.x
+        );
+        return float4(rgb, 1.0);
+    }
+
+    // Area-averaged 4:4:4: `taps`×`taps` bilinear samples spread over the
+    // source footprint of one output pixel. Plain bilinear minification
+    // skips texels once the picture is drawn below half size, so text
+    // shimmers and thin lines vanish; averaging the footprint keeps them.
+    struct AreaParameters {
+        float2 footprint;
+        int taps;
+    };
+
+    fragment float4 nv24AreaFragment(
+        VertexOutput input [[stage_in]],
+        texture2d<float> luma [[texture(0)]],
+        texture2d<float> chroma [[texture(1)]],
+        constant AreaParameters &parameters [[buffer(0)]]) {
+        constexpr sampler textureSampler(address::clamp_to_edge, filter::linear);
+        float y = 0;
+        float2 uv = 0;
+        const int taps = parameters.taps;
+        for (int row = 0; row < taps; row++) {
+            for (int column = 0; column < taps; column++) {
+                const float2 offset = (float2(column, row) + 0.5) / float(taps) - 0.5;
+                const float2 coordinate = input.textureCoordinate + offset * parameters.footprint;
+                y += luma.sample(textureSampler, coordinate).r;
+                uv += chroma.sample(textureSampler, coordinate).rg;
+            }
+        }
+        const float count = float(taps * taps);
+        y /= count;
+        uv = uv / count - 0.5;
         const float3 rgb = float3(
             y + 1.5748 * uv.y,
             y - 0.187324 * uv.x - 0.468124 * uv.y,
@@ -120,6 +172,16 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
     private var inFlight = false
     private var lastGeometry: (Int, Int, Int) = (0, 0, 0)
     private var lastFrame: DecodedFrame?
+    private var targetSize: CGSize?
+
+    /// When set, frames are scaled here to this drawable size (pixels),
+    /// aspect-fitted and centered on black, with an area filter, instead of
+    /// being drawn at their own size and scaled by the compositor.
+    /// Thread-safe.
+    public var targetPixelSize: CGSize? {
+        get { lock.lock(); defer { lock.unlock() }; return targetSize }
+        set { lock.lock(); targetSize = newValue; lock.unlock() }
+    }
 
     public override init() {
         super.init()
@@ -195,7 +257,21 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         if frame.hasAlpha == isOpaque {
             isOpaque = !frame.hasAlpha
         }
-        if drawableSize.width != CGFloat(width) || drawableSize.height != CGFloat(height) {
+        // Scaled here (desktops): the drawable takes the view's pixel size.
+        var viewport: MTLViewport?
+        var area: (footprint: SIMD2<Float>, taps: Int32)?
+        if !frame.hasAlpha, let target = targetPixelSize, target.width >= 2, target.height >= 2 {
+            let target = CGSize(width: target.width.rounded(), height: target.height.rounded())
+            if drawableSize != target { drawableSize = target }
+            let factor = min(target.width / CGFloat(width), target.height / CGFloat(height))
+            let size = CGSize(width: (CGFloat(width) * factor).rounded(), height: (CGFloat(height) * factor).rounded())
+            viewport = MTLViewport(originX: Double(((target.width - size.width) / 2).rounded()),
+                                   originY: Double(((target.height - size.height) / 2).rounded()),
+                                   width: Double(size.width), height: Double(size.height), znear: 0, zfar: 1)
+            // Source texels per output pixel, in texture coordinates.
+            let taps = Int32(min(6, max(1, (1 / factor).rounded(.up))))
+            area = (SIMD2(Float(1 / size.width), Float(1 / size.height)), taps)
+        } else if drawableSize.width != CGFloat(width) || drawableSize.height != CGFloat(height) {
             drawableSize = CGSize(width: width, height: height)
         }
         var textures: [CVMetalTexture] = []
@@ -217,10 +293,19 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
-        pass.colorAttachments[0].loadAction = .dontCare
+        let letterboxed = viewport.map { $0.width < Double(drawable.texture.width) || $0.height < Double(drawable.texture.height) } ?? false
+        pass.colorAttachments[0].loadAction = letterboxed ? .clear : .dontCare
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return finish() }
-        encoder.setRenderPipelineState(frame.hasAlpha ? context.alphaPipeline : context.pipeline)
+        if let viewport { encoder.setViewport(viewport) }
+        if let area {
+            encoder.setRenderPipelineState(context.areaPipeline)
+            var parameters = AreaParameters(footprint: area.footprint, taps: area.taps)
+            encoder.setFragmentBytes(&parameters, length: MemoryLayout<AreaParameters>.stride, index: 0)
+        } else {
+            encoder.setRenderPipelineState(frame.hasAlpha ? context.alphaPipeline : context.pipeline)
+        }
         for (index, texture) in metalTextures.enumerated() {
             encoder.setFragmentTexture(texture, index: index)
         }

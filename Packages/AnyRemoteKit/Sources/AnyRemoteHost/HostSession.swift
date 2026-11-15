@@ -26,6 +26,14 @@ final class HostStream: @unchecked Sendable {
     var pressFrame: CGRect?
     /// When the window left the screen (closed, hidden), while it stays off.
     var offScreenSince: UInt64?
+    /// Display streams: the display's backing scale.
+    var displayScale: CGFloat = 0
+    /// Display streams: the display captured now (a virtual display standing
+    /// in for `windowID` under dynamic resolution).
+    var captureDisplayID: CGDirectDisplayID = 0
+    /// Dynamic resolution: the virtual display that replaced `windowID`.
+    var standIn: VirtualDisplay?
+    var switchingDisplay = false
 
     init(description: StreamDescription, sender: WindowStreamSender, pid: pid_t, bitRate: Int) {
         self.description = description
@@ -47,6 +55,9 @@ final class HostSession: @unchecked Sendable {
     static let minimumBitRate = 6_000_000
     static let maximumBitRate = 80_000_000
     static let initialBitRate = 40_000_000
+    /// A whole desktop has many more pixels than a window, so it gets more room.
+    static let displayInitialBitRate = 50_000_000
+    static let displayMaximumBitRate = 120_000_000
     static let maximumChildren = 12
 
     let sessionID: UInt32
@@ -129,6 +140,10 @@ final class HostSession: @unchecked Sendable {
             listWindows(requestID: requestID, thumbnailMaxPixels: thumbnailMaxPixels)
         case let .openWindow(windowID):
             openWindow(windowID)
+        case let .openDisplay(displayID):
+            openDisplay(displayID)
+        case let .desktopSize(streamID, size):
+            scheduleDesktopSize(streamID: streamID, size: size)
         case let .listApplications(requestID):
             listApplications(requestID: requestID)
         case let .launchApplication(path):
@@ -415,6 +430,180 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
+    /// Streams a whole display (full desktop).
+    private func openDisplay(_ displayID: CGDirectDisplayID) {
+        if let existing = streams.values.first(where: { $0.windowID == displayID && $0.description.role == .display }) {
+            connection.send(.streamStarted(existing.description))
+            existing.sender.requestKeyframe()
+            return
+        }
+        guard let geometry = Self.displayGeometry(displayID) else {
+            connection.send(.streamEnded(streamID: 0, reason: "The display is no longer available."))
+            return
+        }
+        let streamID = allocateStreamID()
+        let name = DispatchQueue.main.sync { MainActor.assumeIsolated { HostWindows.displayName(displayID) } } ?? "Display"
+        let description = StreamDescription(streamID: streamID, windowID: displayID, role: .display,
+                                            parentStreamID: nil, frame: geometry.frame, layer: 0,
+                                            title: name, applicationName: ComputerName.current)
+        let configuration = HEVCEncoder.Configuration(averageBitRate: Self.displayInitialBitRate)
+        // Development: a viewer on this same Mac would see its own desktop
+        // window inside itself, endlessly.
+        let sender = WindowStreamSender(
+            displayID: displayID, excludingProcessID: Self.isLoopback ? getpid() : nil,
+            exceptingWindowIDs: service?.includedOwnWindowIDs ?? [], streamID: streamID, configuration: configuration,
+            maximumDatagramSize: 1400 - DatagramEnvelope.overhead
+        ) { [weak self] datagrams in
+            self?.send(datagrams: datagrams)
+        }
+        let stream = HostStream(description: description, sender: sender, pid: 0, bitRate: configuration.averageBitRate)
+        stream.displayScale = geometry.scale
+        stream.captureDisplayID = displayID
+        streams[streamID] = stream
+        sender.onStop = { [weak self] error in
+            self?.queue.async {
+                self?.endStream(streamID, reason: error == nil ? "Capture stopped." : "The display is no longer available.")
+            }
+        }
+        log.notice("streaming display \(displayID) \(geometry.frame.debugDescription, privacy: .public) @\(geometry.scale)x")
+        connection.send(.streamStarted(description))
+        startCursorMonitor()
+        Task {
+            do {
+                try await sender.start()
+            } catch {
+                log.error("display capture start failed: \(error.localizedDescription, privacy: .public)")
+                queue.async { [self] in
+                    endStream(streamID, reason: "Capture failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    static let isLoopback = ProcessInfo.processInfo.environment["ANYREMOTE_LOOPBACK"] == "1"
+
+    /// A display's frame in global top-left points and its backing scale.
+    static func displayGeometry(_ displayID: CGDirectDisplayID) -> (frame: CGRect, scale: CGFloat)? {
+        guard CGDisplayIsOnline(displayID) != 0,
+              let mode = CGDisplayCopyDisplayMode(displayID) else { return nil }
+        let frame = CGDisplayBounds(displayID)
+        guard frame.width > 0, frame.height > 0 else { return nil }
+        let scale = max(1, CGFloat(mode.pixelWidth) / CGFloat(max(1, mode.width)))
+        return (frame, scale)
+    }
+
+    /// Follows display mode changes (resolution, scale, arrangement).
+    private func trackDisplay(_ stream: HostStream) {
+        guard !stream.switchingDisplay else { return }
+        guard let geometry = Self.displayGeometry(stream.captureDisplayID) else {
+            checkGone(stream)
+            return
+        }
+        stream.offScreenSince = nil
+        let frame = geometry.frame
+        guard frame != stream.description.frame || geometry.scale != stream.displayScale else { return }
+        if frame.size != stream.description.frame.size || geometry.scale != stream.displayScale {
+            log.notice("display \(stream.windowID) changed to \(frame.size.debugDescription, privacy: .public) @\(geometry.scale)x")
+            stream.sender.displayChanged(pointSize: frame.size, scale: geometry.scale)
+        }
+        stream.displayScale = geometry.scale
+        stream.description.frame = frame
+        connection.send(.streamMoved(streamID: stream.streamID, frame: frame, title: stream.description.title))
+    }
+
+    // MARK: Dynamic resolution
+
+    static let minimumDesktopSize = CGSize(width: 640, height: 400)
+    /// 7680×4800 pixels at 2x; beyond that the encoder can't keep up anyway.
+    static let maximumDesktopSize = CGSize(width: 3840, height: 2400)
+    private var pendingDesktopSizes: [UInt16: CGSize?] = [:]
+
+    private func scheduleDesktopSize(streamID: UInt16, size: CGSize?) {
+        let scheduled = pendingDesktopSizes[streamID] != nil
+        pendingDesktopSizes[streamID] = .some(size)
+        guard !scheduled else { return }
+        queue.async { [self] in
+            guard let size = pendingDesktopSizes.removeValue(forKey: streamID) else { return }
+            applyDesktopSize(streamID: streamID, size: size)
+        }
+    }
+
+    /// Shows the desktop at the viewer's window size: a HiDPI virtual display
+    /// of that size takes the display's place (the display mirrors it, and it
+    /// is the main display if the display was), and is resized as the viewer
+    /// window is. Like Screen Sharing's dynamic resolution, windows on the
+    /// host rearrange for the new size. Everything is undone when the stream
+    /// ends, the viewer turns it off, or this app quits.
+    private func applyDesktopSize(streamID: UInt16, size requested: CGSize?) {
+        guard let stream = streams[streamID], stream.description.role == .display, !stream.switchingDisplay else { return }
+        // Viewing this same Mac, the viewer's window is on the display it would
+        // resize: only displays made for testing take part.
+        if Self.isLoopback, CGDisplayVendorNumber(stream.windowID) != VirtualDisplay.vendorID { return }
+        guard let requested else {
+            guard let standIn = stream.standIn else { return }
+            stream.standIn = nil
+            switchCapture(stream, to: stream.windowID)
+            restore(display: stream.windowID, from: standIn)
+            return
+        }
+        let size = CGSize(
+            width: (min(max(requested.width, Self.minimumDesktopSize.width), Self.maximumDesktopSize.width) / 2).rounded() * 2,
+            height: (min(max(requested.height, Self.minimumDesktopSize.height), Self.maximumDesktopSize.height) / 2).rounded() * 2)
+        if let standIn = stream.standIn {
+            guard standIn.pointSize != size else { return }
+            if !standIn.resize(to: size) { log.error("dynamic resolution: resize to \(size.debugDescription, privacy: .public) failed") }
+            return
+        }
+        // Already that size (and HiDPI): nothing to replace.
+        let current = stream.description.frame.size
+        if abs(current.width - size.width) < 2, abs(current.height - size.height) < 2, stream.displayScale >= 2 { return }
+        // Another viewer's desktop already stands in for this display.
+        guard CGDisplayMirrorsDisplay(stream.windowID) == kCGNullDirectDisplay else { return }
+        guard let standIn = VirtualDisplay(pointSize: size, maximumPointSize: Self.maximumDesktopSize,
+                                           name: "AnyRemote Desktop",
+                                           productID: 0x100 + stream.windowID % 0xFF00) else { return }
+        guard standIn.replace(stream.windowID) else {
+            log.error("dynamic resolution: could not replace display \(stream.windowID)")
+            return
+        }
+        stream.standIn = standIn
+        switchCapture(stream, to: standIn.displayID)
+    }
+
+    private func switchCapture(_ stream: HostStream, to displayID: CGDirectDisplayID) {
+        stream.switchingDisplay = true
+        stream.captureDisplayID = displayID
+        let sender = stream.sender
+        let streamID = stream.streamID
+        Task {
+            do {
+                try await sender.switchDisplay(to: displayID)
+            } catch {
+                log.error("display switch failed: \(error.localizedDescription, privacy: .public)")
+            }
+            queue.async { [self] in
+                guard let stream = streams[streamID] else { return }
+                stream.switchingDisplay = false
+                stream.displayScale = 0 // re-read: the stand-in is always 2x
+                trackDisplay(stream)
+            }
+        }
+    }
+
+    private func restore(display: CGDirectDisplayID, from standIn: VirtualDisplay) {
+        standIn.release(source: display)
+        // Keep the stand-in alive until the capture has left it.
+        queue.asyncAfter(deadline: .now() + 1) { withExtendedLifetime(standIn) {} }
+    }
+
+    private func startCursorMonitor() {
+        guard cursor == nil else { return }
+        let connection = connection
+        let monitor = CursorMonitor { image in connection.send(.cursor(image)) }
+        monitor.start()
+        cursor = monitor
+    }
+
     private func allocateStreamID() -> UInt16 {
         repeat {
             nextStreamID = nextStreamID == UInt16.max ? 1 : nextStreamID + 1
@@ -449,12 +638,7 @@ final class HostSession: @unchecked Sendable {
         if role == .window { prepareForStreaming(stream) }
         connection.send(.streamStarted(stream.description))
         if role == .window { sendControls(stream) }
-        if cursor == nil {
-            let connection = connection
-            let monitor = CursorMonitor { image in connection.send(.cursor(image)) }
-            monitor.start()
-            cursor = monitor
-        }
+        startCursorMonitor()
         Task {
             do {
                 try await sender.start()
@@ -486,10 +670,15 @@ final class HostSession: @unchecked Sendable {
             streams[parent]?.children.removeValue(forKey: stream.windowID)
         }
         if let origin = stream.originalOrigin { try? stream.axWindow?.setPosition(origin) }
+        if let standIn = stream.standIn {
+            stream.standIn = nil
+            restore(display: stream.windowID, from: standIn)
+        }
         let sender = stream.sender
         Task { await sender.stop() }
         if notify { connection.send(.streamEnded(streamID: streamID, reason: reason)) }
-        if !streams.values.contains(where: { $0.description.role == .window }) {
+        if !streams.values.contains(where: { $0.description.role != .child }) {
+            if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             cursor?.stop()
             cursor = nil
             service?.streamsDidEnd(session: self)
@@ -498,7 +687,11 @@ final class HostSession: @unchecked Sendable {
 
     private func adaptBitRate(streamID: UInt16, received: UInt32, dropped: UInt32) {
         guard let stream = streams[streamID] else { return }
-        let ceiling = stream.description.role == .window ? Self.maximumBitRate : 20_000_000
+        let ceiling = switch stream.description.role {
+        case .window: Self.maximumBitRate
+        case .display: Self.displayMaximumBitRate
+        case .child: 20_000_000
+        }
         var bitRate = stream.bitRate
         if dropped > 0 {
             bitRate = max(Self.minimumBitRate, bitRate * 3 / 4)
@@ -531,6 +724,7 @@ final class HostSession: @unchecked Sendable {
     // MARK: Tracking (moves, titles, child windows)
 
     private func track() {
+        for stream in streams.values where stream.description.role == .display { trackDisplay(stream) }
         let mains = streams.values.filter { $0.description.role == .window }
         if let launch = pendingLaunch, HostClock.nowNanos() > launch.deadline { pendingLaunch = nil }
         guard !mains.isEmpty else {
@@ -572,6 +766,11 @@ final class HostSession: @unchecked Sendable {
         }
         guard now - since >= Self.offScreenGrace else { return }
         if stream.axWindow?.isMinimized == true { return }
+        if stream.description.role == .display {
+            log.notice("display \(stream.windowID) went away; ending its stream")
+            endStream(stream.streamID, reason: "The display is no longer available.")
+            return
+        }
         log.notice("window \(stream.windowID) left the screen; ending its stream")
         endStream(stream.streamID, reason: "The window was closed.")
     }
@@ -736,7 +935,14 @@ final class HostSession: @unchecked Sendable {
     // MARK: Input
 
     private func inject(_ event: InputEvent, streamID: UInt16) {
-        guard let stream = streams[streamID], stream.description.role == .window else { return }
+        guard let stream = streams[streamID], stream.description.role != .child else { return }
+        // The whole desktop: points are relative to the display, nothing to
+        // focus or keep in place, and windows it opens stay on it.
+        if stream.description.role == .display {
+            if stream.offScreenSince != nil, case .mouseDown = event { return }
+            injector.post(event, windowOrigin: stream.description.frame.origin)
+            return
+        }
         // The window is closing or closed: don't let the viewer's pointer and
         // keys reach whatever is now at its place. A release still goes
         // through, so no button stays held.

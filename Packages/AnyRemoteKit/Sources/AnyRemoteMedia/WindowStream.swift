@@ -5,27 +5,61 @@ import ScreenCaptureKit
 
 private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category: "Stream")
 
-/// Host side of one window stream: capture → encode → datagrams.
+/// Host side of one stream (a window, or a whole display): capture → encode → datagrams.
 public final class WindowStreamSender: @unchecked Sendable {
     public let streamID: UInt16
     public let stats: PipelineStats
-    private let capture: WindowCaptureSession
+    private var capture: (any FrameCapturing)!
     private let encoder: HEVCEncoder
 
     /// Called on the capture queue when SCK stops the stream on its own
-    /// (window closed, permission revoked).
+    /// (window closed, display gone, permission revoked).
     public var onStop: (@Sendable (Error?) -> Void)? {
         get { capture.onStop }
         set { capture.onStop = newValue }
     }
 
-    public init(
+    public convenience init(
         window: SCWindow,
         streamID: UInt16,
         configuration: HEVCEncoder.Configuration = .init(),
         maximumDatagramSize: Int = 1200,
         stats: PipelineStats = PipelineStats(),
         send: @escaping @Sendable ([Data]) -> Void
+    ) {
+        self.init(streamID: streamID, configuration: configuration, maximumDatagramSize: maximumDatagramSize,
+                  stats: stats, send: send) { encode in
+            WindowCaptureSession(window: window, frameRate: configuration.expectedFrameRate,
+                                 alpha: configuration.alpha, handler: encode)
+        }
+    }
+
+    /// A whole display.
+    public convenience init(
+        displayID: CGDirectDisplayID,
+        excludingProcessID: pid_t? = nil,
+        exceptingWindowIDs: Set<CGWindowID> = [],
+        streamID: UInt16,
+        configuration: HEVCEncoder.Configuration = .init(),
+        maximumDatagramSize: Int = 1200,
+        stats: PipelineStats = PipelineStats(),
+        send: @escaping @Sendable ([Data]) -> Void
+    ) {
+        self.init(streamID: streamID, configuration: configuration, maximumDatagramSize: maximumDatagramSize,
+                  stats: stats, send: send) { encode in
+            DisplayCaptureSession(displayID: displayID, frameRate: configuration.expectedFrameRate,
+                                  excludingProcessID: excludingProcessID,
+                                  exceptingWindowIDs: exceptingWindowIDs, handler: encode)
+        }
+    }
+
+    private init(
+        streamID: UInt16,
+        configuration: HEVCEncoder.Configuration,
+        maximumDatagramSize: Int,
+        stats: PipelineStats,
+        send: @escaping @Sendable ([Data]) -> Void,
+        makeCapture: (@escaping @Sendable (CapturedFrame) -> Void) -> any FrameCapturing
     ) {
         self.streamID = streamID
         self.stats = stats
@@ -45,10 +79,7 @@ public final class WindowStreamSender: @unchecked Sendable {
             }
         }
         self.encoder = encoder
-        self.capture = WindowCaptureSession(window: window, frameRate: configuration.expectedFrameRate,
-                                            alpha: configuration.alpha) { frame in
-            encoder.encode(frame)
-        }
+        self.capture = makeCapture { frame in encoder.encode(frame) }
     }
 
     public func start() async throws { try await capture.start() }
@@ -61,7 +92,21 @@ public final class WindowStreamSender: @unchecked Sendable {
     public func requestKeyframe() { encoder.requestKeyframe() }
 
     /// The window's current frame (global points), for captures that crop it from its display.
-    public func windowFrameChanged(_ frame: CGRect) { capture.windowFrameChanged(frame) }
+    public func windowFrameChanged(_ frame: CGRect) {
+        (capture as? WindowCaptureSession)?.windowFrameChanged(frame)
+    }
+
+    /// The display's new size (points) and scale, for display streams.
+    public func displayChanged(pointSize: CGSize, scale: CGFloat) {
+        (capture as? DisplayCaptureSession)?.displayChanged(pointSize: pointSize, scale: scale)
+    }
+
+    /// Display streams: captures another display from now on.
+    public func switchDisplay(to displayID: CGDirectDisplayID) async throws {
+        guard let capture = capture as? DisplayCaptureSession else { return }
+        try await capture.switchDisplay(to: displayID)
+        encoder.requestKeyframe()
+    }
 
     public func setAverageBitRate(_ bitRate: Int) { encoder.setAverageBitRate(bitRate) }
 }

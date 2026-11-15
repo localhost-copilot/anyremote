@@ -48,8 +48,16 @@ enum HostWindows {
                 CGRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
             }
             return DisplaySummary(displayID: id, frame: flip(screen.frame), visibleFrame: flip(screen.visibleFrame),
-                                  scale: screen.backingScaleFactor, isVirtual: virtualDisplayIDs.contains(id))
+                                  scale: screen.backingScaleFactor, isVirtual: virtualDisplayIDs.contains(id),
+                                  name: screen.localizedName, isMain: CGDisplayIsMain(id) != 0)
         }
+    }
+
+    @MainActor
+    static func displayName(_ displayID: CGDirectDisplayID) -> String? {
+        NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
+        }?.localizedName
     }
 
     /// JPEG thumbnails, longest side at most `maximumPixels`.

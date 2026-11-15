@@ -9,9 +9,9 @@ menu bar becomes the viewer's native menu bar.
 
 Latency and image quality target Apple's Screen Sharing high-performance mode
 (see the sibling `iScreenSharing` client): HEVC 4:4:4, real-time hardware
-encode/decode, Metal presentation on arrival. Full-desktop sessions hand off
-to `iScreenSharing` (or Screen Sharing) via `vnc://`; Apple's protocol has no
-window-level mode, so window streaming uses our own host agent and protocol.
+encode/decode, Metal presentation on arrival. Apple's protocol has no
+window-level mode, so AnyRemote uses its own host agent and protocol for
+windows and for the full desktop alike; no second app is involved.
 
 Every AnyRemote instance is both a host (others may control this Mac) and a
 viewer. One viewer controls a host at a time; a second one may take over.
@@ -46,6 +46,21 @@ viewer. One viewer controls a host at a time; a second one may take over.
    app with no window gets a new one, as if its Dock icon was clicked.
    *All | Running* narrows the list to running apps; a running app's context
    menu has *Quit* and *Force Quit* (on the host).
+
+6. **Full Desktop** (toolbar, or ⌃⌥⌘D) shows the host's whole screen in an
+   AnyRemote window over the same encrypted connection: the main display, or
+   another one from the button's menu when the host has several. From a
+   mirror, ⌃⌥⌘D opens the display that window is on. With **Fit Desktop to
+   Window** (⌃⌥⌘R, on by default) the host's desktop takes the window's size
+   — resize it, zoom it or make it full screen and the host rearranges for
+   it, always 1:1 at 2x — and gets its own resolution back when the window
+   closes. Turned off, the window keeps the display's aspect ratio and
+   scales the picture (area-filtered when smaller). Every key goes to the
+   host (⌘M and ⌃⌘F included), except ⌃⌥⌘ shortcuts; with **Send System
+   Shortcuts to Desktop** (⌃⌥⌘K, on by default) so do ⌘Tab, ⌘Space,
+   Mission Control and screenshots while the desktop window is in front.
+   Mirrors and desktops can be open at the same time; windows opened on the
+   desktop stay there.
 
 If the host lacks Accessibility, mirrors show a banner saying input won't
 work; the picker shows the same, live, until it is granted.
@@ -150,6 +165,33 @@ cursor (CGSCurrentCursorSeed) ────────────────�
 - **Menu bar** — read through AX (`AXUIElementCopyMultipleAttributeValues`)
   as a `MenuNode` tree, rebuilt as native `NSMenu`s while the mirror is key
   and refreshed on every open; choosing an item presses it on the host.
+- **Full desktop** — `openDisplay` starts a `.display` stream: an SCK
+  display capture (`SCContentFilter(display:)`, no cursor, 444f, native pixel
+  size) through the same encoder, fragmenter and datagram channel as windows
+  (50 Mbps start, up to 120 Mbps). Input points are relative to the
+  display's top-left; nothing is focused or kept in place. The host follows
+  display mode changes (resolution, scale) every 33 ms, reconfigures the
+  capture and sends `streamMoved`; a display that goes away ends the stream.
+  The viewer clamps the pointer to the display and draws the host cursor
+  locally, as for mirrors.
+- **Dynamic resolution** — `desktopSize` asks for a desktop of the viewer
+  window's size (points). The host makes a HiDPI `CGVirtualDisplay` of that
+  size, moves it to the display's place and has the display mirror it
+  (`.forSession`, so macOS undoes it if the app quits), selects its 2x mode
+  explicitly (mirroring otherwise picks the same pixels at 1x), and switches
+  the capture over within the same stream; later sizes just change its
+  mode. `desktopSize(nil)`, closing the window or disconnecting releases
+  the mirror. Requests are coalesced and clamped to 640×400–3840×2400 pt.
+- **System shortcuts** — while a desktop window is key and the app active,
+  the viewer turns off the window server's global hot keys for its
+  connection (private `CGSSetGlobalHotKeyOperatingMode`, like remote desktop
+  clients do), so ⌘Tab and friends arrive as ordinary key events and are
+  forwarded. They come back on as soon as another window or app is in
+  front; the window server restores them if the app dies.
+- **Downscaling** — a desktop shown smaller than its pixels is drawn at the
+  window's own pixel size with an area (box) filter of up to 6×6 bilinear
+  taps per output pixel in the NV24 shader, instead of a single bilinear
+  sample scaled by the compositor, so text stays crisp without shimmer.
 - **Virtual display** — private `CGVirtualDisplay` (hiDPI), forced into an
   extended (non-mirrored) arrangement right of the main display.
 
@@ -183,7 +225,13 @@ LAN address). Milliseconds, p50 / p95.
 | Control RTT | 0.3–0.5 |
 | Mirror resize → host window applied → new frames | 20–24 |
 
-~48–58 fps at 5–15 Mbps for this workload, no loss. Across a real network add
+~48–58 fps at 5–15 Mbps for this workload, no loss.
+
+Full desktop, 1920×1080 pt @2x (3840×2160 px, 4:4:4), shown scaled in a
+1612×907 pt window, loopback with a 60 Hz workload: 51–61 fps (as many as
+the workload drew), encode 11.5–13 ms, total p50 18–22 ms at 30–55 Mbps
+(viewer and host share one media engine here; across two Macs each has its
+own). Across a real network add
 one-way network latency to *receive*.
 
 VideoToolbox findings behind the encoder settings (each measured
@@ -199,6 +247,10 @@ before/after):
 - Parallel tile sessions (Apple's four-tile layout) gave no gain on M6.
 - `displaySyncEnabled = false` on the windowed layer: decode → glass 25 → 7 ms.
   `ANYREMOTE_DISPLAY_SYNC=1` restores vsync for comparison.
+- ScreenCaptureKit's `minimumFrameInterval` at exactly the refresh period
+  (1/60) drops frames whose timestamps arrive slightly early: only ~49 of
+  ~58 drawn frames were delivered (35–50 fps). 1/90 delivers every one;
+  1/120 also lets some duplicates through on window capture.
 - Sparse updates (e.g. typing) encode on a down-clocked engine: 800×600 takes
   ~10 ms instead of ~4.5 ms.
 
@@ -212,7 +264,9 @@ App/                        AppKit + SwiftUI app
   FriendlyText              user-facing wording for wire/system errors
   AppLanguage               interface language (English default; Simplified Chinese in Settings › General)
   Resources/*.lproj         string tables; keys are the English source strings
-  HostConnection            one connection: mirrors, child windows, cursor
+  HostConnection            one connection: mirrors, desktops, child windows, cursor
+  DesktopWindowController   full desktop window: dynamic resolution, scaling, input mapping, stats
+  DesktopPreferences        desktop options; system shortcut capture
   MirrorWindowController    mirror window: geometry, input mapping, resize, stats
   ChildWindowController     menus/popovers/sheets as local child windows
   RemoteSurfaceView         Metal surface + mouse/scroll; KeyForwarder
@@ -238,7 +292,7 @@ project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated)
 xcodegen generate
 open AnyRemote.xcodeproj            # signed build with your team (Developer ID for distribution)
 
-swift test --package-path Packages/AnyRemoteKit     # 38 tests incl. VT round trips and a network session
+swift test --package-path Packages/AnyRemoteKit     # 40 tests incl. VT round trips and a network session
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 ```
@@ -283,6 +337,17 @@ the real network path against this Mac's own host service:
 - `--launch <app>` — opens the app on the host through the Apps list and
   prints when its window arrives
 - `--quit <app>` — quits a running app on the host through the Apps list
+- `--desktop [--display <n>]` — shows the host's full desktop and checks that
+  a pointer move lands on the matching display point (on this Mac it only
+  moves the pointer; with `ANYREMOTE_LOOPBACK=1` the host leaves the viewer's
+  own windows out of the picture, so it doesn't show itself endlessly).
+  `--test-display WxH` shows a virtual display made for the test instead;
+  `--desktop-size 1280x720,1600x1000,off` then resizes the window through
+  those sizes (dynamic resolution) and prints the display list after each.
+  In loopback, dynamic resolution only applies to such test displays, as
+  the viewer's window would sit on the display it resizes.
+  `--shortcut-test` posts ⌘Tab and ⌘Space and prints what was forwarded.
+  `-DesktopFitsWindow NO` turns dynamic resolution off for one launch
 - `--connect host[:port] --code CODE` — another Mac
 - `--permission-guide` — Settings with the permission card (kept up)
 - `--discovery-test`, `--exit-after <seconds>`
@@ -307,6 +372,10 @@ that app, so the mirror stops being key; that only affects this loopback.
   with a purple sharing indicator while it is captured. It is a system
   privacy indicator with no API to turn it off; it isn't in the captured
   image, so the viewer sees the normal buttons.
+- Full desktop: keys outside the window server's hot keys (Touch ID, the
+  power key) still act on this Mac. Dynamic resolution rearranges the
+  host's windows like any resolution change; when two viewers show the
+  same display, only the first one's window size applies.
 - Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
   there is no FEC.
 - The virtual display sits right of the main display; on a Mac with a real

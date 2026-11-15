@@ -73,7 +73,10 @@
 "Open AnyRemote at Login" = "登录时打开 AnyRemote";
 "Open Full Desktop" = "打开完整桌面";
 "Open Remote Window…" = "打开远程窗口…";
-"Open the whole desktop in Screen Sharing (or iScreenSharing, if installed)" = "用屏幕共享打开整个桌面（装了 iScreenSharing 时用它）";
+"Show the whole desktop of this Mac" = "显示这台 Mac 的整个桌面";
+"Show the whole desktop of this Mac; choose a display from the menu" = "显示这台 Mac 的整个桌面；可在菜单中选择显示器";
+"Display" = "显示器";
+"%@ (%@, main)" = "%1$@（%2$@，主显示器）";
 "Opened" = "已打开";
 "Optional; defaults to the Mac’s name" = "可选，默认用那台 Mac 的名字";
 "Other Macs need to run AnyRemote on the same network. If one doesn’t appear, check that AnyRemote is allowed in System Settings › Privacy & Security › Local Network, or use “Add by Address” below." = "其他 Mac 需要运行 AnyRemote 并在同一网络。没出现的话，检查 系统设置 › 隐私与安全性 › 本地网络 里是否允许了 AnyRemote，或者用下方「按地址添加」。";
@@ -178,3 +181,6 @@
 "Force Quit" = "强制退出";
 "No Running Apps" = "没有正在运行的 App";
 "No apps are running on “%@”." = "“%@”上没有正在运行的 App。";
+
+"Fit Desktop to Window" = "桌面适应窗口大小";
+"Send System Shortcuts to Desktop" = "将系统快捷键发送到桌面";

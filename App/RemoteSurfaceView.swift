@@ -159,7 +159,15 @@ final class RemoteSurfaceView: NSView {
     }
 }
 
-/// Forwards every key event to the host while a mirror window is key.
+/// A window whose keys go to the host: a mirror or a full desktop.
+@MainActor
+protocol RemoteKeyTarget: AnyObject {
+    func sendInput(_ event: InputEvent)
+    /// True when the key was handled by the local window instead.
+    func handleWindowShortcut(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool
+}
+
+/// Forwards every key event to the host while a mirror or desktop window is key.
 ///
 /// A local monitor sees keys before menus and input methods, so Command
 /// shortcuts, Tab and the host's own input methods all behave as on the host.
@@ -169,7 +177,7 @@ final class KeyForwarder {
     private var monitor: Any?
     static let localModifiers: NSEvent.ModifierFlags = [.control, .option, .command]
 
-    func install(target: @escaping @MainActor () -> MirrorWindowController?) {
+    func install(target: @escaping @MainActor () -> (any RemoteKeyTarget)?) {
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
             guard let mirror = target() else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)

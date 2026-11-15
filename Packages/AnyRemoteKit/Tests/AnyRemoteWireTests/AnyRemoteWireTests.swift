@@ -131,3 +131,24 @@ private func sampleFrame(sequence: UInt32 = 7, keyframe: Bool = true, payloadSiz
         #expect(results == [false, true, true, true, false, false, true])
     }
 }
+
+@Suite struct FullDesktopMessageTests {
+    @Test func displayStreamRoundTrips() throws {
+        let description = StreamDescription(streamID: 3, windowID: 1, role: .display, parentStreamID: nil,
+                                            frame: CGRect(x: 0, y: 0, width: 1920, height: 1080), layer: 0,
+                                            title: "Studio Display", applicationName: "Mac mini")
+        for message: ControlMessage in [.openDisplay(displayID: 1), .streamStarted(description),
+                                        .desktopSize(streamID: 3, size: CGSize(width: 1280, height: 800)),
+                                        .desktopSize(streamID: 3, size: nil)] {
+            let data = try ControlCoding.encode(message)
+            #expect(try ControlCoding.decode(ControlMessage.self, from: data) == message)
+        }
+    }
+
+    @Test func displaySummaryWithoutNameDecodes() throws {
+        // A summary without the newer fields (name, isMain) still decodes.
+        let json = #"{"displayID":1,"frame":[[0,0],[1920,1080]],"visibleFrame":[[0,25],[1920,1055]],"scale":2,"isVirtual":false}"#
+        let summary = try ControlCoding.decode(DisplaySummary.self, from: Data(json.utf8))
+        #expect(summary.name == nil && summary.isMain == nil && summary.scale == 2)
+    }
+}
