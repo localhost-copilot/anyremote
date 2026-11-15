@@ -106,7 +106,12 @@ extension NWEndpoint {
     public var numericHost: String? {
         guard case let .hostPort(host, _) = self else { return nil }
         switch host {
-        case .ipv4(let address): return "\(address)"
+        case .ipv4(let address):
+            // Network.framework IPv4 addresses can include an interface ("%en0").
+            // getaddrinfo treats that suffix as a hostname, potentially resolving
+            // it to a DNS proxy's fake IP. IPv4 needs only the address bytes;
+            // IPv6 below must retain its scope for link-local destinations.
+            return address.rawValue.map { String($0) }.joined(separator: ".")
         case .ipv6(let address):
             var text = "\(address)"
             if let interface = address.interface, !text.contains("%") { text += "%\(interface.name)" }
