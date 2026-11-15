@@ -41,6 +41,7 @@ let package = Package(
                            "AnyRemoteClient"]
         ),
         .testTarget(name: "AnyRemoteWireTests", dependencies: ["AnyRemoteWire"]),
+        .testTarget(name: "AnyRemoteWindowControlTests", dependencies: ["AnyRemoteWindowControl", "AnyRemoteWire"]),
         .testTarget(name: "AnyRemoteMediaTests", dependencies: ["AnyRemoteMedia", "AnyRemoteWire"]),
         .testTarget(name: "AnyRemoteNetworkTests",
                     dependencies: ["AnyRemoteNetwork", "AnyRemoteWire", "AnyRemoteHost", "AnyRemoteClient"]),

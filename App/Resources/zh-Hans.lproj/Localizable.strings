@@ -142,7 +142,7 @@
 "Close on This Mac" = "只在本机关闭";
 "Bring to Front" = "前置";
 "The window stays open on the other Mac." = "那台 Mac 上的窗口保持打开。";
-"↩ or double-click opens · ⌥ keeps this window" = "↩ 或双击打开 · 按住 ⌥ 保留此窗口";
+"↩ or double-click opens" = "↩ 或双击打开";
 "⌃⌥⌘W closes on this Mac only · ⌃⌥⌘0 comes back here" = "⌃⌥⌘W 只在本机关闭 · ⌃⌥⌘0 回到这里";
 "Search windows" = "搜索窗口";
 "Search apps" = "搜索 App";
@@ -152,3 +152,8 @@
 "Windows open on that Mac, or apps to open there" = "那台 Mac 上打开的窗口，或可以在那里打开的 App";
 "↩ or double-click opens the app there" = "↩ 或双击在那台 Mac 上打开 App";
 "Running" = "正在运行";
+"Close All on This Mac" = "只在本机关闭全部窗口";
+"Show Remote Apps in the Dock" = "在程序坞中显示远程 App";
+"Each app with windows open here gets its own Dock icon and ⌘Tab entry. Quitting it closes its windows on this Mac only." = "每个在本机打开了窗口的远程 App 都有自己的程序坞图标和 ⌘Tab 项。退出它只会关闭本机上的窗口。";
+"Share Clipboard" = "共享剪贴板";
+"Copy on one Mac, paste on the other: text, images and links. Files and passwords stay on their Mac." = "在一台 Mac 上拷贝，在另一台上粘贴：文本、图片和链接。文件和密码不会离开各自的 Mac。";

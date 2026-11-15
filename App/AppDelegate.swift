@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var diagnosticWindows: [NSWindow] = []
     private var statusMenu: StatusMenuController?
+    private var dockProxies: DockProxies?
     private var pickerHotKey: GlobalHotKey?
     private var isDevelopmentLaunch = false
     /// Development launches observe mirrors as they open.
@@ -49,14 +50,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                            showSettings: { [weak self] in self?.showSettings() }))
         hostSettings.onStatusChange = { [weak self] _ in self?.statusMenu?.updateIcon() }
         pickerHotKey = GlobalHotKey.pickerShortcut { [weak self] in self?.showHosts() }
+        dockProxies = DockProxies(viewer: { [unowned self] in viewer })
         keyForwarder.install(target: { NSApp.keyWindow?.windowController as? MirrorWindowController })
         viewer.onOpenedMirror = { [weak self] mirror in
             mirror.onMenuBarChange = { [weak self] mirror in self?.updateRemoteMenus(for: mirror) }
             self?.developmentMirrorHandler?(mirror)
-        }
-        // Like Spotlight: once a window is picked, the picker gets out of the way.
-        viewer.onPickedWindow = { [weak self] keepPicker in
-            if !keepPicker { self?.hostsWindow?.orderOut(nil) }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil,
                                                queue: .main) { [weak self] note in
@@ -76,8 +74,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
 
+    /// The AnyRemote Dock icon always brings the main window back; remote
+    /// apps have Dock icons of their own.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { showHosts() }
+        showHosts()
         return true
     }
 
@@ -85,6 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
+        dockProxies?.quitAll()
         hostService.stop()
     }
 

@@ -1,6 +1,7 @@
 import AnyRemoteClient
 import AnyRemoteMedia
 import AnyRemoteNetwork
+import AnyRemoteWindowControl
 import AnyRemoteWire
 import AppKit
 import Network
@@ -71,6 +72,8 @@ final class HostConnection {
     @ObservationIgnored private(set) var currentCursor: NSCursor?
     @ObservationIgnored var onOpenedMirror: ((MirrorWindowController) -> Void)?
     @ObservationIgnored var onClosed: (() -> Void)?
+    @ObservationIgnored private var pasteboard: PasteboardBridge?
+    @ObservationIgnored private var sharingObserver: NSObjectProtocol?
 
     init(target: HostTarget, code: PairingCode) {
         self.target = target
@@ -92,6 +95,12 @@ final class HostConnection {
             welcome = try await client.connect(takeOver: takeOver)
             missingPermissions = welcome?.missingPermissions ?? []
             state = .connected
+            updateClipboardSharing()
+            sharingObserver = NotificationCenter.default.addObserver(
+                forName: ClipboardSharing.changed, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateClipboardSharing() }
+            }
             await refresh()
         } catch {
             state = .failed(error.localizedDescription)
@@ -99,7 +108,30 @@ final class HostConnection {
         }
     }
 
+    /// Starts or stops sharing the clipboard with the host, per the setting.
+    private func updateClipboardSharing() {
+        let enabled = ClipboardSharing.isEnabled && state == .connected
+        guard enabled != (pasteboard != nil) else { return }
+        client.send(.pasteboardSharing(enabled: enabled))
+        pasteboard?.stop()
+        pasteboard = nil
+        guard enabled else { return }
+        let client = client
+        let bridge = PasteboardBridge { items in client.send(.pasteboard(items: items)) }
+        // What was copied here before connecting can be pasted there right away.
+        bridge.start(sendingCurrent: true)
+        pasteboard = bridge
+    }
+
+    private func stopClipboardSharing() {
+        pasteboard?.stop()
+        pasteboard = nil
+        if let sharingObserver { NotificationCenter.default.removeObserver(sharingObserver) }
+        sharingObserver = nil
+    }
+
     func disconnect() {
+        stopClipboardSharing()
         for mirror in mirrors.values { mirror.close() }
         client.disconnect()
         state = .disconnected
@@ -176,6 +208,7 @@ final class HostConnection {
         case .connected:
             break
         case .disconnected(let reason):
+            stopClipboardSharing()
             let hadMirrors = !mirrors.isEmpty
             for mirror in mirrors.values { mirror.hostDisconnected(reason: reason) }
             mirrors.removeAll()
@@ -220,6 +253,8 @@ final class HostConnection {
             mirrors[streamID]?.controls = controls
         case let .windowStateRequest(streamID, request):
             mirrors[streamID]?.applyHostStateRequest(request)
+        case let .pasteboard(items):
+            pasteboard?.apply(items)
         }
     }
 

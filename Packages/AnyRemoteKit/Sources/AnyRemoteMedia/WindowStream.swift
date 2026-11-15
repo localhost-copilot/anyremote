@@ -60,6 +60,9 @@ public final class WindowStreamSender: @unchecked Sendable {
 
     public func requestKeyframe() { encoder.requestKeyframe() }
 
+    /// The window's current frame (global points), for captures that crop it from its display.
+    public func windowFrameChanged(_ frame: CGRect) { capture.windowFrameChanged(frame) }
+
     public func setAverageBitRate(_ bitRate: Int) { encoder.setAverageBitRate(bitRate) }
 }
 

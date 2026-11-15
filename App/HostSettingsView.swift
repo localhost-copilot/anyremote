@@ -61,6 +61,19 @@ final class HostSettingsModel {
 
     private(set) var language = AppLanguage.current
 
+    private(set) var showsRemoteAppsInDock = DockProxies.isEnabled
+    private(set) var sharesClipboard = ClipboardSharing.isEnabled
+
+    func setSharesClipboard(_ value: Bool) {
+        sharesClipboard = value
+        ClipboardSharing.isEnabled = value
+    }
+
+    func setShowsRemoteAppsInDock(_ value: Bool) {
+        showsRemoteAppsInDock = value
+        DockProxies.isEnabled = value
+    }
+
     func setLanguage(_ language: AppLanguage) {
         guard language != self.language else { return }
         AppLanguage.choose(language)
@@ -113,6 +126,14 @@ struct HostSettingsView: View {
                     Text(verbatim: "简体中文").tag(AppLanguage.simplifiedChinese)
                     Text("Follow System").tag(AppLanguage.system)
                 }
+                Toggle("Share Clipboard", isOn: Binding(
+                    get: { model.sharesClipboard }, set: { model.setSharesClipboard($0) }))
+                Text("Copy on one Mac, paste on the other: text, images and links. Files and passwords stay on their Mac.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Toggle("Show Remote Apps in the Dock", isOn: Binding(
+                    get: { model.showsRemoteAppsInDock }, set: { model.setShowsRemoteAppsInDock($0) }))
+                Text("Each app with windows open here gets its own Dock icon and ⌘Tab entry. Quitting it closes its windows on this Mac only.")
+                    .font(.callout).foregroundStyle(.secondary)
                 Toggle("Open AnyRemote at Login", isOn: Binding(
                     get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
                 Text("Recommended on a Mac mini that is controlled remotely, so it’s ready after a restart.")

@@ -130,6 +130,12 @@ final class HostSession: @unchecked Sendable {
             listApplications(requestID: requestID)
         case let .launchApplication(path):
             launchApplication(path)
+        case let .pasteboardSharing(enabled):
+            setPasteboardSharing(enabled)
+        case let .pasteboard(items):
+            DispatchQueue.main.async { [self] in
+                MainActor.assumeIsolated { pasteboardBridge?.apply(items) }
+            }
         case let .closeStream(streamID):
             endStream(streamID, reason: "Closed by viewer.", notify: false)
         case let .requestKeyframe(streamID):
@@ -155,6 +161,24 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
+    /// Main-thread only.
+    nonisolated(unsafe) private var pasteboardBridge: PasteboardBridge?
+
+    private func setPasteboardSharing(_ enabled: Bool) {
+        let connection = connection
+        DispatchQueue.main.async { [self] in
+            MainActor.assumeIsolated {
+                pasteboardBridge?.stop()
+                pasteboardBridge = nil
+                guard enabled else { return }
+                // The viewer sends its clipboard when sharing starts; this side waits for a copy.
+                let bridge = PasteboardBridge { items in connection.send(.pasteboard(items: items)) }
+                bridge.start(sendingCurrent: false)
+                pasteboardBridge = bridge
+            }
+        }
+    }
+
     /// Stops every stream and restores moved windows. Idempotent.
     func end(reason: String, notifyViewer: Bool = false) {
         queue.async { [self] in
@@ -162,6 +186,7 @@ final class HostSession: @unchecked Sendable {
             ended = true
             tracker?.cancel()
             reportTimer?.cancel()
+            setPasteboardSharing(false)
             cursor?.stop()
             if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             for id in Array(streams.keys) { endStream(id, reason: reason, notify: false) }
@@ -499,6 +524,7 @@ final class HostSession: @unchecked Sendable {
             || title != stream.description.title else { return }
         let resized = frame.size != stream.description.frame.size
         stream.description.frame = frame
+        stream.sender.windowFrameChanged(frame)
         if resized, stream.description.role == .window { sendControls(stream) }
         stream.description.title = title
         connection.send(.streamMoved(streamID: stream.streamID, frame: frame, title: title))

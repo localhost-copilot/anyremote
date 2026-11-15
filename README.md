@@ -30,8 +30,9 @@ viewer. One viewer controls a host at a time; a second one may take over.
    covers other networks. Selecting an unpaired Mac asks for its code once.
 4. The picker selects and connects the last used Mac, focuses the search
    field and groups windows by app. Type to filter, arrows to select,
-   Return or double-click to open; the picker then hides (hold ⌥ to keep
-   it). An already open window is brought forward instead of opened twice.
+   Return or double-click to open; the picker stays open behind the new
+   window (the AnyRemote Dock icon or ⌃⌥⌘0 brings it forward). An already
+   open window is brought forward instead of opened twice.
 5. **Apps** (next to **Windows** above the grid) lists the host's apps
    (`/Applications`, `/System/Applications`, their Utilities, `~/Applications`
    and anything running). Opening one launches it there, or brings it
@@ -62,6 +63,23 @@ command in a mirror opens as a new mirror: a new document, a Settings
 window, or another app's window such as Finder revealing a file. Windows
 that appear on their own stay on the host and can be opened from the
 picker.
+
+Each remote app with windows open here gets its own Dock icon and ⌘Tab
+entry, like Parallels' Coherence mode: a small stand-in app (`DockProxy/`)
+generated under `~/Library/Application Support/<bundle ID>/Dock/` with the
+app's icon (badged with a display) and the name "App (Mac)". Clicking it
+brings that app's windows forward, its Dock menu lists them, and Quit closes
+them on this Mac only. Settings → General → *Show Remote Apps in the Dock*.
+
+The clipboard is shared both ways while connected (Settings → General →
+*Share Clipboard*): text, rich text, HTML, images (TIFF is sent as PNG) and
+links, up to 16 MB. Contents marked concealed or transient (password
+managers) and copied files stay on their Mac. On connecting, this Mac's
+clipboard is sent to the host.
+
+A window attached to another (a sheet) is captured by ScreenCaptureKit
+together with its parent; such a capture switches to a display capture of
+just that window, cropped to its frame.
 
 The interface is in English; Settings → General → Language switches to
 Simplified Chinese (or the system language) after a restart.

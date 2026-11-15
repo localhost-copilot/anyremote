@@ -489,7 +489,7 @@ private struct WindowPicker: View {
 
     private var footer: some View {
         HStack(spacing: 16) {
-            Text(mode == .windows ? "↩ or double-click opens · ⌥ keeps this window"
+            Text(mode == .windows ? "↩ or double-click opens"
                                   : "↩ or double-click opens the app there")
             Spacer()
             Text("⌃⌥⌘W closes on this Mac only · ⌃⌥⌘0 comes back here")

@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 3
+public let anyRemoteProtocolVersion: UInt16 = 4
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -37,6 +37,15 @@ public struct WindowSummary: Codable, Hashable, Sendable {
 }
 
 /// An application installed (or running) on the host.
+/// One clipboard item: its data by type identifier.
+public struct PasteboardItem: Codable, Hashable, Sendable {
+    public var types: [String: Data]
+
+    public init(types: [String: Data]) {
+        self.types = types
+    }
+}
+
 public struct HostApplication: Codable, Hashable, Sendable {
     /// Bundle path on the host; identifies the app in `launchApplication`.
     public var path: String
@@ -266,6 +275,10 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case applicationList(requestID: UInt32, applications: [HostApplication], icons: [String: Data])
     /// Opens (or brings forward) the app; its window then opens like a picked one.
     case launchApplication(path: String)
+    /// Viewer → host: share the clipboard (or stop).
+    case pasteboardSharing(enabled: Bool)
+    /// Both ways: new clipboard contents.
+    case pasteboard(items: [PasteboardItem])
 
     // Streams
     case openWindow(windowID: UInt32)

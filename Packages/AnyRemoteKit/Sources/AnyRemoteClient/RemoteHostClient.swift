@@ -40,6 +40,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         case hostReport(streamID: UInt16, HostStreamReport)
         case windowControls(streamID: UInt16, WindowControls)
         case windowStateRequest(streamID: UInt16, HostWindowStateRequest)
+        case pasteboard([PasteboardItem])
     }
 
     public let endpoint: NWEndpoint
@@ -263,6 +264,8 @@ public final class RemoteHostClient: @unchecked Sendable {
             emit(.windowControls(streamID: streamID, controls))
         case let .windowStateRequest(streamID, request):
             emit(.windowStateRequest(streamID: streamID, request))
+        case let .pasteboard(items):
+            emit(.pasteboard(items))
         default:
             log.debug("unexpected message from host")
         }

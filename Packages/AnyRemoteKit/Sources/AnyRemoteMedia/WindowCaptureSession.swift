@@ -25,6 +25,11 @@ public struct CapturedFrame: @unchecked Sendable {
 /// window is resized, frames whose content no longer fills the configured
 /// buffer are dropped while the stream is reconfigured; the viewer keeps
 /// showing the previous frame meanwhile.
+///
+/// A window attached to another (a sheet) is captured together with its
+/// parent, shrunk into the buffer. When the first frame shows more than the
+/// window, the session switches to a display capture that includes only this
+/// window, cropped to its frame (`windowFrameChanged` keeps the crop on it).
 public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     public static let pixelFormat = kCVPixelFormatType_444YpCbCr8BiPlanarFullRange
 
@@ -41,6 +46,12 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     private var reconfiguring = false
     private var pendingPixelSize: (width: Int, height: Int)?
     private var lastLoggedGeometry = ""
+    /// The window's frame in global points (top-left origin).
+    private var windowFrame: CGRect
+    private var checkedGroup = false
+    private var switching = false
+    /// Set in crop mode: the display the crop is relative to, and its scale.
+    private var crop: (displayFrame: CGRect, scale: CGFloat)?
 
     public var onStop: (@Sendable (Error?) -> Void)?
 
@@ -48,6 +59,7 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     public init(window: SCWindow, frameRate: Int = 60, alpha: Bool = false,
                 handler: @escaping @Sendable (CapturedFrame) -> Void) {
         self.windowID = window.windowID
+        self.windowFrame = window.frame
         self.frameRate = frameRate
         self.pixelFormat = alpha ? kCVPixelFormatType_32BGRA : Self.pixelFormat
         self.handler = handler
@@ -72,6 +84,92 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         guard let stream else { return }
         self.stream = nil
         try? await stream.stopCapture()
+    }
+
+    /// The window moved or was resized (global points, top-left origin).
+    public func windowFrameChanged(_ frame: CGRect) {
+        queue.async { [self] in
+            guard frame != windowFrame else { return }
+            windowFrame = frame
+            if crop != nil { requestCrop() }
+        }
+    }
+
+    /// Queue-confined. Restarts the capture as a display capture of only this window.
+    private func switchToCrop() {
+        guard !switching, let old = stream else { return }
+        switching = true
+        Task {
+            try? await old.stopCapture()
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
+                    throw SCStreamError(.noWindowList)
+                }
+                let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+                guard let display = content.displays.first(where: { $0.frame.contains(center) })
+                    ?? content.displays.first(where: { $0.frame.intersects(window.frame) }) else {
+                    throw SCStreamError(.noDisplayList)
+                }
+                let filter = SCContentFilter(display: display, including: [window])
+                let scale = CGFloat(filter.pointPixelScale)
+                let (configuration, size) = queue.sync { () -> (SCStreamConfiguration, (width: Int, height: Int)) in
+                    crop = (display.frame, scale)
+                    windowFrame = window.frame
+                    let size = Self.pixelSize(points: window.frame.size, scale: scale)
+                    let configuration = makeConfiguration(width: size.width, height: size.height)
+                    configuration.sourceRect = cropRect
+                    return (configuration, size)
+                }
+                let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
+                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+                queue.sync {
+                    configuredPixelSize = size
+                    self.stream = stream
+                    self.filter = filter
+                    switching = false
+                }
+                try await stream.startCapture()
+                log.notice("window \(self.windowID) is part of a group; capturing it cropped from its display")
+            } catch {
+                log.error("cropped capture failed: \(error.localizedDescription, privacy: .public)")
+                onStop?(error)
+            }
+        }
+    }
+
+    /// Queue-confined. The crop in display-local points.
+    private var cropRect: CGRect {
+        guard let crop else { return .zero }
+        return windowFrame.offsetBy(dx: -crop.displayFrame.minX, dy: -crop.displayFrame.minY)
+    }
+
+    /// Queue-confined. Follows the window with the crop (and its size).
+    private func requestCrop() {
+        guard let stream, let crop, !switching else { return }
+        guard !reconfiguring else {
+            pendingPixelSize = configuredPixelSize
+            return
+        }
+        reconfiguring = true
+        let size = Self.pixelSize(points: windowFrame.size, scale: crop.scale)
+        let configuration = makeConfiguration(width: size.width, height: size.height)
+        configuration.sourceRect = cropRect
+        stream.updateConfiguration(configuration) { [weak self] error in
+            guard let self else { return }
+            self.queue.async {
+                self.reconfiguring = false
+                if let error {
+                    log.error("crop reconfigure failed: \(error.localizedDescription, privacy: .public)")
+                } else {
+                    self.configuredPixelSize = size
+                }
+                if self.pendingPixelSize != nil {
+                    self.pendingPixelSize = nil
+                    self.requestCrop()
+                }
+            }
+        }
     }
 
     private func makeConfiguration(width: Int, height: Int) -> SCStreamConfiguration {
@@ -122,6 +220,22 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
               let contentRect = CGRect(dictionaryRepresentation: rectDictionary as! CFDictionary)
         else { return }
 
+        guard stream === self.stream, !switching else { return }
+        if let crop {
+            // Display capture: the buffer is the crop, at the display's scale.
+            guard CVPixelBufferGetWidth(pixelBuffer) == configuredPixelSize.width,
+                  CVPixelBufferGetHeight(pixelBuffer) == configuredPixelSize.height else { return }
+            handler(CapturedFrame(
+                pixelBuffer: pixelBuffer,
+                captureTimeNanos: HostClock.nanos(from: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)),
+                deliveredTimeNanos: HostClock.nowNanos(),
+                pointSize: CGSize(width: CGFloat(configuredPixelSize.width) / crop.scale,
+                                  height: CGFloat(configuredPixelSize.height) / crop.scale),
+                scale: crop.scale
+            ))
+            return
+        }
+
         let scale = (attachments[.scaleFactor] as? CGFloat) ?? 1
         let contentScale = (attachments[.contentScale] as? CGFloat) ?? 1
         let windowPoints = Self.windowPointSize(contentRect: contentRect, contentScale: contentScale)
@@ -130,6 +244,15 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         if geometry != lastLoggedGeometry {
             lastLoggedGeometry = geometry
             log.debug("capture geometry \(geometry, privacy: .public)")
+        }
+        if !checkedGroup {
+            checkedGroup = true
+            // More than the window itself: it was captured with the windows it's attached to.
+            if windowPoints.width > windowFrame.width + 8 || windowPoints.height > windowFrame.height + 8 {
+                log.notice("window \(self.windowID) captured as \(windowPoints.debugDescription) but is \(self.windowFrame.size.debugDescription)")
+                switchToCrop()
+                return
+            }
         }
 
         guard wanted == configuredPixelSize, abs(contentScale - 1) < 0.001 else {
@@ -152,7 +275,7 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
             pendingPixelSize = size
             return
         }
-        guard let stream, size != configuredPixelSize else { return }
+        guard let stream, crop == nil, !switching, size != configuredPixelSize else { return }
         reconfiguring = true
         let configuration = makeConfiguration(width: size.width, height: size.height)
         stream.updateConfiguration(configuration) { [weak self] error in

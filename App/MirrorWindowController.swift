@@ -145,6 +145,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     private func updateTitle() {
         let title = stream.title.isEmpty ? stream.applicationName : stream.title
         window?.title = "\(title) — \(connection.hostName)"
+        NotificationCenter.default.post(name: .mirrorsChanged, object: self)
     }
 
     /// Opens where the host window sits relative to its display, when that fits locally.
@@ -498,6 +499,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         statisticsTimer = nil
         onClose?()
         onClose = nil
+        NotificationCenter.default.post(name: .mirrorsChanged, object: nil)
     }
 }
 
