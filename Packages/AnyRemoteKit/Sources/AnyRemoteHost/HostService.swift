@@ -10,8 +10,10 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 
 /// The host agent: accepts viewers, streams windows, injects their input.
 ///
-/// One viewer controls the host at a time; a second viewer is refused unless
-/// it asks to take over, which ends the first session.
+/// Up to `maximumViewers` viewers are connected at once, each with its own
+/// session; viewers of the same display share one capture and encode (see
+/// `StreamAudience`). Beyond that a viewer is refused unless it asks to take
+/// over, which ends the longest-connected session.
 public final class HostService: @unchecked Sendable {
     public struct Options: Sendable {
         /// Overrides the configured port (0 = ephemeral).
@@ -23,12 +25,24 @@ public final class HostService: @unchecked Sendable {
         }
     }
 
+    public struct Viewer: Sendable, Equatable, Identifiable {
+        public var id: UInt32
+        public var name: String
+    }
+
     public struct Status: Sendable, Equatable {
         public var isListening = false
         public var port: UInt16?
-        public var viewerName: String?
+        /// Connected viewers, longest-connected first.
+        public var viewers: [Viewer] = []
         public var error: String?
+        /// Every viewer's name in one phrase, or nil when none is connected.
+        public var viewerName: String? {
+            viewers.isEmpty ? nil : ListFormatter.localizedString(byJoining: viewers.map(\.name))
+        }
     }
+
+    public static let maximumViewers = 4
 
     public let settingsStore: HostSettingsStore
     private let options: Options
@@ -39,7 +53,8 @@ public final class HostService: @unchecked Sendable {
     private var listener: ControlListener?
     private(set) var socket: DatagramSocket?
     private var pending: [UInt32: HostSession] = [:]
-    private var active: HostSession?
+    /// Admitted sessions, longest-connected first.
+    private var viewers: [HostSession] = []
     private var iconCache: [String: Data] = [:]
     private var applicationIconCache: [String: Data] = [:]
     private var virtualDisplay: VirtualDisplay?
@@ -102,11 +117,11 @@ public final class HostService: @unchecked Sendable {
         lock.lock()
         let listener = self.listener
         let socket = self.socket
-        let sessions = Array(pending.values) + [active].compactMap { $0 }
+        let sessions = Array(pending.values) + viewers
         self.listener = nil
         self.socket = nil
         pending.removeAll()
-        active = nil
+        viewers.removeAll()
         lock.unlock()
         sessions.forEach { $0.end(reason: "Remote control was turned off.", notifyViewer: true) }
         listener?.cancel()
@@ -117,12 +132,12 @@ public final class HostService: @unchecked Sendable {
     public var port: UInt16? { listener?.port }
     var datagramPort: UInt16 { socket?.localPort ?? 0 }
 
-    /// Ends the active session, e.g. from the host's own UI.
-    public func disconnectViewer() {
+    /// Ends every viewer's session (one's, given its ID), e.g. from the host's own UI.
+    public func disconnectViewer(id: UInt32? = nil) {
         lock.lock()
-        let session = active
+        let sessions = viewers.filter { id == nil || $0.sessionID == id }
         lock.unlock()
-        session?.end(reason: "The host ended the session.", notifyViewer: true)
+        sessions.forEach { $0.end(reason: "The host ended the session.", notifyViewer: true) }
     }
 
     /// Lets windows of this process be listed (diagnostics workloads).
@@ -163,28 +178,42 @@ public final class HostService: @unchecked Sendable {
         control.start()
     }
 
-    /// Admits an authenticated session as the controlling viewer.
+    /// Admits an authenticated session alongside the others. With every
+    /// place taken, only a take-over gets in, ending the longest-connected one.
     func admit(_ session: HostSession, takeOver: Bool) -> Bool {
         lock.lock()
-        let current = active
-        if let current, current !== session, !takeOver {
-            lock.unlock()
-            return false
+        var replaced: HostSession?
+        if !viewers.contains(where: { $0 === session }) {
+            if viewers.count >= Self.maximumViewers {
+                guard takeOver else {
+                    lock.unlock()
+                    return false
+                }
+                replaced = viewers.removeFirst()
+            }
+            viewers.append(session)
         }
-        active = session
         pending.removeValue(forKey: session.sessionID)
+        let list = viewers.map { Viewer(id: $0.sessionID, name: $0.viewerName) }
         lock.unlock()
-        if let current, current !== session {
-            current.end(reason: "\(session.viewerName) took over this Mac.", notifyViewer: true)
-        }
-        updateStatus { $0.viewerName = session.viewerName }
+        replaced?.end(reason: "\(session.viewerName) took over this Mac.", notifyViewer: true)
+        updateStatus { $0.viewers = list }
         return true
     }
 
+    /// Everyone connected, for a refused viewer.
     var activeViewerName: String? {
         lock.lock()
         defer { lock.unlock() }
-        return active?.viewerName
+        return viewers.isEmpty ? nil : viewers.map(\.viewerName).joined(separator: ", ")
+    }
+
+    /// The other admitted sessions. Sessions share the service's queue, so
+    /// on it their queue-confined state may be read.
+    func sessions(except session: HostSession? = nil) -> [HostSession] {
+        lock.lock()
+        defer { lock.unlock() }
+        return viewers.filter { $0 !== session }
     }
 
     func sessionEnded(_ session: HostSession) {
@@ -194,22 +223,24 @@ public final class HostService: @unchecked Sendable {
     private func forget(_ session: HostSession) {
         lock.lock()
         pending.removeValue(forKey: session.sessionID)
-        let wasActive = active === session
-        if wasActive { active = nil }
+        let wasActive = viewers.contains { $0 === session }
+        viewers.removeAll { $0 === session }
+        let list = viewers.map { Viewer(id: $0.sessionID, name: $0.viewerName) }
         lock.unlock()
         if wasActive {
-            updateStatus { $0.viewerName = nil }
+            updateStatus { $0.viewers = list }
             streamsDidEnd(session: session)
         }
     }
 
     private func route(_ batch: [(Data, SocketAddress)]) {
         lock.lock()
-        let session = active
+        let sessions = viewers
         lock.unlock()
-        guard let session else { return }
-        for (datagram, address) in batch where DatagramEnvelope.sessionID(of: datagram) == session.sessionID {
-            session.handleDatagram(datagram, from: address)
+        guard !sessions.isEmpty else { return }
+        for (datagram, address) in batch {
+            let id = DatagramEnvelope.sessionID(of: datagram)
+            sessions.first { $0.sessionID == id }?.handleDatagram(datagram, from: address)
         }
     }
 
@@ -249,11 +280,11 @@ public final class HostService: @unchecked Sendable {
         return visibleFrame(containing: CGPoint(x: display.bounds.midX, y: display.bounds.midY)) ?? display.bounds
     }
 
-    /// Removes the virtual display once nothing streams from it.
+    /// Removes the virtual display once nothing streams from it. On the queue.
     func streamsDidEnd(session: HostSession) {
+        let stillUsed = sessions(except: session).contains { $0.isStreaming }
         lock.lock()
-        let stillActive = active != nil && active !== session
-        let display = stillActive ? nil : virtualDisplay
+        let display = stillUsed ? nil : virtualDisplay
         if display != nil { virtualDisplay = nil }
         lock.unlock()
         if display != nil { log.info("removing virtual display") }

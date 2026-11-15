@@ -14,7 +14,13 @@ window-level mode, so AnyRemote uses its own host agent and protocol for
 windows and for the full desktop alike; no second app is involved.
 
 Every AnyRemote instance is both a host (others may control this Mac) and a
-viewer. One viewer controls a host at a time; a second one may take over.
+viewer. Up to four Macs can be connected to a host at once, and each can
+see and control it. Viewers of the same display share one capture and one
+encode (the media engine has room for one 4K desktop at full rate, not two):
+each gets the same video, sealed with its own session key. The first viewer
+leads: its window size sets the dynamic resolution, and the stream runs at
+the bit rate the slowest viewer's network allows. A fifth viewer can only get
+in by taking over, which ends the longest-connected session.
 
 ## Using it
 
@@ -355,7 +361,7 @@ project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated)
 xcodegen generate
 open AnyRemote.xcodeproj            # signed build with your team (Developer ID for distribution)
 
-swift test --package-path Packages/AnyRemoteKit     # 46 tests incl. VT round trips and a network session
+swift test --package-path Packages/AnyRemoteKit     # 48 tests incl. VT round trips and a network session
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips

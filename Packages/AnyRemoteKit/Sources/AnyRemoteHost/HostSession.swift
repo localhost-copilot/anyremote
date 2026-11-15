@@ -20,7 +20,6 @@ final class HostStream: @unchecked Sendable {
     /// Where the window was before it was moved onto the virtual display.
     var originalOrigin: CGPoint?
     var bitRate: Int
-    var cleanReports = 0
     var controls: WindowControls?
     /// The window frame when the current press began.
     var pressFrame: CGRect?
@@ -34,16 +33,64 @@ final class HostStream: @unchecked Sendable {
     /// Dynamic resolution: the virtual display that replaced `windowID`.
     var standIn: VirtualDisplay?
     var switchingDisplay = false
+    /// Display streams: every session watching, the one that opened it first.
+    let audience: StreamAudience?
+    /// Shared streams: each viewer's own adaptation; the stream runs at the lowest.
+    var viewerBitRates: [UInt32: (bitRate: Int, cleanReports: Int)] = [:]
+    /// Shared streams: each viewer's dynamic-resolution request (nil: off);
+    /// the first viewer's is applied.
+    var desktopSizes: [UInt32: CGSize?] = [:]
+    /// Shared streams: the first viewer drains the statistics, the others read this.
+    var lastSummary: PipelineStats.Summary?
 
-    init(description: StreamDescription, sender: WindowStreamSender, pid: pid_t, bitRate: Int) {
+    init(description: StreamDescription, sender: WindowStreamSender, pid: pid_t, bitRate: Int,
+         audience: StreamAudience? = nil) {
         self.description = description
         self.sender = sender
         self.pid = pid
         self.bitRate = bitRate
+        self.audience = audience
     }
 
     var streamID: UInt16 { description.streamID }
     var windowID: CGWindowID { description.windowID }
+}
+
+/// The sessions watching one stream. A display is captured and encoded once
+/// however many viewers watch it (the media engine has room for one 4K
+/// desktop at full rate, not two); each viewer gets the same datagrams sealed
+/// with its own session key. The first viewer leads: its window size sets
+/// the dynamic resolution, and it follows the display's changes for all.
+final class StreamAudience: @unchecked Sendable {
+    private struct Member { weak var session: HostSession? }
+    private let lock = NSLock()
+    private var members: [Member] = []
+
+    var sessions: [HostSession] {
+        lock.lock()
+        defer { lock.unlock() }
+        return members.compactMap(\.session)
+    }
+
+    var leader: HostSession? { sessions.first }
+
+    func add(_ session: HostSession) {
+        lock.lock()
+        members.removeAll { $0.session == nil || $0.session === session }
+        members.append(Member(session: session))
+        lock.unlock()
+    }
+
+    func remove(_ session: HostSession) {
+        lock.lock()
+        members.removeAll { $0.session == nil || $0.session === session }
+        lock.unlock()
+    }
+
+    /// Thread-safe (encoder queues).
+    func send(_ datagrams: [Data]) {
+        for session in sessions { session.send(datagrams: datagrams) }
+    }
 }
 
 /// Host side of one connected viewer.
@@ -293,7 +340,7 @@ final class HostSession: @unchecked Sendable {
     }
 
     /// Thread-safe.
-    private func send(datagrams: [Data]) {
+    fileprivate func send(datagrams: [Data]) {
         datagramLock.lock()
         let peer = peerAddress
         let sealer = datagramSealer
@@ -448,6 +495,13 @@ final class HostSession: @unchecked Sendable {
             existing.sender.requestKeyframe()
             return
         }
+        // Another viewer is watching it already: share its stream.
+        if let shared = service?.sessions(except: self).lazy.compactMap({ session in
+            session.streams.values.first { $0.windowID == displayID && $0.description.role == .display }
+        }).first, let audience = shared.audience {
+            join(shared, audience: audience)
+            return
+        }
         guard let geometry = Self.displayGeometry(displayID) else {
             connection.send(.streamEnded(streamID: 0, reason: "The display is no longer available."))
             return
@@ -472,6 +526,8 @@ final class HostSession: @unchecked Sendable {
                                             title: name, applicationName: ComputerName.current,
                                             tileStreamIDs: tileStreamIDs)
         let configuration = HEVCEncoder.Configuration(averageBitRate: Self.displayInitialBitRate)
+        let audience = StreamAudience()
+        audience.add(self)
         // Development: a viewer on this same Mac would see its own desktop
         // window inside itself, endlessly.
         let sender = WindowStreamSender(
@@ -479,16 +535,19 @@ final class HostSession: @unchecked Sendable {
             exceptingWindowIDs: service?.includedOwnWindowIDs ?? [], streamID: streamID,
             tileStreamIDs: tileStreamIDs, configuration: configuration,
             maximumDatagramSize: 1400 - DatagramEnvelope.overhead
-        ) { [weak self] datagrams in
-            self?.send(datagrams: datagrams)
+        ) { [weak audience] datagrams in
+            audience?.send(datagrams)
         }
-        let stream = HostStream(description: description, sender: sender, pid: 0, bitRate: configuration.averageBitRate)
+        let stream = HostStream(description: description, sender: sender, pid: 0, bitRate: configuration.averageBitRate,
+                                audience: audience)
         stream.displayScale = geometry.scale
         stream.captureDisplayID = displayID
         streams[streamID] = stream
-        sender.onStop = { [weak self] error in
-            self?.queue.async {
-                self?.endStream(streamID, reason: error == nil ? "Capture stopped." : "The display is no longer available.")
+        let queue = queue
+        sender.onStop = { [weak audience] error in
+            queue.async {
+                let reason = error == nil ? "Capture stopped." : "The display is no longer available."
+                for session in audience?.sessions ?? [] { session.endStream(streamID, reason: reason) }
             }
         }
         log.notice("streaming display \(displayID) \(geometry.frame.debugDescription, privacy: .public) @\(geometry.scale)x")
@@ -505,6 +564,23 @@ final class HostSession: @unchecked Sendable {
             }
         }
     }
+
+    /// Starts watching a display stream another session opened.
+    private func join(_ stream: HostStream, audience: StreamAudience) {
+        let streamID = stream.streamID
+        if let tiles = stream.description.tileStreamIDs {
+            for id in tiles where id != streamID { tileOwners[id] = streamID }
+        }
+        streams[streamID] = stream
+        audience.add(self)
+        log.notice("\(self.viewerName, privacy: .public) joins display \(stream.windowID) (\(audience.sessions.count) watching)")
+        connection.send(.streamStarted(stream.description))
+        stream.sender.requestKeyframe()
+        startCursorMonitor()
+    }
+
+    /// Queue-confined.
+    var isStreaming: Bool { !ended && !streams.isEmpty }
 
     static let isLoopback = ProcessInfo.processInfo.environment["ANYREMOTE_LOOPBACK"] == "1"
 
@@ -534,7 +610,9 @@ final class HostSession: @unchecked Sendable {
         }
         stream.displayScale = geometry.scale
         stream.description.frame = frame
-        connection.send(.streamMoved(streamID: stream.streamID, frame: frame, title: stream.description.title))
+        for session in stream.audience?.sessions ?? [self] {
+            session.connection.send(.streamMoved(streamID: stream.streamID, frame: frame, title: stream.description.title))
+        }
     }
 
     // MARK: Dynamic resolution
@@ -561,7 +639,13 @@ final class HostSession: @unchecked Sendable {
     /// host rearrange for the new size. Everything is undone when the stream
     /// ends, the viewer turns it off, or this app quits.
     private func applyDesktopSize(streamID: UInt16, size requested: CGSize?) {
-        guard let stream = streams[streamID], stream.description.role == .display, !stream.switchingDisplay else { return }
+        guard let stream = streams[streamID], stream.description.role == .display else { return }
+        // Shared: remembered for when this viewer leads; only the leader's applies.
+        if let audience = stream.audience {
+            stream.desktopSizes.updateValue(requested, forKey: sessionID)
+            guard audience.leader === self else { return }
+        }
+        guard !stream.switchingDisplay else { return }
         // Viewing this same Mac, the viewer's window is on the display it would
         // resize: only displays made for testing take part.
         if Self.isLoopback, CGDisplayVendorNumber(stream.windowID) != VirtualDisplay.vendorID { return }
@@ -600,15 +684,16 @@ final class HostSession: @unchecked Sendable {
         stream.switchingDisplay = true
         stream.captureDisplayID = displayID
         let sender = stream.sender
-        let streamID = stream.streamID
-        Task {
+        Task { [weak stream] in
             do {
                 try await sender.switchDisplay(to: displayID)
             } catch {
                 log.error("display switch failed: \(error.localizedDescription, privacy: .public)")
             }
             queue.async { [self] in
-                guard let stream = streams[streamID] else { return }
+                // The viewer that asked may have left; others may still watch.
+                guard let stream, stream.audience?.sessions.isEmpty == false || streams[stream.streamID] === stream
+                else { return }
                 stream.switchingDisplay = false
                 stream.displayScale = 0 // re-read: the stand-in is always 2x
                 trackDisplay(stream)
@@ -633,8 +718,16 @@ final class HostSession: @unchecked Sendable {
     private func allocateStreamID() -> UInt16 {
         repeat {
             nextStreamID = nextStreamID == UInt16.max ? 1 : nextStreamID + 1
-        } while streams[nextStreamID] != nil || tileOwners[nextStreamID] != nil
+        } while isInUse(nextStreamID)
         return nextStreamID
+    }
+
+    /// Stream IDs are unique across sessions: a shared display keeps the IDs
+    /// of the session that opened it.
+    private func isInUse(_ id: UInt16) -> Bool {
+        ([self] + (service?.sessions(except: self) ?? [])).contains {
+            $0.streams[id] != nil || $0.tileOwners[id] != nil
+        }
     }
 
     private func startStream(window: SCWindow, pid: pid_t, role: StreamDescription.Role, parent: UInt16?,
@@ -692,6 +785,22 @@ final class HostSession: @unchecked Sendable {
     private func endStream(_ streamID: UInt16, reason: String, notify: Bool = true) {
         guard let stream = streams.removeValue(forKey: streamID) else { return }
         tileOwners = tileOwners.filter { $0.value != streamID }
+        if let audience = stream.audience {
+            let wasLeader = audience.leader === self
+            audience.remove(self)
+            stream.viewerBitRates[sessionID] = nil
+            stream.desktopSizes[sessionID] = nil
+            if let leader = audience.leader {
+                // Others still watch: only this viewer stops.
+                applyLowestBitRate(stream)
+                if wasLeader {
+                    leader.applyDesktopSize(streamID: streamID, size: stream.desktopSizes[leader.sessionID] ?? nil)
+                }
+                if notify { connection.send(.streamEnded(streamID: streamID, reason: reason)) }
+                streamsMayHaveEnded()
+                return
+            }
+        }
         for child in stream.children.values { endStream(child, reason: reason, notify: notify) }
         if let parent = stream.description.parentStreamID {
             streams[parent]?.children.removeValue(forKey: stream.windowID)
@@ -704,6 +813,10 @@ final class HostSession: @unchecked Sendable {
         let sender = stream.sender
         Task { await sender.stop() }
         if notify { connection.send(.streamEnded(streamID: streamID, reason: reason)) }
+        streamsMayHaveEnded()
+    }
+
+    private func streamsMayHaveEnded() {
         if !streams.values.contains(where: { $0.description.role != .child }) {
             if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             cursor?.stop()
@@ -719,21 +832,26 @@ final class HostSession: @unchecked Sendable {
         case .display: Self.displayMaximumBitRate
         case .child: 20_000_000
         }
-        var bitRate = stream.bitRate
+        // Each viewer adapts its own rate; the stream runs at the lowest.
+        var rate = stream.viewerBitRates[sessionID] ?? (stream.bitRate, 0)
         if dropped > 0 {
-            bitRate = max(Self.minimumBitRate, bitRate * 3 / 4)
-            stream.cleanReports = 0
+            rate.bitRate = max(Self.minimumBitRate, rate.bitRate * 3 / 4)
+            rate.cleanReports = 0
         } else if received > 0 {
-            stream.cleanReports += 1
-            if stream.cleanReports >= 4 {
-                bitRate = min(ceiling, bitRate + bitRate / 10)
-                stream.cleanReports = 0
+            rate.cleanReports += 1
+            if rate.cleanReports >= 4 {
+                rate.bitRate = min(ceiling, rate.bitRate + rate.bitRate / 10)
+                rate.cleanReports = 0
             }
         }
-        if bitRate != stream.bitRate {
-            stream.bitRate = bitRate
-            stream.sender.setAverageBitRate(bitRate)
-        }
+        stream.viewerBitRates[sessionID] = rate
+        applyLowestBitRate(stream)
+    }
+
+    private func applyLowestBitRate(_ stream: HostStream) {
+        guard let bitRate = stream.viewerBitRates.values.map(\.bitRate).min(), bitRate != stream.bitRate else { return }
+        stream.bitRate = bitRate
+        stream.sender.setAverageBitRate(bitRate)
     }
 
     static let chip: String = {
@@ -756,7 +874,14 @@ final class HostSession: @unchecked Sendable {
             }
         }
         for stream in streams.values {
-            let summary = stream.sender.stats.drain()
+            let summary: PipelineStats.Summary
+            if let audience = stream.audience, audience.leader !== self {
+                guard let last = stream.lastSummary else { continue }
+                summary = last
+            } else {
+                summary = stream.sender.stats.drain()
+                stream.lastSummary = summary
+            }
             guard summary.framesPerSecond > 0 else { continue }
             connection.send(.hostReport(streamID: stream.streamID, HostStreamReport(
                 captureP50: summary.p50[.capture] ?? 0, waitP50: summary.p50[.encodeWait] ?? 0,
@@ -769,7 +894,9 @@ final class HostSession: @unchecked Sendable {
     // MARK: Tracking (moves, titles, child windows)
 
     private func track() {
-        for stream in streams.values where stream.description.role == .display { trackDisplay(stream) }
+        // A shared display is followed by its first viewer, for everyone.
+        for stream in streams.values where stream.description.role == .display
+            && (stream.audience?.leader ?? self) === self { trackDisplay(stream) }
         let mains = streams.values.filter { $0.description.role == .window }
         if let launch = pendingLaunch, HostClock.nowNanos() > launch.deadline { pendingLaunch = nil }
         guard !mains.isEmpty else {
@@ -813,7 +940,9 @@ final class HostSession: @unchecked Sendable {
         if stream.axWindow?.isMinimized == true { return }
         if stream.description.role == .display {
             log.notice("display \(stream.windowID) went away; ending its stream")
-            endStream(stream.streamID, reason: "The display is no longer available.")
+            for session in stream.audience?.sessions ?? [self] {
+                session.endStream(stream.streamID, reason: "The display is no longer available.")
+            }
             return
         }
         log.notice("window \(stream.windowID) left the screen; ending its stream")

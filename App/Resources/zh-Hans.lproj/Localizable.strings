@@ -12,7 +12,6 @@
 "Always" = "始终";
 "Another Mac took over control." = "另一台 Mac 接管了控制。";
 "AnyRemote Settings" = "AnyRemote 设置";
-"AnyRemote: “%@” is controlling this Mac" = "AnyRemote：「%@」正在控制这台 Mac";
 "Being controlled" = "正在被控制";
 "Cancel" = "取消";
 "Can’t connect to “%@”" = "连不上「%@」";
@@ -136,6 +135,7 @@
 "Wrong pairing code" = "配对码错误";
 "“%@” has no open windows." = "「%@」上没有打开的窗口。";
 "“%@” is controlling this Mac" = "「%@」正在控制这台 Mac";
+"%lld Macs are controlling this Mac" = "%lld 台 Mac 正在控制这台 Mac";
 "“%@” is offline" = "「%@」现在不在线";
 "“%@” took over control of this Mac." = "「%@」接管了这台 Mac 的控制。";
 "Close on This Mac" = "只在本机关闭";

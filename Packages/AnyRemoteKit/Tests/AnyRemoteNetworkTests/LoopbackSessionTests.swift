@@ -52,23 +52,31 @@ import Testing
         await #expect(throws: (any Error).self) { try await client.connect() }
     }
 
-    @Test func secondViewerNeedsTakeOver() async throws {
+    @Test func viewersShareUntilFull() async throws {
         let (service, code) = try Self.makeHost()
         defer { service.stop() }
         let endpoint = try await Self.endpoint(service)
-        let first = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "first")
-        _ = try await first.connect()
-        let second = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "second")
-        do {
-            _ = try await second.connect()
-            Issue.record("second viewer was admitted")
-        } catch {
-            #expect(error.localizedDescription.contains("first"))
+        var clients: [RemoteHostClient] = []
+        for index in 0..<HostService.maximumViewers {
+            let client = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "viewer\(index)")
+            _ = try await client.connect()
+            clients.append(client)
         }
-        let third = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "third")
-        _ = try await third.connect(takeOver: true)
+        #expect(service.currentStatus.viewers.map(\.name) == (0..<HostService.maximumViewers).map { "viewer\($0)" })
+        let extra = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "extra")
+        do {
+            _ = try await extra.connect()
+            Issue.record("a viewer beyond the limit was admitted")
+        } catch {
+            #expect(error.localizedDescription.contains("viewer0"))
+        }
+        // Taking over ends the longest-connected session.
+        let late = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "late")
+        _ = try await late.connect(takeOver: true)
         try await Task.sleep(for: .milliseconds(200))
-        #expect(service.currentStatus.viewerName == "third")
-        third.disconnect()
+        #expect(service.currentStatus.viewers.first?.name == "viewer1")
+        #expect(service.currentStatus.viewers.last?.name == "late")
+        clients.forEach { $0.disconnect() }
+        late.disconnect()
     }
 }

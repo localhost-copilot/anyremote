@@ -37,7 +37,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         image?.isTemplate = true
         item.button?.image = image
         item.button?.appearsDisabled = !enabled
-        item.button?.toolTip = controlled ? String(localized: "AnyRemote: “\(settings.status.viewerName ?? "")” is controlling this Mac") : "AnyRemote"
+        item.button?.toolTip = controlled ? "AnyRemote: " + Self.controlling(settings.status.viewers) : "AnyRemote"
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -47,8 +47,10 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         let header = NSMenuItem(title: statusLine, action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
-        if let viewer = status.viewerName {
-            menu.addItem(action(String(localized: "Disconnect “\(viewer)”"), #selector(disconnectViewer)))
+        for viewer in status.viewers {
+            let item = action(String(localized: "Disconnect “\(viewer.name)”"), #selector(disconnectViewer(_:)))
+            item.representedObject = viewer.id
+            menu.addItem(item)
         }
         if settings.settings.isEnabled {
             let code = settings.settings.code?.description ?? ""
@@ -92,7 +94,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
 
     private var statusLine: String {
         if !settings.settings.isEnabled { return String(localized: "Sharing: Off") }
-        if let viewer = settings.status.viewerName { return String(localized: "“\(viewer)” is controlling this Mac") }
+        if !settings.status.viewers.isEmpty { return Self.controlling(settings.status.viewers) }
         if !settings.permissions.allGranted { return String(localized: "Sharing: Permissions Missing") }
         if settings.status.isListening { return String(localized: "Sharing: Waiting for Connection") }
         return String(localized: "Sharing: Starting…")
@@ -104,7 +106,15 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         return item
     }
 
-    @objc private func disconnectViewer() { settings.service.disconnectViewer() }
+    /// "“M6” is controlling this Mac", or how many are.
+    static func controlling(_ viewers: [HostService.Viewer]) -> String {
+        if viewers.count == 1 { return String(localized: "“\(viewers[0].name)” is controlling this Mac") }
+        return String(localized: "\(viewers.count) Macs are controlling this Mac")
+    }
+
+    @objc private func disconnectViewer(_ sender: NSMenuItem) {
+        settings.service.disconnectViewer(id: sender.representedObject as? UInt32)
+    }
     @objc private func copyCode() { settings.copyCode() }
     @objc private func showSettings() { actions.showSettings() }
     @objc private func showPicker() { actions.showPicker() }

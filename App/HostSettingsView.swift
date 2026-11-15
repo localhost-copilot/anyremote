@@ -158,11 +158,11 @@ struct HostSettingsView: View {
                 }
             }
             .toggleStyle(.switch)
-            if let viewer = model.status.viewerName {
+            ForEach(model.status.viewers) { viewer in
                 HStack {
-                    Label("“\(viewer)” is controlling this Mac", systemImage: "person.crop.circle.badge.checkmark")
+                    Label("“\(viewer.name)” is controlling this Mac", systemImage: "person.crop.circle.badge.checkmark")
                     Spacer()
-                    Button("Disconnect") { model.service.disconnectViewer() }
+                    Button("Disconnect") { model.service.disconnectViewer(id: viewer.id) }
                 }
             }
         }
