@@ -355,7 +355,7 @@ project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated)
 xcodegen generate
 open AnyRemote.xcodeproj            # signed build with your team (Developer ID for distribution)
 
-swift test --package-path Packages/AnyRemoteKit     # 45 tests incl. VT round trips and a network session
+swift test --package-path Packages/AnyRemoteKit     # 46 tests incl. VT round trips and a network session
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips

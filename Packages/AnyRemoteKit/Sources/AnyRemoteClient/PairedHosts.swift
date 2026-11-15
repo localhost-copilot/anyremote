@@ -95,12 +95,14 @@ public final class PairedHostStore: @unchecked Sendable {
     }
 
     public enum PeerPairingOutcome: Equatable, Sendable {
-        case added, codeChanged, removed, unchanged
+        case added, codeChanged, addressChanged, removed, unchanged
     }
 
     /// An offer adds the Mac, or refreshes the code of a Mac already known
-    /// (it was reset there). A withdrawal removes only a Mac that was added
-    /// by an offer, never one paired here by hand.
+    /// (it was reset there) and, for a Mac added by an offer, the address it
+    /// connected from (it moved: another network, a new DHCP lease). A
+    /// withdrawal removes only a Mac that was added by an offer, never one
+    /// paired here by hand.
     static func applying(_ pairing: PeerPairing, address: String?, ownID: String,
                          to hosts: [PairedHost]) -> ([PairedHost], PeerPairingOutcome) {
         guard pairing.hostID != ownID else { return (hosts, .unchanged) }
@@ -112,12 +114,20 @@ public final class PairedHostStore: @unchecked Sendable {
             return (hosts, .removed)
         }
         guard let code = PairingCode(text) else { return (hosts, .unchanged) }
-        if let index {
-            guard hosts[index].pairingCode != code.canonical else { return (hosts, .unchanged) }
-            hosts[index].pairingCode = code.canonical
-            return (hosts, .codeChanged)
-        }
         let byAddress = pairing.usesAddress && address != nil
+        if let index {
+            var outcome = PeerPairingOutcome.unchanged
+            if hosts[index].fromPeer, byAddress, hosts[index].address != address {
+                hosts[index].address = address
+                hosts[index].bonjourName = nil
+                outcome = .addressChanged
+            }
+            if hosts[index].pairingCode != code.canonical {
+                hosts[index].pairingCode = code.canonical
+                outcome = .codeChanged
+            }
+            return (hosts, outcome)
+        }
         hosts.append(PairedHost(id: pairing.hostID, name: pairing.name, address: byAddress ? address : nil,
                                 bonjourName: byAddress ? nil : pairing.name, pairingCode: code.canonical,
                                 fromPeer: true))

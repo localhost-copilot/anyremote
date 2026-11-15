@@ -391,7 +391,7 @@ final class HostSession: @unchecked Sendable {
             }
         }
         if let port = pairing.port, port != 0, let host = address { address = "\(host):\(port)" } else { address = nil }
-        log.notice("peer pairing from \(pairing.name, privacy: .public): \(pairing.pairingCode == nil ? "withdrawn" : "offered", privacy: .public)")
+        log.notice("peer pairing from \(pairing.name, privacy: .public) at \(address ?? "Bonjour", privacy: .public): \(pairing.pairingCode == nil ? "withdrawn" : "offered", privacy: .public)")
         let callback = service?.onPeerPairing
         DispatchQueue.main.async { callback?(pairing, address) }
     }

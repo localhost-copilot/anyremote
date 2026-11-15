@@ -32,6 +32,19 @@ struct PeerPairingTests {
         #expect(hosts[0].pairingCode == code && hosts[0].name == "Renamed" && !hosts[0].fromPeer)
     }
 
+    @Test func offeredMacThatMovedKeepsItsNewAddress() {
+        let moved = PairedHost(id: "A", name: "Mac A", address: "192.168.50.20:47800", bonjourName: nil,
+                               pairingCode: code, fromPeer: true)
+        let (hosts, outcome) = PairedHostStore.applying(offer(code, usesAddress: true), address: "192.168.6.238:47800",
+                                                        ownID: "B", to: [moved])
+        #expect(outcome == .addressChanged && hosts[0].address == "192.168.6.238:47800")
+        // One paired here by hand keeps the address it was given.
+        var manual = moved
+        manual.fromPeer = false
+        #expect(PairedHostStore.applying(offer(code, usesAddress: true), address: "192.168.6.238:47800",
+                                         ownID: "B", to: [manual]).1 == .unchanged)
+    }
+
     @Test func withdrawalRemovesOnlyOfferedMacs() {
         let offered = PairedHost(id: "A", name: "Mac A", address: nil, bonjourName: "Mac A", pairingCode: code,
                                  fromPeer: true)
