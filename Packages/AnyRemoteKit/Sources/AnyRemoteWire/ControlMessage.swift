@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 4
+public let anyRemoteProtocolVersion: UInt16 = 5
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -43,6 +43,27 @@ public struct PasteboardItem: Codable, Hashable, Sendable {
 
     public init(types: [String: Data]) {
         self.types = types
+    }
+}
+
+/// A Mac offering the other side of a pairing: connect back to me with this code.
+public struct PeerPairing: Codable, Equatable, Sendable {
+    public var hostID: String
+    public var name: String
+    /// Nil withdraws an earlier offer.
+    public var pairingCode: String?
+    /// Its listening port, for reaching it by address.
+    public var port: UInt16?
+    /// It reached the host by address rather than Bonjour, so connecting
+    /// back should use its address too.
+    public var usesAddress: Bool
+
+    public init(hostID: String, name: String, pairingCode: String?, port: UInt16?, usesAddress: Bool) {
+        self.hostID = hostID
+        self.name = name
+        self.pairingCode = pairingCode
+        self.port = port
+        self.usesAddress = usesAddress
     }
 }
 
@@ -275,6 +296,12 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case applicationList(requestID: UInt32, applications: [HostApplication], icons: [String: Data])
     /// Opens (or brings forward) the app; its window then opens like a picked one.
     case launchApplication(path: String)
+    /// Quits the app (`force`: without letting it ask to save).
+    case quitApplication(path: String, force: Bool)
+    /// Viewer → host after pairing: the viewer's own pairing code, so the
+    /// host can connect back without pairing again (or, without a code,
+    /// withdraws that).
+    case peerPairing(PeerPairing)
     /// Viewer → host: share the clipboard (or stop).
     case pasteboardSharing(enabled: Bool)
     /// Both ways: new clipboard contents.

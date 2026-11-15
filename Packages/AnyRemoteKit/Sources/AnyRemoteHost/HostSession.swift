@@ -3,6 +3,7 @@ import AnyRemoteNetwork
 import AnyRemoteWindowControl
 import AnyRemoteWire
 import Foundation
+import Network
 import OSLog
 @preconcurrency import ScreenCaptureKit
 
@@ -132,6 +133,10 @@ final class HostSession: @unchecked Sendable {
             listApplications(requestID: requestID)
         case let .launchApplication(path):
             launchApplication(path)
+        case let .quitApplication(path, force):
+            quitApplication(path, force: force)
+        case let .peerPairing(pairing):
+            receivePeerPairing(pairing)
         case let .pasteboardSharing(enabled):
             setPasteboardSharing(enabled)
         case let .pasteboard(items):
@@ -336,6 +341,35 @@ final class HostSession: @unchecked Sendable {
                 queue.asyncAfter(deadline: .now() + 1) { [self] in openExistingWindow(pid: pid) }
             }
         }
+    }
+
+    private func quitApplication(_ path: String, force: Bool) {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        DispatchQueue.main.async {
+            let running = NSWorkspace.shared.runningApplications.filter {
+                $0.bundleURL?.standardizedFileURL == url && $0.processIdentifier != getpid()
+            }
+            log.notice("quitting \(path, privacy: .public) (\(running.count) running, force \(force))")
+            for application in running {
+                if force { application.forceTerminate() } else { application.terminate() }
+            }
+        }
+    }
+
+    private func receivePeerPairing(_ pairing: PeerPairing) {
+        var address: String?
+        if case let .hostPort(host, _) = connection.remoteEndpoint {
+            switch host {
+            case let .ipv4(ip): address = "\(ip)".components(separatedBy: "%").first
+            case let .name(name, _): address = name
+            // An IPv6 peer is reached over Bonjour.
+            default: break
+            }
+        }
+        if let port = pairing.port, port != 0, let host = address { address = "\(host):\(port)" } else { address = nil }
+        log.notice("peer pairing from \(pairing.name, privacy: .public): \(pairing.pairingCode == nil ? "withdrawn" : "offered", privacy: .public)")
+        let callback = service?.onPeerPairing
+        DispatchQueue.main.async { callback?(pairing, address) }
     }
 
     private func openExistingWindow(pid: pid_t) {

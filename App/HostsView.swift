@@ -56,6 +56,9 @@ private struct Sidebar: View {
                                 Button("Disconnect") { model.disconnect(target) }
                             }
                             if target.kind != .thisMac {
+                                Toggle("Let “\(target.name)” Control This Mac", isOn: Binding(
+                                    get: { model.sharesBack(target) },
+                                    set: { model.setSharesBack(target, $0) }))
                                 Button("Rename…") { renaming = target }
                                 Divider()
                                 Button("Forget This Mac", role: .destructive) { model.forget(target) }
@@ -237,6 +240,7 @@ private struct PairingPane: View {
     let error: String?
     @State private var codeText = ""
     @State private var working = false
+    @State private var sharesBack = true
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -255,6 +259,8 @@ private struct PairingPane: View {
                 .frame(width: 340)
                 .focused($focused)
                 .onSubmit(pair)
+            Toggle("Also let “\(target.name)” control this Mac", isOn: $sharesBack)
+                .help("Then “\(target.name)” can connect to this Mac without pairing again")
             if let error, codeText.isEmpty || working {
                 Text(error).foregroundStyle(.red).font(.callout).multilineTextAlignment(.center).frame(maxWidth: 420)
             }
@@ -276,7 +282,7 @@ private struct PairingPane: View {
         guard let code = PairingCode(codeText) else { return }
         Task {
             working = true
-            await model.connect(target, code: code)
+            await model.connect(target, code: code, sharesBack: sharesBack)
             working = false
             codeText = ""
         }
@@ -301,6 +307,7 @@ private struct WindowPicker: View {
     let model: ViewerModel
     let target: HostTarget
     @AppStorage("pickerMode") private var mode = PickerMode.windows
+    @AppStorage("appsRunningOnly") private var runningOnly = false
     @State private var query = ""
     @State private var selection: UInt32?
     @State private var appSelection: String?
@@ -334,7 +341,7 @@ private struct WindowPicker: View {
     /// Apps matching the search, by name.
     private var apps: [HostApplication] {
         let needle = query.trimmingCharacters(in: .whitespaces)
-        let all = connection.applications?.applications ?? []
+        let all = (connection.applications?.applications ?? []).filter { !runningOnly || $0.isRunning }
         return needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
     }
 
@@ -344,14 +351,26 @@ private struct WindowPicker: View {
         let apps = mode == .apps ? apps : []
         VStack(spacing: 0) {
             banners
-            Picker("Show", selection: $mode) {
-                Text("Windows").tag(PickerMode.windows)
-                Text("Apps").tag(PickerMode.apps)
+            HStack(spacing: 12) {
+                Picker("Show", selection: $mode) {
+                    Text("Windows").tag(PickerMode.windows)
+                    Text("Apps").tag(PickerMode.apps)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("Windows open on that Mac, or apps to open there")
+                if mode == .apps {
+                    Picker("Apps", selection: $runningOnly) {
+                        Text("All").tag(false)
+                        Text("Running").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("All apps on that Mac, or only the ones running there")
+                }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .help("Windows open on that Mac, or apps to open there")
             .padding(.top, 12)
             GeometryReader { proxy in
                 ScrollViewReader { scroller in
@@ -373,7 +392,14 @@ private struct WindowPicker: View {
                                         .id(app.path)
                                         .onTapGesture(count: 2) { launch(app) }
                                         .simultaneousGesture(TapGesture().onEnded { appSelection = app.path; gridFocused = true })
-                                        .contextMenu { Button("Open") { launch(app) } }
+                                        .contextMenu {
+                                            Button(app.isRunning ? "Show" : "Open") { launch(app) }
+                                            if app.isRunning {
+                                                Divider()
+                                                Button("Quit") { connection.quit(app, force: false) }
+                                                Button("Force Quit") { connection.quit(app, force: true) }
+                                            }
+                                        }
                                 }
                             }
                             .padding(20)
@@ -415,6 +441,7 @@ private struct WindowPicker: View {
         .task(id: mode) {
             if mode == .apps { await connection.loadApplications() }
         }
+        .onChange(of: runningOnly) { Task { await connection.loadApplications() } }
         .onChange(of: flat.map(\.windowID), initial: true) { _, ids in
             if !userSelected || selection.map({ !ids.contains($0) }) ?? true {
                 userSelected = false
@@ -484,6 +511,9 @@ private struct WindowPicker: View {
             ProgressView()
         } else if isEmpty, !query.isEmpty {
             ContentUnavailableView.search(text: query)
+        } else if isEmpty, runningOnly {
+            ContentUnavailableView("No Running Apps", systemImage: "app.dashed",
+                                   description: Text("No apps are running on “\(connection.hostName)”."))
         }
     }
 

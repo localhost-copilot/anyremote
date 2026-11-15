@@ -152,6 +152,18 @@ final class HostConnection {
         client.launchApplication(path: application.path)
     }
 
+    /// Quits the app on the host. The list follows once it has gone (an app
+    /// may first ask to save, so look again a little later too).
+    func quit(_ application: HostApplication, force: Bool) {
+        client.quitApplication(path: application.path, force: force)
+        Task {
+            for delay in [1.0, 4.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                await loadApplications()
+            }
+        }
+    }
+
     func refresh() async {
         guard state == .connected, !isRefreshing else { return }
         isRefreshing = true

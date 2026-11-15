@@ -313,6 +313,8 @@ public final class RemoteHostClient: @unchecked Sendable {
 
     public func launchApplication(path: String) { send(.launchApplication(path: path)) }
 
+    public func quitApplication(path: String, force: Bool) { send(.quitApplication(path: path, force: force)) }
+
     // MARK: Video
 
     /// Starts decoding a stream. `onFrame` runs on a decoder thread.

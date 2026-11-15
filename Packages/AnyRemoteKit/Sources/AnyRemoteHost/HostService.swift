@@ -48,6 +48,9 @@ public final class HostService: @unchecked Sendable {
 
     /// Called on the main queue.
     public var onStatusChange: (@MainActor @Sendable (Status) -> Void)?
+    /// A connected viewer offered (or withdrew) the reverse pairing, with the
+    /// address it connected from. Called on the main queue.
+    public var onPeerPairing: (@MainActor @Sendable (PeerPairing, _ address: String?) -> Void)?
 
     public init(settings: HostSettingsStore = HostSettingsStore(), options: Options = Options()) {
         self.settingsStore = settings

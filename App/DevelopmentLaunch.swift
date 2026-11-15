@@ -10,6 +10,7 @@ import AppKit
 ///     --open <application> [--title <text>] [--menu-test [--choose Menu/Item]]
 ///                                           mirror a window of this Mac (or of the --connect host)
 ///     --launch <application>                open an app on the host and mirror its first window
+///     --quit <application>                  quit a running app on the host
 ///     --connect host[:port] --code CODE     connect to another Mac
 ///     --discovery-test                      print the hosts Bonjour finds
 ///     --permission-guide                    show Settings and the permission guide card
@@ -61,7 +62,9 @@ enum DevelopmentLaunch {
         let application = value("--open")
         let connectAddress = value("--connect")
         let launch = value("--launch")
+        let quit = value("--quit")
         guard synthetic != nil || recorder != nil || application != nil || connectAddress != nil || launch != nil
+                || quit != nil
         else { return false }
 
         let model = app.viewerModel
@@ -123,6 +126,18 @@ enum DevelopmentLaunch {
                 print("dev: connect failed: \(model.lastError ?? "unknown")"); return
             }
             print("dev: connected to \(connection.hostName)")
+            if let quit {
+                await connection.loadApplications()
+                guard let match = connection.applications?.applications.first(where: {
+                    $0.name.localizedCaseInsensitiveCompare(quit) == .orderedSame
+                }) else { print("dev: app not found"); return }
+                print("dev: quitting \(match.name) running=\(match.isRunning)")
+                connection.quit(match, force: false)
+                try? await Task.sleep(for: .seconds(2.5))
+                let after = connection.applications?.applications.first { $0.path == match.path }
+                print("dev: after quit running=\(after?.isRunning ?? false)")
+                return
+            }
             if let launch {
                 await connection.loadApplications()
                 let apps = connection.applications?.applications ?? []

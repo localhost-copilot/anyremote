@@ -30,6 +30,7 @@ final class ViewerModel {
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.discovered = hosts } }
         }
         browser.start()
+        hostService.onPeerPairing = { [weak self] pairing, address in self?.receive(pairing, address: address) }
     }
 
     var thisMacTarget: HostTarget? {
@@ -120,8 +121,10 @@ final class ViewerModel {
 
     func connection(for target: HostTarget) -> HostConnection? { connections[target.id] }
 
-    /// Connects with the stored code, or `code` when pairing.
-    func connect(_ target: HostTarget, code providedCode: PairingCode? = nil, takeOver: Bool = false) async {
+    /// Connects with the stored code, or `code` when pairing; `sharesBack`
+    /// then says whether that Mac may also control this one.
+    func connect(_ target: HostTarget, code providedCode: PairingCode? = nil, sharesBack: Bool? = nil,
+                 takeOver: Bool = false) async {
         guard let code = providedCode ?? self.code(for: target) else { return }
         connections[target.id]?.disconnect()
         let connection = HostConnection(target: target, code: code)
@@ -135,18 +138,54 @@ final class ViewerModel {
                 let previous = target.savedID
                 var address: String?
                 if case let .hostPort(host, port) = target.endpoint { address = "\(host):\(port)" }
-                // Keep a name the user gave this Mac.
-                let name = pairedStore.host(id: welcome.hostID)?.name ?? welcome.hostName
-                pairedStore.save(PairedHost(id: welcome.hostID, name: name, address: address,
-                                            bonjourName: target.kind == .discovered ? target.name : nil,
-                                            pairingCode: code.canonical, lastConnected: Date()),
-                                 replacing: previous)
+                // Keep a name the user gave this Mac, and its settings.
+                let existing = pairedStore.host(id: welcome.hostID) ?? previous.flatMap { pairedStore.host(id: $0) }
+                let host = PairedHost(id: welcome.hostID, name: existing?.name ?? welcome.hostName,
+                                      address: address ?? (target.kind == .saved ? existing?.address : nil),
+                                      bonjourName: target.kind == .discovered ? target.name : existing?.bonjourName,
+                                      pairingCode: code.canonical, lastConnected: Date(),
+                                      fromPeer: existing?.fromPeer ?? false,
+                                      sharesBack: sharesBack ?? existing?.sharesBack ?? true)
+                pairedStore.save(host, replacing: previous)
                 saved = pairedStore.all
+                offerPairing(to: host, over: connection)
             }
         } catch {
             lastError = error.localizedDescription
             log.error("connect failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// Tells a connected Mac how to connect back here (this Mac's code), or
+    /// withdraws that. Sent on every connection, so a reset code reaches it.
+    private func offerPairing(to host: PairedHost, over connection: HostConnection) {
+        let settings = hostService.settingsStore.settings
+        let usesAddress = host.address != nil
+        connection.client.send(.peerPairing(PeerPairing(
+            hostID: settings.hostID, name: ComputerName.current,
+            pairingCode: host.sharesBack ? settings.code?.canonical : nil,
+            port: hostService.port, usesAddress: usesAddress)))
+    }
+
+    func sharesBack(_ target: HostTarget) -> Bool { pairedHost(for: target)?.sharesBack ?? true }
+
+    func setSharesBack(_ target: HostTarget, _ shares: Bool) {
+        guard var host = pairedHost(for: target) else { return }
+        host.sharesBack = shares
+        pairedStore.save(host, replacing: host.id)
+        saved = pairedStore.all
+        if let connection = connections[target.id], connection.state == .connected {
+            offerPairing(to: host, over: connection)
+        }
+    }
+
+    /// Another Mac paired with this one and offered the way back.
+    private func receive(_ pairing: PeerPairing, address: String?) {
+        let outcome = pairedStore.apply(pairing, address: address, ownID: hostService.settingsStore.settings.hostID)
+        log.notice("peer pairing from \(pairing.name, privacy: .public): \(String(describing: outcome), privacy: .public)")
+        guard outcome != .unchanged else { return }
+        saved = pairedStore.all
+        if outcome == .added { PeerPairingNotice.show(name: pairing.name) }
     }
 
     func disconnect(_ target: HostTarget) {

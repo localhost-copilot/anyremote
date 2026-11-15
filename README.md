@@ -28,6 +28,12 @@ viewer. One viewer controls a host at a time; a second one may take over.
 3. On the controlling Mac, the window picker (⌃⌥⌘0 from anywhere) lists
    *My Macs* (paired) and *Nearby* (unpaired, Bonjour); **Add by address**
    covers other networks. Selecting an unpaired Mac asks for its code once.
+   Pairing works both ways: unless *Also let … control this Mac* is turned
+   off, the Mac that entered the code hands its own code to the other over
+   the encrypted connection, and appears there in *My Macs* (with a
+   notification). It is sent again on every connection, so a reset code
+   follows; turning *Let … Control This Mac* off in a Mac's context menu
+   withdraws it.
 4. The picker selects and connects the last used Mac, focuses the search
    field and groups windows by app. Type to filter, arrows to select,
    Return or double-click to open; the picker stays open behind the new
@@ -38,6 +44,8 @@ viewer. One viewer controls a host at a time; a second one may take over.
    and anything running). Opening one launches it there, or brings it
    forward if it's running, and its front window opens here as a mirror; an
    app with no window gets a new one, as if its Dock icon was clicked.
+   *All | Running* narrows the list to running apps; a running app's context
+   menu has *Quit* and *Force Quit* (on the host).
 
 If the host lacks Accessibility, mirrors show a banner saying input won't
 work; the picker shows the same, live, until it is granted.
@@ -153,7 +161,9 @@ two fresh 32-byte nonces to derive four AES-256-GCM keys (control and
 datagram, each direction). Control frames use implicit counter nonces; video
 datagrams carry an explicit counter (authenticated, 1024-entry replay
 window). A wrong code fails at the first sealed frame and the host says so.
-Resetting the code in Settings disconnects the current viewer. Settings and
+Resetting the code in Settings disconnects the current viewer. A code
+received for two-way pairing is stored like one typed in; a withdrawal only
+removes Macs that were added that way. Settings and
 saved hosts are JSON files (mode 0600) in
 `~/Library/Application Support/AnyRemote`.
 
@@ -228,7 +238,7 @@ project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated)
 xcodegen generate
 open AnyRemote.xcodeproj            # signed build with your team (Developer ID for distribution)
 
-swift test --package-path Packages/AnyRemoteKit     # 32 tests incl. VT round trips and a network session
+swift test --package-path Packages/AnyRemoteKit     # 38 tests incl. VT round trips and a network session
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 ```
@@ -272,6 +282,7 @@ the real network path against this Mac's own host service:
 - `--open <app> [--title <text>] [--menu-test [--choose Menu/Item]]`
 - `--launch <app>` — opens the app on the host through the Apps list and
   prints when its window arrives
+- `--quit <app>` — quits a running app on the host through the Apps list
 - `--connect host[:port] --code CODE` — another Mac
 - `--permission-guide` — Settings with the permission card (kept up)
 - `--discovery-test`, `--exit-after <seconds>`

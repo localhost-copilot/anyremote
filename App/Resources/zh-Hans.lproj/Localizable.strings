@@ -163,3 +163,18 @@
 "Let AnyRemote record the screen" = "允许 AnyRemote 录制屏幕";
 "Let AnyRemote control this Mac" = "允许 AnyRemote 控制这台 Mac";
 "Turn on the switch next to AnyRemote in the list that just opened. Not in the list? Drag this icon into it." = "在刚打开的列表里，打开 AnyRemote 旁边的开关。列表里没有？把这个图标拖进去。";
+
+/* Two-way pairing */
+"Let “%@” Control This Mac" = "允许“%@”控制这台 Mac";
+"Also let “%@” control this Mac" = "同时允许“%@”控制这台 Mac";
+"Then “%@” can connect to this Mac without pairing again" = "这样“%@”无需再次配对就能连接这台 Mac";
+"“%@” paired with this Mac" = "“%@”已与这台 Mac 配对";
+"You can control “%@” from here too. It’s now in My Macs." = "你也可以在这里控制“%@”，它已出现在“我的 Mac”中。";
+
+/* Apps */
+"All" = "全部";
+"All apps on that Mac, or only the ones running there" = "显示那台 Mac 上的所有 App，或只显示正在运行的";
+"Quit" = "退出";
+"Force Quit" = "强制退出";
+"No Running Apps" = "没有正在运行的 App";
+"No apps are running on “%@”." = "“%@”上没有正在运行的 App。";

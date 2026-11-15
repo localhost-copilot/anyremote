@@ -12,15 +12,40 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
     public var bonjourName: String?
     public var pairingCode: String
     public var lastConnected: Date?
+    /// Added because that Mac paired with this one and offered the way back,
+    /// rather than by entering its code here.
+    public var fromPeer: Bool
+    /// Whether that Mac may also control this one: this Mac's own code is
+    /// offered to it on every connection (and withdrawn when turned off).
+    public var sharesBack: Bool
 
     public init(id: String, name: String, address: String?, bonjourName: String?, pairingCode: String,
-                lastConnected: Date? = nil) {
+                lastConnected: Date? = nil, fromPeer: Bool = false, sharesBack: Bool = true) {
         self.id = id
         self.name = name
         self.address = address
         self.bonjourName = bonjourName
         self.pairingCode = pairingCode
         self.lastConnected = lastConnected
+        self.fromPeer = fromPeer
+        self.sharesBack = sharesBack
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, address, bonjourName, pairingCode, lastConnected, fromPeer, sharesBack
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        address = try container.decodeIfPresent(String.self, forKey: .address)
+        bonjourName = try container.decodeIfPresent(String.self, forKey: .bonjourName)
+        pairingCode = try container.decode(String.self, forKey: .pairingCode)
+        lastConnected = try container.decodeIfPresent(Date.self, forKey: .lastConnected)
+        fromPeer = try container.decodeIfPresent(Bool.self, forKey: .fromPeer) ?? false
+        // Pairings from before this setting existed share back too.
+        sharesBack = try container.decodeIfPresent(Bool.self, forKey: .sharesBack) ?? true
     }
 
     public var code: PairingCode? { PairingCode(pairingCode) }
@@ -56,6 +81,48 @@ public final class PairedHostStore: @unchecked Sendable {
         let snapshot = hosts
         lock.unlock()
         persist(snapshot)
+    }
+
+    /// Takes in a Mac's offer to be connected back to (see `PeerPairing`).
+    @discardableResult
+    public func apply(_ pairing: PeerPairing, address: String?, ownID: String) -> PeerPairingOutcome {
+        lock.lock()
+        let (updated, outcome) = Self.applying(pairing, address: address, ownID: ownID, to: hosts)
+        hosts = updated
+        lock.unlock()
+        if outcome != .unchanged { persist(updated) }
+        return outcome
+    }
+
+    public enum PeerPairingOutcome: Equatable, Sendable {
+        case added, codeChanged, removed, unchanged
+    }
+
+    /// An offer adds the Mac, or refreshes the code of a Mac already known
+    /// (it was reset there). A withdrawal removes only a Mac that was added
+    /// by an offer, never one paired here by hand.
+    static func applying(_ pairing: PeerPairing, address: String?, ownID: String,
+                         to hosts: [PairedHost]) -> ([PairedHost], PeerPairingOutcome) {
+        guard pairing.hostID != ownID else { return (hosts, .unchanged) }
+        var hosts = hosts
+        let index = hosts.firstIndex { $0.id == pairing.hostID }
+        guard let text = pairing.pairingCode else {
+            guard let index, hosts[index].fromPeer else { return (hosts, .unchanged) }
+            hosts.remove(at: index)
+            return (hosts, .removed)
+        }
+        guard let code = PairingCode(text) else { return (hosts, .unchanged) }
+        if let index {
+            guard hosts[index].pairingCode != code.canonical else { return (hosts, .unchanged) }
+            hosts[index].pairingCode = code.canonical
+            return (hosts, .codeChanged)
+        }
+        let byAddress = pairing.usesAddress && address != nil
+        hosts.append(PairedHost(id: pairing.hostID, name: pairing.name, address: byAddress ? address : nil,
+                                bonjourName: byAddress ? nil : pairing.name, pairingCode: code.canonical,
+                                fromPeer: true))
+        hosts.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return (hosts, .added)
     }
 
     public func remove(id: String) {
