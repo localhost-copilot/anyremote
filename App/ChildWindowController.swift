@@ -25,8 +25,11 @@ final class ChildWindowController: NSObject, RemoteInputSink {
         super.init()
         window.isOpaque = false
         window.backgroundColor = .clear
-        // The captured image carries the host's shadow-less window; draw ours.
-        window.hasShadow = stream.layer > 0
+        // The captured image carries the host's shadow-less window; draw ours
+        // for menus and popups. Input method windows (far higher layers) are
+        // mostly transparent around what they show, and a shadow would trace
+        // their whole rectangle.
+        window.hasShadow = stream.layer > 0 && stream.layer < 1000
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
         window.becomesKeyOnlyIfNeeded = true

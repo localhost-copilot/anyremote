@@ -165,6 +165,11 @@ final class HostSession: @unchecked Sendable {
     private var textEditorWindows: [CGWindowID: (holdsFocus: Bool, checked: UInt64)] = [:]
     /// The stream that last got a key or click: the one whose caret matters.
     private var lastInputStreamID: UInt16?
+    /// Whose input method composes; the viewer says once connected.
+    private var textInput = TextInputSettings(composesOnViewer: true)
+    /// Processes and whether they are input methods (their candidate windows
+    /// belong with the window being typed into).
+    private var inputMethodProcesses: [pid_t: InputMethodProcess] = [:]
 
     init(sessionID: UInt32, connection: ControlConnection, queue: DispatchQueue, service: HostService) {
         self.sessionID = sessionID
@@ -255,6 +260,8 @@ final class HostSession: @unchecked Sendable {
         case let .audio(enabled):
             audioRequested = enabled
             updateAudio()
+        case let .textInput(settings):
+            applyTextInput(settings)
         case .goodbye:
             end(reason: "Viewer disconnected.")
         default:
@@ -266,6 +273,13 @@ final class HostSession: @unchecked Sendable {
     nonisolated(unsafe) private var pasteboardBridge: PasteboardBridge?
     /// Main-thread only.
     nonisolated(unsafe) private var keyboardLayout: HostKeyboardLayout?
+
+    private func applyTextInput(_ settings: TextInputSettings) {
+        textInput = settings
+        log.notice("text input: \(settings.composesOnViewer ? "viewer composes" : "host composes", privacy: .public)")
+        // The host's input method composes: give back what the viewer's mode had replaced.
+        if !settings.composesOnViewer { restoreKeyboardLayout() }
+    }
 
     private func ensureKeyboardLayout() {
         DispatchQueue.main.async { [self] in
@@ -1170,6 +1184,11 @@ final class HostSession: @unchecked Sendable {
             if let ownAllowed, window.pid == main.pid, window.layer == 0, !ownAllowed.contains(window.id) { continue }
             guard window.frame.width >= 4, window.frame.height >= 4 else { continue }
             let samePID = window.pid == main.pid
+            // An input method's candidates, next to the window being typed into.
+            if !samePID, isInputMethodWindow(window) {
+                if window.frame.intersects(near) { candidates.append(window) }
+                continue
+            }
             let panelService = !samePID && Self.panelServiceNames.contains { window.ownerName.contains($0) }
             guard samePID || panelService else { continue }
             if window.layer == 0 {
@@ -1282,8 +1301,9 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
-    /// Typing needs a plain keyboard layout here (see `HostKeyboardLayout`).
+    /// With the viewer's input method, typing needs a plain keyboard layout here (see `HostKeyboardLayout`).
     private func prepareKeyboard(for event: InputEvent) {
+        guard textInput.composesOnViewer else { return }
         switch event {
         case .key(_, true, _, _), .text: ensureKeyboardLayout()
         default: break
@@ -1362,6 +1382,35 @@ final class HostSession: @unchecked Sendable {
         connection.send(.caret(streamID: streamID, rect: state.rect, font: state.font))
     }
 
+    private enum InputMethodProcess {
+        case none, inputMethod, sourceIndicator
+    }
+
+    /// Input methods run as processes of their own, from an Input Methods
+    /// folder (WeChat, Sogou, Rime, Apple's own, the accent popup). macOS
+    /// shows the input source indicator at the caret from TextInputUI: worth
+    /// seeing when the viewer switches the host's input method, noise when
+    /// only this host's own switch to a keyboard layout set it off.
+    private func isInputMethodWindow(_ window: WindowServerWindow) -> Bool {
+        switch inputMethodProcess(window.pid) {
+        case .none: false
+        case .inputMethod: true
+        case .sourceIndicator: !textInput.composesOnViewer
+        }
+    }
+
+    private func inputMethodProcess(_ pid: pid_t) -> InputMethodProcess {
+        if let known = inputMethodProcesses[pid] { return known }
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        let path = length > 0 ? String(cString: buffer) : ""
+        let kind: InputMethodProcess = path.contains("/Input Methods/") || path.lowercased().contains(".inputmethod.")
+            ? .inputMethod : path.contains("TextInputUI") ? .sourceIndicator : .none
+        if inputMethodProcesses.count > 256 { inputMethodProcesses.removeAll() }
+        inputMethodProcesses[pid] = kind
+        return kind
+    }
+
     /// Whether a small window of the app holds its focused text field: an
     /// inline editor (Finder's rename field) rather than an indicator. Checked
     /// again until it says yes, since focus moves in just after the window shows.
@@ -1404,8 +1453,15 @@ final class HostSession: @unchecked Sendable {
         let now = HostClock.nowNanos()
         if !force, now - lastFocusCheck < 300_000_000 { return }
         lastFocusCheck = now
-        let front = WindowServerWindow.onScreen().first { $0.layer == 0 }
+        // Development loopback: the viewer's windows on this same Mac don't count.
+        let front = WindowServerWindow.onScreen().first {
+            $0.layer == 0 && !(Self.isLoopback && $0.ownerName.hasPrefix("AnyRemote"))
+        }
         guard force || front?.id != stream.windowID else { return }
+        // The app's own fields and panels over it (Finder's rename field, its
+        // little helper windows) are part of it: raising the window would end
+        // what happens in them. Only another real window needs it raised.
+        if !force, let front, front.pid == stream.pid, !standardWindowIDs(pid: stream.pid).contains(front.id) { return }
         if stream.axWindow == nil { stream.axWindow = try? AXWindow(pid: stream.pid, windowID: stream.windowID) }
         stream.axWindow?.focus()
         if front?.id != stream.windowID { usleep(20_000) }

@@ -142,12 +142,30 @@ final class HostConnection {
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.client.setAudio(enabled: SoundSharing.isEnabled) }
             }
+            sendTextInput()
+            textInputObserver = NotificationCenter.default.addObserver(
+                forName: TextInputPreferences.changed, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.sendTextInput() }
+            }
             startAudioReports()
             await refresh()
         } catch {
             state = .failed(error.localizedDescription)
             throw error
         }
+    }
+
+    @ObservationIgnored private var textInputObserver: NSObjectProtocol?
+    @ObservationIgnored private var sentTextInput: TextInputSettings?
+
+    /// Whose input method composes.
+    private func sendTextInput() {
+        guard state == .connected else { return }
+        let settings = TextInputSettings(composesOnViewer: TextInputPreferences.composesOnThisMac)
+        guard settings != sentTextInput else { return }
+        sentTextInput = settings
+        client.send(.textInput(settings))
     }
 
     /// Starts or stops sharing the clipboard with the host, per the setting.
@@ -172,6 +190,9 @@ final class HostConnection {
         sharingObserver = nil
         if let soundObserver { NotificationCenter.default.removeObserver(soundObserver) }
         soundObserver = nil
+        if let textInputObserver { NotificationCenter.default.removeObserver(textInputObserver) }
+        textInputObserver = nil
+        sentTextInput = nil
         audioReportTimer?.invalidate()
         audioReportTimer = nil
         audioReport = nil

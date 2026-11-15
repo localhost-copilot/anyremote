@@ -226,7 +226,11 @@ enum DevelopmentLaunch {
             app.developmentMirrorHandler = { mirror in ResizeTest.run(mirror) }
         }
         if let point = value("--caret-test") {
-            app.developmentMirrorHandler = { mirror in CaretTest.run(mirror, click: point, rename: arguments.contains("--rename")) }
+            app.developmentMirrorHandler = { mirror in CaretTest.run(mirror, click: point, rename: arguments.contains("--rename"),
+                                                                         renameClick: value("--rename-click")) }
+        }
+        if let point = value("--host-ime-test") {
+            app.developmentMirrorHandler = { mirror in HostInputMethodTest.run(mirror, click: point) }
         }
         if arguments.contains("--text-test") {
             app.developmentMirrorHandler = { mirror in TextTest.run(mirror) }
@@ -409,12 +413,13 @@ enum TextTest {
 /// `--open <app> --caret-test x,y`: moves the mirror off the host window,
 /// clicks at that window point, then types `nihao` through this Mac's input
 /// method into the mirror and prints where the composition panel went.
-/// `--rename` presses Return after the click (Finder's rename field).
+/// `--rename` waits for a Finder rename started from outside; with
+/// `--rename-click x,y` it then clicks into the field there, types x and Return.
 @MainActor
 enum CaretTest {
     private static var started = false
 
-    static func run(_ mirror: MirrorWindowController, click: String, rename: Bool) {
+    static func run(_ mirror: MirrorWindowController, click: String, rename: Bool, renameClick: String? = nil) {
         // Windows the test's input opens show up as mirrors too: test only the first.
         guard !started else { return }
         started = true
@@ -439,6 +444,21 @@ enum CaretTest {
                 mirror.sendInput(.mouseUp(point: CGPoint(x: -50, y: -50), button: .left, buttonNumber: 0,
                                           clickCount: 1, modifiers: 0))
                 try? await Task.sleep(for: .milliseconds(600))
+                let point = renameClick?.split(separator: ",").compactMap { Double($0) } ?? []
+                if point.count == 2 {
+                    // Click inside the field to move its caret, type x, and press Return.
+                    let p = CGPoint(x: point[0], y: point[1])
+                    mirror.sendInput(.mouseDown(point: p, button: .left, buttonNumber: 0, clickCount: 1, modifiers: 0))
+                    mirror.sendInput(.mouseUp(point: p, button: .left, buttonNumber: 0, clickCount: 1, modifiers: 0))
+                    try? await Task.sleep(for: .milliseconds(400))
+                    for code: UInt16 in [7, 36] {
+                        mirror.sendInput(.key(keyCode: code, down: true, isRepeat: false, modifiers: 0))
+                        mirror.sendInput(.key(keyCode: code, down: false, isRepeat: false, modifiers: 0))
+                        try? await Task.sleep(for: .milliseconds(300))
+                    }
+                    print("caret-test: clicked into the rename field, typed x and Return")
+                    return
+                }
                 let children = window.childWindows?.filter { $0 is ChildPanel && $0.isVisible }.map(\.frame) ?? []
                 print("caret-test: child windows \(children)")
             }
@@ -462,6 +482,61 @@ enum CaretTest {
             // For screencapture -R: the window in top-left global points.
             let top = (NSScreen.screens.first?.frame.height ?? 0) - frame.maxY
             print("caret-test: capture \(Int(frame.minX)),\(Int(top)),\(Int(frame.width)),\(Int(frame.height))")
+        }
+    }
+}
+
+/// `--open <app> --host-ime-test x,y` (with `-ComposesOnThisMac NO`): clicks
+/// at that window point, sends the keys of `nihao` for the host's input
+/// method, prints the child windows that came back (its candidates), then
+/// tries Shift (its English mode) and Escape.
+@MainActor
+enum HostInputMethodTest {
+    private static var started = false
+
+    static func run(_ mirror: MirrorWindowController, click: String) {
+        guard !started else { return }
+        started = true
+        let parts = click.split(separator: ",").compactMap { Double($0) }
+        guard parts.count == 2, let window = mirror.window, let screen = window.screen else { return }
+        func key(_ code: UInt16) {
+            mirror.sendInput(.key(keyCode: code, down: true, isRepeat: false, modifiers: 0))
+            mirror.sendInput(.key(keyCode: code, down: false, isRepeat: false, modifiers: 0))
+        }
+        func children() -> [NSRect] {
+            window.childWindows?.filter { $0 is ChildPanel && $0.isVisible }.map(\.frame) ?? []
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            window.setFrameTopLeftPoint(NSPoint(x: screen.frame.maxX - window.frame.width - 20, y: screen.frame.maxY - 60))
+            print("host-ime-test: composes here \(TextInputPreferences.composesOnThisMac)")
+            try? await Task.sleep(for: .milliseconds(300))
+            let p = CGPoint(x: parts[0], y: parts[1])
+            mirror.sendInput(.mouseDown(point: p, button: .left, buttonNumber: 0, clickCount: 1, modifiers: 0))
+            mirror.sendInput(.mouseUp(point: p, button: .left, buttonNumber: 0, clickCount: 1, modifiers: 0))
+            try? await Task.sleep(for: .milliseconds(500))
+            for code: UInt16 in [45, 34, 4, 0, 31] {
+                key(code)
+                try? await Task.sleep(for: .milliseconds(80))
+            }
+            try? await Task.sleep(for: .milliseconds(1200))
+            let frame = window.frame
+            let top = (NSScreen.screens.first?.frame.height ?? 0) - frame.maxY
+            print("host-ime-test: mirror \(frame), capture \(Int(frame.minX)),\(Int(top)),\(Int(frame.width)),\(Int(frame.height))")
+            print("host-ime-test: child windows while composing \(children())")
+            try? await Task.sleep(for: .seconds(3))
+            key(49) // Space: the first candidate
+            try? await Task.sleep(for: .milliseconds(800))
+            print("host-ime-test: child windows after Space \(children())")
+            // Shift alone: the input method's English mode, so letters stay letters.
+            mirror.sendInput(.flagsChanged(keyCode: 56, modifiers: CGEventFlags.maskShift.rawValue))
+            mirror.sendInput(.flagsChanged(keyCode: 56, modifiers: 0))
+            try? await Task.sleep(for: .milliseconds(300))
+            for code: UInt16 in [0, 1] { key(code) } // a s
+            try? await Task.sleep(for: .milliseconds(300))
+            mirror.sendInput(.flagsChanged(keyCode: 56, modifiers: CGEventFlags.maskShift.rawValue))
+            mirror.sendInput(.flagsChanged(keyCode: 56, modifiers: 0))
+            print("host-ime-test: done")
         }
     }
 }

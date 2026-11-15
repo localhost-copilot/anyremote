@@ -168,7 +168,8 @@ the *remote* app). AnyRemote's own commands use ⌃⌥⌘:
 
 Keys are sent as virtual key codes, so the host's keyboard layout applies.
 
-**Input methods** (Pinyin, WeChat, Sogou, Kotoeri…) are this Mac's: switch
+**Input methods** (Pinyin, WeChat, Sogou, Kotoeri…) are this Mac's by
+default (Settings › Typing › Input Method): switch
 them here as usual (menu bar, 🌐, ⌃Space — also while a desktop captures
 system shortcuts), compose here, and the host gets the text. The candidates
 show next to the host's caret, in any window. Keys the input method passes
@@ -176,6 +177,14 @@ through unchanged (letters in its English mode, Return, arrows outside a
 composition, every ⌘-shortcut) still go as key codes. While a viewer types,
 the host is switched to a plain keyboard layout, and gets its own input
 source back when the viewer leaves.
+
+With **The Other Mac's** input method, keys go to the host as key codes
+and its own input method composes, inline in the app, with its own
+candidate window (streamed next to the window, whichever input method it
+is). While a remote window is in front, this Mac's input methods stay out
+of the way (only keyboard layouts are allowed here, as in a password field),
+and ⌃Space / ⌃⌥Space switch the other Mac's input source instead of this
+Mac's.
 
 ### Sound
 
@@ -316,6 +325,17 @@ Core Audio process taps → AAC-ELD ─────── UDP ────→  j
   candidates below.
 - Small windows of the app that hold its focused text field (Finder's
   rename field) stream as child windows; other small ones (indicators) don't.
+- With the host's input method (`TextInputSettings.composesOnViewer`
+  false), the viewer forwards every key. Its surface's input context allows
+  only Roman keyboard layouts (`allowedInputSourceLocales`), so AppKit
+  selects one while a remote window is key and restores the user's source
+  afterwards, and the symbolic hot keys 60/61 (select previous/next input
+  source) are turned off meanwhile (`CGSSetSymbolicHotKeyEnabled`; it is
+  system-wide, so it is undone on resign, quit and at the next launch), so
+  ⌃Space reaches the host, whose window server switches its source. Windows
+  of input method processes (anything run from an `Input Methods` folder,
+  where macOS loads every input method from) near a streamed window stream
+  as its child windows, and so does TextInputUI's input source indicator.
 - **Child windows** — every 33 ms (8 ms while a button is down) the host
   looks for same-process windows on menu/popup layers, or non-standard
   layer-0 windows near the main window (sheets, popovers). Each streams as
@@ -402,7 +422,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 63 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 64 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -449,6 +469,9 @@ against this Mac's own host service unless `--connect` is given.
   (or `none`), then composes `nihao` through this Mac's input method and
   prints the caret, font and composition panel; `--rename` waits for a Finder
   rename started from outside (`--open Finder --title <folder>`).
+- `--open <app> --host-ime-test x,y -ComposesOnThisMac NO` — clicks at that
+  window point, types `nihao` for the host's input method, prints the child
+  windows that came back (its candidates), then Space, Shift and `as`.
 - `--open <app> --text-test` — clicks into the window, sends composed text
   (CJK, more than 20 units, an emoji) and prints the carets the host reports.
   Use a throwaway text app: it types into the window.

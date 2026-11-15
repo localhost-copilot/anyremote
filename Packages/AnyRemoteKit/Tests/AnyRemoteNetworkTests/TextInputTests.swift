@@ -30,6 +30,13 @@ struct TextInputTests {
         }
     }
 
+    @Test func textInputSettingsRoundTrip() throws {
+        for settings in [TextInputSettings(composesOnViewer: true), TextInputSettings(composesOnViewer: false)] {
+            let message = ControlMessage.textInput(settings)
+            #expect(try ControlCoding.decode(ControlMessage.self, from: ControlCoding.encode(message)) == message)
+        }
+    }
+
     @Test func caretWithoutFontDecodes() throws {
         // A 0.12.0 host sends no font; the viewer still takes the caret.
         let json = #"{"caret":{"streamID":2,"rect":[[5,32],[1,23]]}}"#

@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 10
+public let anyRemoteProtocolVersion: UInt16 = 11
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -191,6 +191,19 @@ public enum InputEvent: Codable, Equatable, Sendable {
     /// Text the viewer's input method composed (Chinese, Japanese, ...),
     /// typed on the host as is, whatever its keyboard layout.
     case text(String)
+}
+
+/// Whose input method composes text (Chinese, Japanese…) for the host.
+public struct TextInputSettings: Codable, Equatable, Sendable {
+    /// The viewer's input method composes and the host gets the text; the
+    /// host keeps a plain keyboard layout. Otherwise the host's own input
+    /// method composes the keys it gets, and the viewer forwards the input
+    /// source shortcuts (⌃Space) for the host to switch it.
+    public var composesOnViewer: Bool
+
+    public init(composesOnViewer: Bool) {
+        self.composesOnViewer = composesOnViewer
+    }
 }
 
 /// The font of the text at the host's caret, as Accessibility reports it.
@@ -382,6 +395,8 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     /// the viewer's input method shows its candidates next to it, and the
     /// text's font when the app tells (older hosts: nil).
     case caret(streamID: UInt16, rect: CGRect?, font: CaretFont? = nil)
+    /// Viewer → host, once connected and on every change.
+    case textInput(TextInputSettings)
 
     // Menu bar
     case requestMenuBar(streamID: UInt16)

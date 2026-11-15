@@ -64,6 +64,12 @@ final class HostSettingsModel {
     private(set) var showsRemoteAppsInDock = DockProxies.isEnabled
     private(set) var sharesClipboard = ClipboardSharing.isEnabled
     private(set) var playsRemoteSound = SoundSharing.isEnabled
+    private(set) var composesOnThisMac = TextInputPreferences.composesOnThisMac
+
+    func setComposesOnThisMac(_ value: Bool) {
+        composesOnThisMac = value
+        TextInputPreferences.composesOnThisMac = value
+    }
 
     func setPlaysRemoteSound(_ value: Bool) {
         playsRemoteSound = value
@@ -140,6 +146,17 @@ struct HostSettingsView: View {
                 Toggle("Mute This Mac While Its Sound Plays Elsewhere", isOn: Binding(
                     get: { model.settings.mutesSoundWhileShared }, set: { model.setMutesSoundWhileShared($0) }))
                 Text("When another Mac controls this one, the apps it listens to go quiet here.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section("Typing") {
+                Picker("Input Method", selection: Binding(
+                    get: { model.composesOnThisMac }, set: { model.setComposesOnThisMac($0) })) {
+                    Text("This Mac's").tag(true)
+                    Text("The Other Mac's").tag(false)
+                }
+                Text(model.composesOnThisMac
+                     ? "Type with this Mac's input method; its candidates show next to the other Mac's text."
+                     : "The other Mac's input method composes. It switches along with the input source you select here, if that Mac has it.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section("General") {

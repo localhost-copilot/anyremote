@@ -2,6 +2,22 @@ import AnyRemoteWire
 import AppKit
 import Carbon
 
+/// Whose input method composes text for other Macs: this Mac's (the
+/// default) or the host's own. Connections follow it live.
+enum TextInputPreferences {
+    static let changed = Notification.Name("AnyRemoteTextInputPreferencesChanged")
+    private static let key = "ComposesOnThisMac"
+
+    static var composesOnThisMac: Bool {
+        // On unless turned off (also as `-ComposesOnThisMac NO` on the command line, a string).
+        get { UserDefaults.standard.object(forKey: key) == nil || UserDefaults.standard.bool(forKey: key) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: key)
+            NotificationCenter.default.post(name: changed, object: nil)
+        }
+    }
+}
+
 /// This Mac's selected input source, as far as typing on a host goes.
 ///
 /// With a keyboard layout (ABC, French…) keys go to the host as key codes,
@@ -47,9 +63,10 @@ enum LocalInputSource {
 
     /// The input source shortcuts, when they reach this app: while a full
     /// desktop captures system shortcuts, macOS doesn't act on them itself.
-    /// Returns true when the event was one and the source was switched.
+    /// Returns true when the event was one and the source was switched. With
+    /// the other Mac's input method they belong to that Mac instead.
     static func handleSwitchShortcut(_ event: NSEvent) -> Bool {
-        guard let shortcut = SwitchShortcut.matching(event) else { return false }
+        guard TextInputPreferences.composesOnThisMac, let shortcut = SwitchShortcut.matching(event) else { return false }
         startObserving()
         switch shortcut {
         case .previous:
@@ -121,6 +138,69 @@ enum LocalInputSource {
     }
 }
 
+/// With the other Mac's input method, turns this Mac's input source
+/// shortcuts (⌃Space, ⌃⌥Space) off while a remote window has the keys, so
+/// they arrive as key events and switch the other Mac's input source.
+///
+/// Unlike the full desktop's shortcut capture, this setting is system-wide
+/// rather than per app, so it is undone as soon as no remote window is key,
+/// when the app quits, and at the next launch after a crash.
+@MainActor
+final class InputSourceShortcutRelay {
+    private typealias SetEnabled = @convention(c) (Int32, Bool) -> Int32
+    private typealias IsEnabled = @convention(c) (Int32) -> Bool
+    private static let setEnabled = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGSSetSymbolicHotKeyEnabled")
+        .map { unsafeBitCast($0, to: SetEnabled.self) }
+    private static let isEnabled = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGSIsSymbolicHotKeyEnabled")
+        .map { unsafeBitCast($0, to: IsEnabled.self) }
+    /// Select the previous / next input source.
+    private static let hotKeys: [Int32] = [60, 61]
+    /// The hot keys this app turned off, kept until turned on again.
+    private static let disabledKey = "InputSourceHotKeysTurnedOff"
+
+    private var observers: [NSObjectProtocol] = []
+    private let isActive: @MainActor () -> Bool
+
+    /// - Parameter isActive: whether a remote window is key.
+    init(isActive: @escaping @MainActor () -> Bool) {
+        self.isActive = isActive
+        // A crash while they were off leaves them off: turn them back on.
+        release()
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                                          NSApplication.didBecomeActiveNotification,
+                                          NSApplication.didResignActiveNotification, TextInputPreferences.changed]
+        for name in names {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.update() }
+            })
+        }
+    }
+
+    func update() {
+        let wanted = !TextInputPreferences.composesOnThisMac && NSApp.isActive && isActive()
+        wanted ? capture() : release()
+    }
+
+    private func capture() {
+        guard let setEnabled = Self.setEnabled, let isEnabled = Self.isEnabled else { return }
+        var turnedOff = UserDefaults.standard.array(forKey: Self.disabledKey) as? [Int] ?? []
+        for key in Self.hotKeys where isEnabled(key) {
+            // Recorded first, so a crash right after still finds it.
+            turnedOff.append(Int(key))
+            UserDefaults.standard.set(turnedOff, forKey: Self.disabledKey)
+            _ = setEnabled(key, false)
+        }
+    }
+
+    func release() {
+        guard let turnedOff = UserDefaults.standard.array(forKey: Self.disabledKey) as? [Int], !turnedOff.isEmpty,
+              let setEnabled = Self.setEnabled else { return }
+        for key in Set(turnedOff) { _ = setEnabled(Int32(key), true) }
+        UserDefaults.standard.removeObject(forKey: Self.disabledKey)
+    }
+}
+
 /// Composes text for the host with this Mac's input method.
 ///
 /// The surface view's input context talks to this object. A key goes to the
@@ -132,7 +212,26 @@ enum LocalInputSource {
 @MainActor
 final class TextComposer: NSObject, @preconcurrency NSTextInputClient {
     private weak var view: RemoteSurfaceView?
-    private(set) lazy var context = NSTextInputContext(client: self)
+    private(set) lazy var context: NSTextInputContext = {
+        let context = NSTextInputContext(client: self)
+        Self.applyPreference(to: context)
+        preferenceObserver = NotificationCenter.default.addObserver(
+            forName: TextInputPreferences.changed, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { if let self { Self.applyPreference(to: self.context) } }
+        }
+        return context
+    }()
+    private var preferenceObserver: NSObjectProtocol?
+
+    /// With the other Mac's input method, this Mac's must stay out of the
+    /// way: while a remote window has the keys, only keyboard layouts are
+    /// allowed here (as in a password field). macOS switches to one by itself
+    /// and back when another window or app is in front.
+    private static func applyPreference(to context: NSTextInputContext) {
+        context.allowedInputSourceLocales = TextInputPreferences.composesOnThisMac
+            ? nil : [NSAllRomanInputSourcesLocaleIdentifier]
+    }
     private var marked = NSAttributedString()
     private var markedSelection = NSRange(location: 0, length: 0)
     /// What the input method did with the key being handled.

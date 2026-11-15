@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var dockProxies: DockProxies?
     private var pickerHotKey: GlobalHotKey?
     private var shortcutCapture: SystemShortcutCapture?
+    private var inputSourceShortcuts: InputSourceShortcutRelay?
     private var isDevelopmentLaunch = false
     /// Development launches observe mirrors as they open.
     var developmentMirrorHandler: ((MirrorWindowController) -> Void)?
@@ -61,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         viewer.onOpenedDesktop = { [weak self] desktop in self?.developmentDesktopHandler?(desktop) }
         shortcutCapture = SystemShortcutCapture { NSApp.keyWindow?.windowController is DesktopWindowController }
+        inputSourceShortcuts = InputSourceShortcutRelay { NSApp.keyWindow?.windowController is any RemoteKeyTarget }
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil,
                                                queue: .main) { [weak self] note in
             let window = note.object as? NSWindow
@@ -91,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationWillTerminate(_ notification: Notification) {
         shortcutCapture?.release()
+        inputSourceShortcuts?.release()
         dockProxies?.quitAll()
         hostService.stop()
     }

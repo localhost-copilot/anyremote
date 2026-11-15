@@ -195,9 +195,10 @@ protocol RemoteKeyTarget: AnyObject {
 /// Forwards every key event to the host while a mirror or desktop window is key.
 ///
 /// A local monitor sees keys before menus, so Command shortcuts and Tab
-/// behave as on the host. While this Mac's input source is an input method,
-/// other keys go through it first (`TextComposer`), and the host gets what it
-/// composed. ⌃⌥⌘-shortcuts stay local (close mirror, statistics, library).
+/// behave as on the host. While this Mac's input source is an input method
+/// (and composing here is on), other keys go through it first
+/// (`TextComposer`), and the host gets what it composed; otherwise the
+/// host's input method gets the keys. ⌃⌥⌘-shortcuts stay local (close mirror, statistics, library).
 @MainActor
 final class KeyForwarder {
     private var monitor: Any?
@@ -221,7 +222,7 @@ final class KeyForwarder {
                     localKeys.insert(event.keyCode)
                     return nil
                 }
-                if !flags.contains(.command), LocalInputSource.composes {
+                if !flags.contains(.command), TextInputPreferences.composesOnThisMac, LocalInputSource.composes {
                     if mirror.surface.window?.firstResponder !== mirror.surface {
                         mirror.surface.window?.makeFirstResponder(mirror.surface)
                     }

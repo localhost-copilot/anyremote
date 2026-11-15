@@ -4,32 +4,36 @@ import OSLog
 
 private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category: "Input")
 
-/// Keeps the host on a plain keyboard layout while a viewer types.
+/// The host's input source while a viewer types, per `TextInputSettings`.
 ///
-/// The viewer composes Chinese, Japanese and the like with its own input
-/// method and sends the text; its other keys arrive as key codes. An input
-/// method selected here would compose those key codes again, in a candidate
-/// window the viewer can't see (it isn't part of the captured window). The
-/// source that was selected before comes back when the viewer leaves.
+/// When the viewer's input method composes, the host keeps a plain keyboard
+/// layout: an input method selected here would compose the viewer's key codes
+/// again, in a candidate window the viewer may not see. The source that was
+/// selected before comes back when the viewer leaves or lets the host's input
+/// method compose, unless someone chose another meanwhile.
 @MainActor
 final class HostKeyboardLayout {
-    /// The source selected before this session switched, and the one it chose.
+    /// The source selected before this session first switched, and the one it chose last.
     private var switched: (previous: String, selected: String)?
     private var lastCheck: Date = .distantPast
 
-    /// Cheap enough for every key press: checks at most once a second.
+    /// Viewer composes: cheap enough for every key press, checks at most once a second.
     func ensureKeyboardLayout() {
         let now = Date()
         guard now.timeIntervalSince(lastCheck) > 1 else { return }
         lastCheck = now
         guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
               !Self.isKeyboardLayout(current),
-              let layout = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let currentID = Self.identifier(current), let layoutID = Self.identifier(layout) else { return }
-        let status = TISSelectInputSource(layout)
-        log.notice("input source \(currentID, privacy: .public) -> \(layoutID, privacy: .public) (\(status))")
+              let layout = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue() else { return }
+        select(layout, replacing: current)
+    }
+
+    private func select(_ source: TISInputSource, replacing current: TISInputSource) {
+        guard let currentID = Self.identifier(current), let sourceID = Self.identifier(source) else { return }
+        let status = TISSelectInputSource(source)
+        log.notice("input source \(currentID, privacy: .public) -> \(sourceID, privacy: .public) (\(status))")
         guard status == noErr else { return }
-        if switched == nil { switched = (currentID, layoutID) }
+        switched = (switched?.previous ?? currentID, sourceID)
     }
 
     /// Selects the previous source again, unless someone chose another meanwhile.
@@ -37,24 +41,24 @@ final class HostKeyboardLayout {
         guard let switched else { return }
         self.switched = nil
         guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
-              Self.identifier(current) == switched.selected,
+              Self.identifier(current) == switched.selected, switched.previous != switched.selected,
               let previous = Self.source(switched.previous) else { return }
         TISSelectInputSource(previous)
     }
 
     private static func isKeyboardLayout(_ source: TISInputSource) -> Bool {
-        guard let type = property(source, kTISPropertyInputSourceType) else { return true }
-        return (Unmanaged<CFString>.fromOpaque(type).takeUnretainedValue() as String) == (kTISTypeKeyboardLayout as String)
+        stringProperty(source, kTISPropertyInputSourceType) == (kTISTypeKeyboardLayout as String)
     }
 
     private static func identifier(_ source: TISInputSource) -> String? {
-        property(source, kTISPropertyInputSourceID).map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String }
+        stringProperty(source, kTISPropertyInputSourceID)
     }
 
-    private static func property(_ source: TISInputSource, _ key: CFString) -> UnsafeMutableRawPointer? {
-        TISGetInputSourceProperty(source, key)
+    private static func stringProperty(_ source: TISInputSource, _ key: CFString) -> String? {
+        TISGetInputSourceProperty(source, key).map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String }
     }
 
+    /// Among the enabled sources only.
     private static func source(_ identifier: String) -> TISInputSource? {
         let filter = [kTISPropertyInputSourceID as String: identifier] as CFDictionary
         guard let list = TISCreateInputSourceList(filter, false)?.takeRetainedValue() as? [TISInputSource] else { return nil }
