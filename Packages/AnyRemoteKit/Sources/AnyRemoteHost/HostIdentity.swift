@@ -28,6 +28,14 @@ public struct HostSettings: Codable, Equatable, Sendable {
     /// Virtual display size in points (rendered at 2x).
     public var virtualDisplayWidth: Int
     public var virtualDisplayHeight: Int
+    /// Optional so settings saved before it existed still decode.
+    private var mutesSharedSound: Bool?
+
+    /// Apps whose sound plays on a viewer go quiet on this Mac meanwhile.
+    public var mutesSoundWhileShared: Bool {
+        get { mutesSharedSound ?? false }
+        set { mutesSharedSound = newValue }
+    }
 
     public var code: PairingCode? { PairingCode(pairingCode) }
 

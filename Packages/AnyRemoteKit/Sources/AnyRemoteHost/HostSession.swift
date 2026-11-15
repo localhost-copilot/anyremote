@@ -146,6 +146,9 @@ final class HostSession: @unchecked Sendable {
     /// An app the viewer asked to open; its first window opens on the viewer.
     private var pendingLaunch: (path: String, pid: pid_t?, deadline: UInt64)?
     private var ended = false
+    /// The viewer wants the sound of what it shows.
+    private var audioRequested = false
+    private var audio: (scope: AudioScope, tap: ProcessAudioTap)?
     private let menuQueue = DispatchQueue(label: "anyremote.menu", qos: .userInitiated)
 
     init(sessionID: UInt32, connection: ControlConnection, queue: DispatchQueue, service: HostService) {
@@ -234,6 +237,9 @@ final class HostSession: @unchecked Sendable {
             performMenuItem(streamID: streamID, path: path)
         case let .windowAction(streamID, action):
             perform(action, streamID: streamID)
+        case let .audio(enabled):
+            audioRequested = enabled
+            updateAudio()
         case .goodbye:
             end(reason: "Viewer disconnected.")
         default:
@@ -270,6 +276,7 @@ final class HostSession: @unchecked Sendable {
             cursor?.stop()
             if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             for id in Array(streams.keys) { endStream(id, reason: reason, notify: false) }
+            stopAudio()
             if notifyViewer {
                 connection.close(after: .goodbye(reason: reason))
             } else {
@@ -543,6 +550,7 @@ final class HostSession: @unchecked Sendable {
         stream.displayScale = geometry.scale
         stream.captureDisplayID = displayID
         streams[streamID] = stream
+        updateAudio()
         let queue = queue
         sender.onStop = { [weak audience] error in
             queue.async {
@@ -573,6 +581,7 @@ final class HostSession: @unchecked Sendable {
         }
         streams[streamID] = stream
         audience.add(self)
+        updateAudio()
         log.notice("\(self.viewerName, privacy: .public) joins display \(stream.windowID) (\(audience.sessions.count) watching)")
         connection.send(.streamStarted(stream.description))
         stream.sender.requestKeyframe()
@@ -749,6 +758,7 @@ final class HostSession: @unchecked Sendable {
         stream.axWindow = role == .window ? try? AXWindow(pid: pid, windowID: window.windowID) : nil
         streams[streamID] = stream
         if let parent { streams[parent]?.children[window.windowID] = streamID }
+        if role == .window { updateAudio() }
         sender.onStop = { [weak self] error in
             self?.queue.async {
                 self?.endStream(streamID, reason: error == nil ? "Capture stopped." : "The window was closed.")
@@ -817,12 +827,76 @@ final class HostSession: @unchecked Sendable {
     }
 
     private func streamsMayHaveEnded() {
+        updateAudio()
         if !streams.values.contains(where: { $0.description.role != .child }) {
             if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             cursor?.stop()
             cursor = nil
             service?.streamsDidEnd(session: self)
         }
+    }
+
+    // MARK: Sound
+
+    /// What the viewer should hear: everything with a desktop open, else the
+    /// apps of its open windows; nothing without either.
+    private var wantedAudioScope: AudioScope? {
+        guard !ended, audioRequested else { return nil }
+        let surfaces = streams.values.filter { $0.description.role != .child }
+        guard !surfaces.isEmpty else { return nil }
+        if surfaces.contains(where: { $0.description.role == .display }) { return .system }
+        return .applications(Set(surfaces.map(\.pid)))
+    }
+
+    /// Starts, follows or stops the sound to match the viewer's surfaces and
+    /// the host's settings. Queue-confined.
+    func updateAudio() {
+        let mutes = service?.settings.mutesSoundWhileShared ?? false
+        guard let scope = wantedAudioScope else {
+            stopAudio()
+            return
+        }
+        if let audio {
+            audio.tap.update(scope: scope, mutes: mutes)
+            self.audio = (scope, audio.tap)
+            return
+        }
+        let sender: AudioStreamSender
+        do {
+            sender = try AudioStreamSender { [weak self] datagram in self?.send(datagrams: [datagram]) }
+        } catch {
+            log.error("sound encoder unavailable: \(String(describing: error), privacy: .public)")
+            return
+        }
+        let tap = ProcessAudioTap(scope: scope, mutes: mutes) { frames, rate, hostNanos in
+            sender.submit(frames, sampleRate: rate, hostNanos: hostNanos)
+        }
+        audio = (scope, tap)
+        // The viewer prepares its player while capture starts.
+        connection.send(.audioStream(sender.format))
+        log.notice("sending sound to \(self.viewerName, privacy: .public)")
+        // Setting up the capture device takes ~80 ms; other sessions share this queue.
+        let queue = queue
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                try tap.start()
+            } catch {
+                log.error("sound capture failed: \(error.localizedDescription, privacy: .public)")
+                queue.async { [weak self] in
+                    guard let self, self.audio?.tap === tap else { return }
+                    self.audio = nil
+                    self.connection.send(.audioStream(nil))
+                }
+            }
+        }
+    }
+
+    private func stopAudio() {
+        guard let audio else { return }
+        self.audio = nil
+        if !ended { connection.send(.audioStream(nil)) }
+        DispatchQueue.global(qos: .userInitiated).async { audio.tap.stop() }
+        log.notice("stopped sound to \(self.viewerName, privacy: .public)")
     }
 
     private func adaptBitRate(streamID: UInt16, received: UInt32, dropped: UInt32) {

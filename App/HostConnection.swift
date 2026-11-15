@@ -79,6 +79,10 @@ final class HostConnection {
     @ObservationIgnored var onClosed: (() -> Void)?
     @ObservationIgnored private var pasteboard: PasteboardBridge?
     @ObservationIgnored private var sharingObserver: NSObjectProtocol?
+    @ObservationIgnored private var soundObserver: NSObjectProtocol?
+    @ObservationIgnored private var audioReportTimer: Timer?
+    /// Sound statistics of the last second, while the host's sound plays here.
+    @ObservationIgnored private(set) var audioReport: AudioStreamReceiver.Report?
 
     init(target: HostTarget, code: PairingCode) {
         self.target = target
@@ -121,6 +125,8 @@ final class HostConnection {
 
     func connect(takeOver: Bool = false) async throws {
         state = .connecting
+        // Sent as soon as the host has let us in.
+        client.setAudio(enabled: SoundSharing.isEnabled)
         do {
             welcome = try await client.connect(takeOver: takeOver)
             missingPermissions = welcome?.missingPermissions ?? []
@@ -131,6 +137,12 @@ final class HostConnection {
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateClipboardSharing() }
             }
+            soundObserver = NotificationCenter.default.addObserver(
+                forName: SoundSharing.changed, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.client.setAudio(enabled: SoundSharing.isEnabled) }
+            }
+            startAudioReports()
             await refresh()
         } catch {
             state = .failed(error.localizedDescription)
@@ -158,6 +170,22 @@ final class HostConnection {
         pasteboard = nil
         if let sharingObserver { NotificationCenter.default.removeObserver(sharingObserver) }
         sharingObserver = nil
+        if let soundObserver { NotificationCenter.default.removeObserver(soundObserver) }
+        soundObserver = nil
+        audioReportTimer?.invalidate()
+        audioReportTimer = nil
+        audioReport = nil
+    }
+
+    private func startAudioReports() {
+        let printsStatistics = ProcessInfo.processInfo.environment["ANYREMOTE_STATS_STDOUT"] == "1"
+        audioReportTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.audioReport = self.client.takeAudioReport()
+                if printsStatistics, let report = self.audioReport { print(report.description) }
+            }
+        }
     }
 
     func disconnect() {

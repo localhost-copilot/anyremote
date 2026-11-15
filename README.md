@@ -19,6 +19,8 @@ one click away too.
   once.
 - **Encrypted, paired once** — a 100-bit pairing code and AES-256-GCM for
   everything; pairing works both ways.
+- **Sound** — with a window open you hear that app, and only that app; with
+  the full desktop, the whole Mac.
 - **Shared clipboard**, English or Simplified Chinese interface.
 
 Latency and image quality target Apple's Screen Sharing high-performance
@@ -43,7 +45,9 @@ Requires macOS 15 or later, Apple silicon or Intel.
 
 3. Open AnyRemote on **every** Mac involved. If permissions are missing,
    Settings opens with a checklist: grant **Screen Recording** and
-   **Accessibility**, and allow **Local Network** when asked. Updates keep
+   **Accessibility**, and allow **Local Network** when asked. The first time
+   another Mac listens, macOS asks to let AnyRemote record this Mac's
+   audio (*System Audio Recording*); allow it for sound. Updates keep
    the grants, since every release is signed with the same certificate.
 
 ## Getting started
@@ -165,6 +169,17 @@ the *remote* app). AnyRemote's own commands use ⌃⌥⌘:
 Keys are sent as virtual key codes, so the host's keyboard layout and input
 method apply.
 
+### Sound
+
+The host's sound plays on the viewer (Settings → Sound → *Play Sound from
+Other Macs*, on by default). With windows open you hear their apps and
+nothing else: sound has no window in macOS, so a window's sound is its
+app's, including what the app plays through helper processes (a browser's
+tabs, WebKit views). With a full desktop open you hear everything except
+AnyRemote itself. *Mute This Mac While Its Sound Plays Elsewhere* (on the
+host) silences the shared apps there meanwhile. Sound is about 35–45 ms
+behind the host on loopback, close enough to the picture for lip sync.
+
 ### Clipboard, displays, language
 
 - The clipboard is shared both ways while connected (Settings → General →
@@ -204,6 +219,9 @@ method apply.
 - Full desktop: keys outside the window server's hot keys (Touch ID, the
   power key) still act on this Mac. Dynamic resolution rearranges the host's
   windows like any resolution change.
+- Sound is per app, not per window: two windows of one app (or two browser
+  tabs) share their sound, and an open window plays its app's sound even
+  from its other windows.
 - Two viewers opening the same *window* each get their own capture, and
   resizing it from both fights; only desktops are shared.
 - Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
@@ -225,6 +243,7 @@ SCK window or display capture (444f / BGRA+alpha)
 AX geometry / focus / menus  ←── TCP control (AES-GCM) ──  input, resize, focus,
 CGEvent injection                                          menu picks, reports
 cursor (CGSCurrentCursorSeed) ─────────────────────────→  local NSCursor
+Core Audio process taps → AAC-ELD ─────── UDP ────→  jitter buffer → AVAudioEngine
 ```
 
 - **Control** — TCP (Network.framework, no-delay, keepalive,
@@ -246,6 +265,18 @@ cursor (CGSCurrentCursorSeed) ────────────────�
   stream is shared: one capture and encode, an audience of sessions, each
   sealing the same datagrams with its own key. Stream IDs are unique across
   sessions.
+- **Sound** — while the viewer asks for it (`audio(enabled:)`) and shows
+  something, the host taps the scope's processes with Core Audio process
+  taps: one private tap per audio process whose PID, or responsible process
+  (`responsibility_get_pid_responsible_for_pid`), belongs to an open
+  window's app, or one global tap excluding AnyRemote for a desktop. The
+  taps feed a private aggregate device whose tap list follows processes as
+  they come and go (a tap's own process list can't be changed). Its input
+  is mixed, resampled to 48 kHz and encoded as AAC-ELD stereo, 480 frames
+  (10 ms) per packet at 128 kbit/s; each `AudioPacket` datagram also carries
+  the previous packet, so a single loss is filled in. The viewer decodes
+  into an adaptive jitter buffer (30 ms to start, 20–200 ms) played by an
+  `AVAudioSourceNode`.
 - **Clock sync** — ping/pong; the minimum-RTT sample gives the host↔viewer
   clock offset, so latency is measured across machines.
 - **Bitrate** — receiver reports every second; ×0.75 on loss, +10% after
@@ -276,8 +307,8 @@ cursor (CGSCurrentCursorSeed) ────────────────�
 The pairing code is 100 bits (20 Crockford base32 characters). Both sides
 derive a pre-shared key from it with HKDF-SHA256; each connection mixes in
 two fresh 32-byte nonces to derive four AES-256-GCM keys (control and
-datagram, each direction). Control frames use implicit counter nonces; video
-datagrams carry an explicit counter (authenticated, 1024-entry replay
+datagram, each direction). Control frames use implicit counter nonces;
+datagrams (video and sound) carry an explicit counter (authenticated, 1024-entry replay
 window). A wrong code fails at the first sealed frame. Resetting the code in
 Settings disconnects every viewer. A code received through two-way pairing is
 stored like one typed in; a withdrawal only removes Macs added that way.
@@ -310,15 +341,17 @@ App/                        AppKit + SwiftUI app
   ChildWindowController     menus/popovers/sheets as local child windows
   RemoteSurfaceView         Metal surface + mouse/scroll; KeyForwarder
   RemoteMenuBar             host menu bar as native NSMenus
-  HostSettingsView          sharing + viewers, permission checklist, pairing code, display
+  HostSettingsView          sharing + viewers, permission checklist, pairing code, display, sound
+  SoundSharing              the viewer's "Play Sound from Other Macs" setting
   DevelopmentLaunch         test/measurement launch modes
 DockProxy/                  stand-in app behind each remote app's Dock icon
 Packages/AnyRemoteKit/
   AnyRemoteWire             messages, framing, pairing, AES-GCM channel, reassembly
   AnyRemoteNetwork          TCP control connection, UDP socket, Bonjour, storage
-  AnyRemoteMedia            capture, encoder (whole/strips), decoder, Metal layer, stats, clocks
+  AnyRemoteMedia            capture, encoder (whole/strips), decoder, Metal layer, stats, clocks;
+                            AAC-ELD codec, sound sender/receiver, jitter buffer
   AnyRemoteWindowControl    AX window geometry/focus, menu bar reader
-  AnyRemoteHost             host service + sessions, input, cursor, virtual display
+  AnyRemoteHost             host service + sessions, input, cursor, virtual display, process audio taps
   AnyRemoteClient           viewer-side connection, paired-host store
   CGVirtualDisplayPrivate   private CGVirtualDisplay declarations
   AnyRemoteDiagnostics      synthetic workload window
@@ -336,7 +369,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 49 tests incl. VT round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 60 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -403,8 +436,13 @@ Environment:
   frames shown a refresh late although sent on time).
 - `ANYREMOTE_STATS=1` starts with the statistics overlay on.
 - `ANYREMOTE_HOME=<dir>` uses a separate settings directory.
-- `ANYREMOTE_DROP=0.02` drops that share of the video datagrams arriving at
-  the viewer (simulated loss).
+- `ANYREMOTE_DROP=0.02` drops that share of the datagrams (video and sound)
+  arriving at the viewer (simulated loss).
+- `ANYREMOTE_AUDIO_BUFFER_MS=20` on the viewer starts the sound's jitter
+  buffer at that size; `ANYREMOTE_AUDIO_IO_FRAMES=512` on the host sets the
+  capture device's I/O buffer (240 by default). The `audio …` statistics
+  line shows packets, losses filled in or played as silence, underruns,
+  pauses, buffer, transit (host capture → arrival), total and peak level.
 - `ANYREMOTE_TILES=1` on the host sends desktops as whole frames (2–8 sets the
   strip count).
 - `ANYREMOTE_DISPLAY_SYNC=1` restores vsync on the windowed layer.

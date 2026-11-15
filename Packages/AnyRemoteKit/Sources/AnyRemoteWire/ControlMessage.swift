@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 8
+public let anyRemoteProtocolVersion: UInt16 = 9
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -293,15 +293,17 @@ public struct HostStreamReport: Codable, Equatable, Sendable {
 }
 
 /// Plaintext datagram kinds (first two bytes: version 1, kind). Kind 1 is a
-/// `VideoFragmenter` datagram.
+/// `VideoFragmenter` datagram, kind 3 an `AudioPacket`.
 public enum DatagramKind {
     public static let video: UInt8 = 1
     /// Viewer → host: binds the viewer's UDP address to the session.
     public static let keepalive: UInt8 = 2
     public static let keepaliveDatagram = Data([1, keepalive])
+    /// Host → viewer: one `AudioPacket`.
+    public static let audio: UInt8 = 3
 }
 
-/// Messages on the sealed control channel. Video travels separately as
+/// Messages on the sealed control channel. Video and sound travel separately as
 /// datagrams.
 public enum ControlMessage: Codable, Equatable, Sendable {
     // Session
@@ -365,6 +367,13 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case menuBar(streamID: UInt16, applicationName: String, menus: [MenuNode])
     /// `path` indexes from the top-level menu down to the item.
     case performMenuItem(streamID: UInt16, path: [Int])
+
+    // Sound
+    /// Viewer → host: whether to send the sound of what the viewer shows (the
+    /// apps of its open windows, or everything with a full desktop open).
+    case audio(enabled: Bool)
+    /// Host → viewer: sound packets follow in this format; nil when they stop.
+    case audioStream(AudioStreamFormat?)
 }
 
 public enum ControlCoding {

@@ -58,10 +58,11 @@ targets:
         NSBonjourServices:
           - _anyremote._tcp
         NSAppleEventsUsageDescription: AnyRemote opens Screen Sharing for full-desktop sessions.
+        NSAudioCaptureUsageDescription: AnyRemote sends the sound of the apps another Mac shows to that Mac.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.localhost-copilot.anyremote
-        MARKETING_VERSION: "0.10.0"
+        MARKETING_VERSION: "0.11.0"
         CURRENT_PROJECT_VERSION: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:

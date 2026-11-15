@@ -378,6 +378,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         let rtt = connection.client.roundTripMilliseconds.map { String(format: "%.2f ms", $0) } ?? "–"
         let pacing = surface.frameLayer.pacingDescription
         if !pacing.isEmpty { lines.append(pacing) }
+        if showsStatistics, let audio = connection.audioReport { lines.append(audio.description) }
         lines.append("""
         host \(Int(remotePointSize.width))×\(Int(remotePointSize.height))pt @\(remoteScale)x · \
         local \(Int(viewPixels.width))×\(Int(viewPixels.height))px @\(Int(backing))x · \

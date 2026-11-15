@@ -367,6 +367,7 @@ final class DesktopWindowController: NSWindowController, NSWindowDelegate, Remot
         let rtt = connection.client.roundTripMilliseconds.map { String(format: "%.2f ms", $0) } ?? "–"
         let pacing = surface.frameLayer.pacingDescription
         if !pacing.isEmpty { lines.append(pacing) }
+        if showsStatistics, let audio = connection.audioReport { lines.append(audio.description) }
         lines.append("""
         desktop \(Int(remotePointSize.width))×\(Int(remotePointSize.height))pt @\(remoteScale)x · \
         shown \(Int(videoPixels.width))×\(Int(videoPixels.height))px @\(Int(backing))x · \

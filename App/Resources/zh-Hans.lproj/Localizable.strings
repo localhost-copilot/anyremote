@@ -211,3 +211,8 @@
 "Taking over disconnects the other one." = "接管会断开另一台 Mac。";
 "Turn On" = "打开";
 "Type the name of an app on “%@” to open it here." = "输入「%@」上 App 的名称，即可在这里打开。";
+"Sound" = "声音";
+"Play Sound from Other Macs" = "播放其他 Mac 的声音";
+"You hear the apps whose windows are open here, or everything while a full desktop is open." = "你会听到在这里打开了窗口的 App 的声音；打开完整桌面时则听到全部声音。";
+"Mute This Mac While Its Sound Plays Elsewhere" = "声音在别处播放时让这台 Mac 静音";
+"When another Mac controls this one, the apps it listens to go quiet here." = "另一台 Mac 控制这台 Mac 时，它正在收听的 App 在这里不再出声。";

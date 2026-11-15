@@ -1,2 +1,3 @@
 "NSLocalNetworkUsageDescription" = "AnyRemote 用来发现并连接网络里的其他 Mac。";
 "NSAppleEventsUsageDescription" = "AnyRemote 用屏幕共享打开完整桌面。";
+"NSAudioCaptureUsageDescription" = "AnyRemote 把另一台 Mac 正在显示的 App 的声音发送给那台 Mac。";

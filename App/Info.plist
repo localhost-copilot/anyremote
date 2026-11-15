@@ -26,6 +26,8 @@
 	<string>15.0</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>AnyRemote opens Screen Sharing for full-desktop sessions.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>AnyRemote sends the sound of the apps another Mac shows to that Mac.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_anyremote._tcp</string>

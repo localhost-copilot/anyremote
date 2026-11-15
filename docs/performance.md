@@ -71,6 +71,32 @@ Capture → decoded, no network (`anyremote-bench --tiles`, 3840×2160):
 Eight strips gave nothing more for full-screen motion. `ANYREMOTE_TILES=1`
 on the host sends whole frames (any 2–8 sets the strip count).
 
+## Sound (M6, macOS 27, network loopback)
+
+Full desktop, a steady tone, 12 one-second samples per run, median of the
+samples; *transit* is host capture → arrival, *total* adds the jitter buffer
+and the output device (3.7 ms).
+
+| capture I/O buffer | transit | total |
+|---|---|---|
+| device default (512 frames) | 15.8–15.9 ms | 40–47 ms |
+| 240 frames (chosen) | 10.3–10.4 ms | 33–45 ms |
+| 128 frames | 11.5 ms | 41–44 ms |
+
+- A frame waits for its whole I/O cycle and then for its 10 ms packet, so
+  below 240 frames the packet dominates.
+- The total swings with the jitter buffer's level at the moment of the
+  sample (10–30 ms around a 30 ms target). A 20 ms target played without
+  underruns on loopback (total ~30 ms); the buffer starts at 30 ms and
+  shrinks toward 20 ms after 20 s without an underrun, to leave room for
+  Wi-Fi at the start.
+- 5% simulated loss (`ANYREMOTE_DROP=0.05`): 3–5 packets a second came back
+  from the next packet's copy, about one a run was played as silence, no
+  underruns.
+- Core Audio runs a tap's device only while something it taps plays, so the
+  host sends nothing while the shared apps are silent; the viewer counts
+  such gaps as pauses, not underruns, so they don't grow its buffer.
+
 ## Findings behind the settings
 
 - `RealTime` is off and `PrioritizeEncodingSpeedOverQuality` on. In

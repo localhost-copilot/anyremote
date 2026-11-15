@@ -140,6 +140,13 @@ public final class HostService: @unchecked Sendable {
         sessions.forEach { $0.end(reason: "The host ended the session.", notifyViewer: true) }
     }
 
+    /// Applies changed settings to the sessions under way (the sound's muting).
+    public func settingsChanged() {
+        queue.async { [self] in
+            for session in sessions() { session.updateAudio() }
+        }
+    }
+
     /// Lets windows of this process be listed (diagnostics workloads).
     public func allowOwnWindow(_ id: CGWindowID) {
         lock.lock()

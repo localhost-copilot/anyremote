@@ -70,6 +70,10 @@ public final class RemoteHostClient: @unchecked Sendable {
     private let receiverLock = NSLock()
     private var receivers: [UInt16: WindowStreamReceiver] = [:]
     private var opener: DatagramOpener?
+    private var audioReceiver: AudioStreamReceiver?
+
+    // Queue-confined.
+    private var wantsAudio = false
 
     /// Delivered on the main queue.
     public var onEvent: (@MainActor @Sendable (Event) -> Void)?
@@ -163,6 +167,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         for index in 0..<6 {
             queue.asyncAfter(deadline: .now() + .milliseconds(index * 40)) { [weak self] in self?.ping() }
         }
+        if wantsAudio { control?.send(.audio(enabled: true)) }
         connectContinuation?.resume(returning: welcome)
         connectContinuation = nil
         emit(.connected(welcome))
@@ -226,6 +231,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         receivers.removeAll()
         receiverLock.unlock()
         current.values.forEach { $0.close() }
+        replaceAudioReceiver(with: nil)
         emit(.disconnected(reason))
     }
 
@@ -270,6 +276,8 @@ public final class RemoteHostClient: @unchecked Sendable {
             emit(.windowStateRequest(streamID: streamID, request))
         case let .pasteboard(items):
             emit(.pasteboard(items))
+        case .audioStream(let format):
+            startAudio(format)
         default:
             log.debug("unexpected message from host")
         }
@@ -324,6 +332,51 @@ public final class RemoteHostClient: @unchecked Sendable {
     public func launchApplication(path: String) { send(.launchApplication(path: path)) }
 
     public func quitApplication(path: String, force: Bool) { send(.quitApplication(path: path, force: force)) }
+
+    // MARK: Sound
+
+    /// Asks the host for the sound of what this viewer shows (or to stop it).
+    public func setAudio(enabled: Bool) {
+        queue.async { [self] in
+            wantsAudio = enabled
+            // Before the welcome the host only accepts authentication; the
+            // wish is sent once connected then.
+            if welcome != nil { control?.send(.audio(enabled: enabled)) }
+            if !enabled { replaceAudioReceiver(with: nil) }
+        }
+    }
+
+    /// Sound statistics since the last call, while sound plays.
+    public func takeAudioReport() -> AudioStreamReceiver.Report? {
+        receiverLock.lock()
+        let receiver = audioReceiver
+        receiverLock.unlock()
+        return receiver?.takeReport()
+    }
+
+    private func startAudio(_ format: AudioStreamFormat?) {
+        guard let format, wantsAudio, !finished else {
+            replaceAudioReceiver(with: nil)
+            return
+        }
+        do {
+            let receiver = try AudioStreamReceiver(format: format)
+            receiver.remoteClock = clock
+            replaceAudioReceiver(with: receiver)
+            log.notice("playing the host's sound")
+        } catch {
+            log.error("sound decoder unavailable: \(String(describing: error), privacy: .public)")
+            replaceAudioReceiver(with: nil)
+        }
+    }
+
+    private func replaceAudioReceiver(with receiver: AudioStreamReceiver?) {
+        receiverLock.lock()
+        let previous = audioReceiver
+        audioReceiver = receiver
+        receiverLock.unlock()
+        previous?.close()
+    }
 
     // MARK: Video
 
@@ -380,7 +433,13 @@ public final class RemoteHostClient: @unchecked Sendable {
                 datagramsUnreadable += 1
                 continue
             }
-            guard plaintext.count >= 4, plaintext[plaintext.startIndex + 1] == DatagramKind.video else { continue }
+            guard plaintext.count >= 4 else { continue }
+            let kind = plaintext[plaintext.startIndex + 1]
+            if kind == DatagramKind.audio {
+                audioReceiver?.receive(plaintext)
+                continue
+            }
+            guard kind == DatagramKind.video else { continue }
             let start = plaintext.startIndex
             let streamID = UInt16(plaintext[start + 2]) << 8 | UInt16(plaintext[start + 3])
             grouped[streamID, default: []].append(plaintext)

@@ -63,6 +63,18 @@ final class HostSettingsModel {
 
     private(set) var showsRemoteAppsInDock = DockProxies.isEnabled
     private(set) var sharesClipboard = ClipboardSharing.isEnabled
+    private(set) var playsRemoteSound = SoundSharing.isEnabled
+
+    func setPlaysRemoteSound(_ value: Bool) {
+        playsRemoteSound = value
+        SoundSharing.isEnabled = value
+    }
+
+    func setMutesSoundWhileShared(_ value: Bool) {
+        service.settingsStore.update { $0.mutesSoundWhileShared = value }
+        settings = service.settingsStore.settings
+        service.settingsChanged()
+    }
 
     func setSharesClipboard(_ value: Bool) {
         sharesClipboard = value
@@ -118,6 +130,16 @@ struct HostSettingsView: View {
                     Text("Never").tag(HostSettings.VirtualDisplayMode.never)
                 }
                 Text("While being controlled, windows move to a \(String(model.settings.virtualDisplayWidth))×\(String(model.settings.virtualDisplayHeight)) pt virtual display rendered at 2×, so even a Mac mini without a display shows sharp windows. They move back afterwards.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section("Sound") {
+                Toggle("Play Sound from Other Macs", isOn: Binding(
+                    get: { model.playsRemoteSound }, set: { model.setPlaysRemoteSound($0) }))
+                Text("You hear the apps whose windows are open here, or everything while a full desktop is open.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Toggle("Mute This Mac While Its Sound Plays Elsewhere", isOn: Binding(
+                    get: { model.settings.mutesSoundWhileShared }, set: { model.setMutesSoundWhileShared($0) }))
+                Text("When another Mac controls this one, the apps it listens to go quiet here.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section("General") {
