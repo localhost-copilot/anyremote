@@ -42,6 +42,7 @@ private struct Sidebar: View {
     @Bindable var model: ViewerModel
     @Binding var addingHost: Bool
     @State private var renaming: HostTarget?
+    @State private var editingAddress: HostTarget?
 
     var body: some View {
         List(selection: $model.selection) {
@@ -60,6 +61,7 @@ private struct Sidebar: View {
                                     get: { model.sharesBack(target) },
                                     set: { model.setSharesBack(target, $0) }))
                                 Button("Rename…") { renaming = target }
+                                Button("Edit Address…") { editingAddress = target }
                                 Divider()
                                 Button("Forget This Mac", role: .destructive) { model.forget(target) }
                             }
@@ -86,6 +88,7 @@ private struct Sidebar: View {
             .padding(.vertical, 10)
         }
         .sheet(item: $renaming) { target in RenameSheet(target: target, model: model) }
+        .sheet(item: $editingAddress) { target in AddressSheet(target: target, model: model) }
     }
 }
 
@@ -756,6 +759,42 @@ private struct RenameSheet: View {
     private func save() {
         model.rename(target, to: name)
         dismiss()
+    }
+}
+
+private struct AddressSheet: View {
+    let target: HostTarget
+    let model: ViewerModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var address = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Address of “\(target.name)”").font(.headline)
+            Text("Where this Mac connects to it. Change it when that Mac is on another subnet or got a new IP address; the default port is 47800.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            TextField("Address", text: $address, prompt: Text("192.168.1.20 or mac-mini.local"))
+                .frame(width: 340).onSubmit(save)
+            if let error = model.lastError {
+                Text(FriendlyText.message(error)).foregroundStyle(.red).font(.callout)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Save", action: save).keyboardShortcut(.defaultAction)
+                    .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+        .onAppear {
+            model.lastError = nil
+            address = model.pairedHost(for: target)?.address ?? ""
+        }
+    }
+
+    private func save() {
+        if model.setAddress(target, to: address) { dismiss() }
     }
 }
 

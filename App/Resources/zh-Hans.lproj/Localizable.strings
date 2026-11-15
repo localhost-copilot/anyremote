@@ -184,3 +184,8 @@
 
 "Fit Desktop to Window" = "桌面适应窗口大小";
 "Send System Shortcuts to Desktop" = "将系统快捷键发送到桌面";
+"Edit Address…" = "修改地址…";
+"Address of “%@”" = "「%@」的地址";
+"Where this Mac connects to it. Change it when that Mac is on another subnet or got a new IP address; the default port is 47800." = "本机连接它时使用的地址。那台 Mac 在另一个网段、或者 IP 变了时修改这里；默认端口是 47800。";
+"Save" = "保存";
+"Enter an address like mac-mini.local or 192.168.1.20:47800." = "请输入类似 mac-mini.local 或 192.168.1.20:47800 的地址。";

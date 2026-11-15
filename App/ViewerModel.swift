@@ -199,7 +199,7 @@ final class ViewerModel {
 
     func addManualHost(name: String, address: String, code: PairingCode) async -> Bool {
         guard let endpoint = HostTarget.endpoint(fromAddress: address) else {
-            lastError = "Enter an address like mac-mini.local or 192.168.1.20:47800."
+            lastError = String(localized: "Enter an address like mac-mini.local or 192.168.1.20:47800.")
             return false
         }
         let provisionalID = "address:\(address)"
@@ -225,6 +225,25 @@ final class ViewerModel {
         host.name = name
         pairedStore.save(host, replacing: host.id)
         saved = pairedStore.all
+    }
+
+    /// Connects to this Mac at `address` from now on (another subnet, a new
+    /// IP). Set by hand, so pairing offers from that Mac no longer change it.
+    /// Returns false, with `lastError` set, for an address that can't be used.
+    func setAddress(_ target: HostTarget, to address: String) -> Bool {
+        let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var host = pairedHost(for: target) else { return false }
+        guard HostTarget.endpoint(fromAddress: address) != nil else {
+            lastError = String(localized: "Enter an address like mac-mini.local or 192.168.1.20:47800.")
+            return false
+        }
+        disconnect(target)
+        host.address = address
+        host.fromPeer = false
+        pairedStore.save(host, replacing: host.id)
+        saved = pairedStore.all
+        if selection == target.id { selection = "saved:\(host.id)" }
+        return true
     }
 
     func forget(_ target: HostTarget) {
