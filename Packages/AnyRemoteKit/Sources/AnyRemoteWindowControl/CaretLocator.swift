@@ -1,3 +1,4 @@
+import AnyRemoteWire
 import ApplicationServices
 import CoreGraphics
 import Foundation
@@ -15,8 +16,53 @@ public final class CaretLocator: @unchecked Sendable {
     public init() {}
 
     /// The caret of the focused element in `pid`'s app, or in the frontmost
-    /// app when nil, in global points with a top-left origin.
-    public func caretRect(pid: pid_t?) -> CGRect? {
+    /// app when nil, in global points with a top-left origin, with the font
+    /// of the text around it when the app tells. With text selected on one
+    /// line, the rect spans it (typing replaces it).
+    public func caret(pid: pid_t?) -> (rect: CGRect, font: CaretFont?)? {
+        guard let element = focusedElement(pid: pid),
+              let rangeValue: AXValue = Self.attribute(element, kAXSelectedTextRangeAttribute) else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(rangeValue, .cfRange, &range), range.location >= 0 else { return nil }
+        let location = range.location
+        let frame = Self.frame(of: element)
+
+        // Characters have reliable bounds; an empty range often doesn't
+        // (Cocoa text reports it a line too high). The caret is the leading
+        // edge of the character after it, or else the trailing edge of the
+        // one before it.
+        let next = Self.character(element, at: location)
+        let previous = location > 0 ? Self.character(element, at: location - 1) : nil
+        let rect: CGRect?
+        if let next, !next.isNewline {
+            rect = CGRect(x: next.bounds.minX, y: next.bounds.minY, width: 1, height: next.bounds.height)
+        } else if let previous, !previous.isNewline {
+            rect = CGRect(x: previous.bounds.maxX, y: previous.bounds.minY, width: 1, height: previous.bounds.height)
+        } else if let empty = Self.bounds(element, CFRange(location: location, length: 0)) {
+            // An empty line: below the previous line break, where there is one.
+            var caret = CGRect(x: empty.minX, y: empty.minY, width: 1, height: empty.height)
+            if let previous { caret.origin.y = previous.bounds.maxY }
+            if let frame, caret.minY < frame.minY { caret.origin.y = frame.minY }
+            rect = caret
+        } else {
+            rect = nil
+        }
+        guard var rect, rect.height > 0 else { return nil }
+        // Typing replaces the selection: the caret spans it when it is on one line.
+        if range.length > 0, let selected = Self.bounds(element, CFRange(location: location, length: range.length)),
+           abs(selected.minY - rect.minY) < 2, abs(selected.height - rect.height) < 2, selected.maxX > rect.minX {
+            rect.size.width = selected.maxX - rect.minX
+        }
+        let font = Self.font(element, at: next.map { _ in location } ?? max(0, location - 1))
+        return (rect, font)
+    }
+
+    /// The frame of the focused element in `pid`'s app, global top-left points.
+    public func focusedElementFrame(pid: pid_t) -> CGRect? {
+        focusedElement(pid: pid).flatMap(Self.frame)
+    }
+
+    private func focusedElement(pid: pid_t?) -> AXUIElement? {
         let application: AXUIElement
         if let pid {
             application = AXUIElementCreateApplication(pid)
@@ -30,25 +76,7 @@ public final class CaretLocator: @unchecked Sendable {
         guard AXUIElementGetPid(application, &target) == .success, target != OwnProcessAX.pid else { return nil }
         AXUIElementSetMessagingTimeout(application, 0.25)
         enableAccessibility(application, pid: target)
-
-        guard let element: AXUIElement = Self.attribute(application, kAXFocusedUIElementAttribute),
-              let rangeValue: AXValue = Self.attribute(element, kAXSelectedTextRangeAttribute) else { return nil }
-        var range = CFRange()
-        guard AXValueGetValue(rangeValue, .cfRange, &range), range.location >= 0 else { return nil }
-
-        // An empty range has no bounds in many apps; then use the character
-        // after the caret (its leading edge) or before it (its trailing edge).
-        if let rect = Self.bounds(element, CFRange(location: range.location, length: 0)), rect.height > 0 {
-            return CGRect(x: rect.minX, y: rect.minY, width: max(1, rect.width), height: rect.height)
-        }
-        if let rect = Self.bounds(element, CFRange(location: range.location, length: 1)), rect.height > 0 {
-            return CGRect(x: rect.minX, y: rect.minY, width: 1, height: rect.height)
-        }
-        if range.location > 0, let rect = Self.bounds(element, CFRange(location: range.location - 1, length: 1)),
-           rect.height > 0 {
-            return CGRect(x: rect.maxX, y: rect.minY, width: 1, height: rect.height)
-        }
-        return nil
+        return Self.attribute(application, kAXFocusedUIElementAttribute)
     }
 
     /// Chromium and Electron apps build their accessibility tree, text
@@ -72,15 +100,50 @@ public final class CaretLocator: @unchecked Sendable {
         type == AXValue.self ? AXValueGetTypeID() : AXUIElementGetTypeID()
     }
 
-    private static func bounds(_ element: AXUIElement, _ range: CFRange) -> CGRect? {
+    private static func frame(of element: AXUIElement) -> CGRect? {
+        guard let position: AXValue = attribute(element, kAXPositionAttribute),
+              let size: AXValue = attribute(element, kAXSizeAttribute) else { return nil }
+        var origin = CGPoint.zero, extent = CGSize.zero
+        guard AXValueGetValue(position, .cgPoint, &origin), AXValueGetValue(size, .cgSize, &extent) else { return nil }
+        return CGRect(origin: origin, size: extent)
+    }
+
+    private static func parameterized(_ element: AXUIElement, _ name: String, _ range: CFRange) -> CFTypeRef? {
         var range = range
         guard let parameter = AXValueCreate(.cfRange, &range) else { return nil }
         var value: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute as CFString,
-                                                         parameter, &value) == .success,
-              let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        guard AXUIElementCopyParameterizedAttributeValue(element, name as CFString, parameter, &value) == .success
+        else { return nil }
+        return value
+    }
+
+    private static func bounds(_ element: AXUIElement, _ range: CFRange) -> CGRect? {
+        guard let value = parameterized(element, kAXBoundsForRangeParameterizedAttribute, range),
+              CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
         var rect = CGRect.zero
-        guard AXValueGetValue(value as! AXValue, .cgRect, &rect), rect.height < 1000 else { return nil }
+        guard AXValueGetValue(value as! AXValue, .cgRect, &rect), rect.height > 0, rect.height < 1000 else { return nil }
         return rect
+    }
+
+    private struct Character {
+        var bounds: CGRect
+        var isNewline: Bool
+    }
+
+    private static func character(_ element: AXUIElement, at location: Int) -> Character? {
+        let range = CFRange(location: location, length: 1)
+        guard let text = parameterized(element, kAXStringForRangeParameterizedAttribute, range) as? String,
+              !text.isEmpty, let bounds = bounds(element, range) else { return nil }
+        return Character(bounds: bounds, isNewline: text.unicodeScalars.allSatisfy { CharacterSet.newlines.contains($0) })
+    }
+
+    private static func font(_ element: AXUIElement, at location: Int) -> CaretFont? {
+        guard let text = parameterized(element, kAXAttributedStringForRangeParameterizedAttribute,
+                                       CFRange(location: location, length: 1)) as? NSAttributedString,
+              text.length > 0,
+              let font = text.attribute(NSAttributedString.Key("AXFont"), at: 0,
+                                        effectiveRange: nil) as? [String: Any],
+              let size = (font["AXFontSize"] as? NSNumber)?.doubleValue, size > 0 else { return nil }
+        return CaretFont(name: font["AXFontName"] as? String ?? "", size: size)
     }
 }

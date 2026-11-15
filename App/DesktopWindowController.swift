@@ -241,9 +241,23 @@ final class DesktopWindowController: NSWindowController, NSWindowDelegate, Remot
 
     var remoteCursor: NSCursor? { connection.currentCursor }
 
-    /// The host's text caret, relative to the stream's top-left corner.
-    var caret: CGRect? {
-        didSet { if caret != oldValue { surface.composer.caretMoved() } }
+    /// The host's text caret, relative to the stream's top-left corner, and its text's font.
+    private(set) var caret: CGRect?
+    private var caretTextFont: CaretFont?
+
+    func setCaret(_ rect: CGRect?, font: CaretFont?) {
+        guard rect != caret || font != caretTextFont else { return }
+        caret = rect
+        caretTextFont = font
+        surface.composer.caretMoved()
+    }
+
+    func caretFont() -> NSFont? {
+        guard let caretTextFont else { return nil }
+        let size = caretTextFont.size / max(0.01, currentScale.height)
+        // The system font's private name doesn't resolve with NSFont(name:).
+        return caretTextFont.name.hasPrefix(".") ? .systemFont(ofSize: size)
+            : NSFont(name: caretTextFont.name, size: size) ?? .systemFont(ofSize: size)
     }
 
     func caretScreenRect() -> NSRect? {

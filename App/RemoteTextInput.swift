@@ -206,7 +206,8 @@ final class TextComposer: NSObject, @preconcurrency NSTextInputClient {
 
     private func showPanel() {
         guard let window = view?.window else { return }
-        panel.show(marked, selection: markedSelection, at: anchorRect(), over: window)
+        panel.show(marked, selection: markedSelection, at: anchorRect(), font: view?.sink?.caretFont(),
+                   over: window)
     }
 
     /// The host's caret on this screen, or the last click, or the view's corner.
@@ -283,8 +284,10 @@ final class TextComposer: NSObject, @preconcurrency NSTextInputClient {
     func windowLevel() -> Int { view?.window?.level.rawValue ?? NSWindow.Level.normal.rawValue }
 }
 
-/// Shows the text being composed at the host's caret. A window of its own,
-/// not a view: a view over the video would slow its presentation.
+/// Shows the text being composed at the host's caret, as if typed there: on
+/// the caret's line, from the caret on, in the host text's font and on its
+/// baseline when the host reports the font. A window of its own, not a view:
+/// a view over the video would slow its presentation.
 @MainActor
 final class MarkedTextPanel {
     private let panel: NSPanel
@@ -295,22 +298,30 @@ final class MarkedTextPanel {
                         defer: true)
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.ignoresMouseEvents = true
         panel.isReleasedWhenClosed = false
         panel.contentView = label
     }
 
-    func show(_ text: NSAttributedString, selection: NSRange, at caret: NSRect, over window: NSWindow) {
-        // The host's text size, as far as the caret tells.
-        let size = min(28, max(12, (caret.height * 0.8).rounded()))
-        label.font = NSFont.systemFont(ofSize: size)
+    /// - Parameters:
+    ///   - caret: the host's caret on this screen (its line's height, and the
+    ///     selection's width when text is selected).
+    ///   - font: the host text's font at this window's scale, when known.
+    func show(_ text: NSAttributedString, selection: NSRange, at caret: NSRect, font: NSFont?, over window: NSWindow) {
+        // Without the host's font: the system font, sized from the line.
+        let font = font ?? NSFont.systemFont(ofSize: min(28, max(12, (caret.height * 0.8).rounded())))
+        label.font = font
         label.text = text
         label.selection = selection
-        let content = label.fittingSize
-        let height = max(caret.height, content.height)
-        let frame = NSRect(x: caret.minX - MarkedTextView.inset, y: caret.maxY - height,
-                           width: content.width, height: height)
+        // The baseline sits where the host's does: half the line's extra
+        // height above the text, then the font's ascent.
+        let textHeight = font.ascender - font.descender
+        let height = max(caret.height, ceil(textHeight))
+        label.baseline = ((height - textHeight) / 2 + font.ascender).rounded(.toNearestOrAwayFromZero)
+        // At least as wide as the selected text the composition replaces, so it doesn't show beside it.
+        let width = max(label.textWidth + MarkedTextView.trailing, caret.width > 1.5 ? caret.width : 0)
+        let frame = NSRect(x: caret.minX, y: caret.maxY - height, width: width, height: height)
         panel.setFrame(frame, display: true)
         label.needsDisplay = true
         if panel.parent !== window {
@@ -335,10 +346,15 @@ final class MarkedTextPanel {
 }
 
 private final class MarkedTextView: NSView {
-    static let inset: CGFloat = 4
+    /// Room after the text, so the last character isn't cut by the edge.
+    static let trailing: CGFloat = 2
     var text = NSAttributedString()
     var selection = NSRange(location: 0, length: 0)
     var font = NSFont.systemFont(ofSize: 13)
+    /// From the top of the view.
+    var baseline: CGFloat = 0
+
+    override var isFlipped: Bool { true }
 
     private var styled: NSAttributedString {
         let result = NSMutableAttributedString(string: text.string, attributes: [
@@ -354,26 +370,19 @@ private final class MarkedTextView: NSView {
         return result
     }
 
-    override var fittingSize: NSSize {
-        let size = styled.size()
-        return NSSize(width: ceil(size.width) + Self.inset * 2, height: ceil(size.height) + 4)
-    }
+    var textWidth: CGFloat { ceil(styled.size().width) }
 
     func offset(ofCharacterAt index: Int) -> CGFloat {
         let string = styled
         let end = min(max(0, index), string.length)
-        return Self.inset + string.attributedSubstring(from: NSRange(location: 0, length: end)).size().width
+        return string.attributedSubstring(from: NSRange(location: 0, length: end)).size().width
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4)
         NSColor.textBackgroundColor.setFill()
-        path.fill()
-        NSColor.separatorColor.setStroke()
-        path.lineWidth = 1
-        path.stroke()
-        let string = styled
-        let y = (bounds.height - string.size().height) / 2
-        string.draw(at: NSPoint(x: Self.inset, y: y))
+        bounds.fill()
+        // Without .usesLineFragmentOrigin the rect's origin is the first baseline.
+        styled.draw(with: NSRect(x: 0, y: baseline, width: bounds.width + 100, height: 0), options: [],
+                    context: nil)
     }
 }

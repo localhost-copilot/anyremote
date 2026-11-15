@@ -40,7 +40,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         case hostReport(streamID: UInt16, HostStreamReport)
         case windowControls(streamID: UInt16, WindowControls)
         case windowStateRequest(streamID: UInt16, HostWindowStateRequest)
-        case caret(streamID: UInt16, rect: CGRect?)
+        case caret(streamID: UInt16, rect: CGRect?, font: CaretFont?)
         case pasteboard([PasteboardItem])
     }
 
@@ -275,8 +275,8 @@ public final class RemoteHostClient: @unchecked Sendable {
             emit(.windowControls(streamID: streamID, controls))
         case let .windowStateRequest(streamID, request):
             emit(.windowStateRequest(streamID: streamID, request))
-        case let .caret(streamID, rect):
-            emit(.caret(streamID: streamID, rect: rect))
+        case let .caret(streamID, rect, font):
+            emit(.caret(streamID: streamID, rect: rect, font: font))
         case let .pasteboard(items):
             emit(.pasteboard(items))
         case .audioStream(let format):

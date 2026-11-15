@@ -21,6 +21,8 @@ protocol RemoteInputSink: AnyObject {
     func finishLocalDrag() -> Bool
     /// The host's text caret on this screen, when it reported one.
     func caretScreenRect() -> NSRect?
+    /// The host text's font at the caret, at this window's scale, when reported.
+    func caretFont() -> NSFont?
 }
 
 extension RemoteInputSink {
@@ -29,6 +31,7 @@ extension RemoteInputSink {
     func continueLocalDrag(at point: NSPoint) -> Bool { false }
     func finishLocalDrag() -> Bool { false }
     func caretScreenRect() -> NSRect? { nil }
+    func caretFont() -> NSFont? { nil }
 }
 
 /// A view showing one host surface and forwarding the mouse to the host.

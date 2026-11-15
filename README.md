@@ -224,9 +224,11 @@ behind the host on loopback, close enough to the picture for lip sync.
 - On the host, macOS covers each shared window's close/minimize/zoom buttons
   with a purple sharing indicator. It is a system privacy indicator with no
   API to turn it off; the viewer sees the normal buttons.
-- Input methods: text being composed is shown in a small panel over the
-  host's caret, not inside the host's text field. Apps that don't report
-  their caret through Accessibility get the candidates at the last click.
+- Input methods: text being composed is drawn by the viewer over the
+  host's caret, in the host text's font and on its baseline, not inside the
+  host's text field, so text after the caret is covered rather than pushed
+  aside. Apps that don't report their caret through Accessibility get the
+  candidates at the last click.
   Composed text arrives as typed characters, so an app that reads key codes
   only (some games) sees no keys for it.
 - Full desktop: keys outside the window server's hot keys (Touch ID, the
@@ -304,10 +306,16 @@ Core Audio process taps → AAC-ELD ─────── UDP ────→  j
   `CGEventKeyboardSetUnicodeString` (≤20 UTF-16 units per event, split
   between characters); keys the input method passes through or turns into
   commands go as key codes. The host keeps a plain keyboard layout selected
-  meanwhile and reports the focused element's caret
-  (`AXSelectedTextRange` → `AXBoundsForRange`, `AXManualAccessibility` for
-  Chromium) as `caret` after typing and clicks; the viewer places the
-  composition panel and candidates there.
+  meanwhile and reports the focused element's caret as `caret`, for half a
+  second after each key or click (the app may still be opening a field). The
+  caret comes from the bounds of the characters beside it
+  (`AXBoundsForRange`; an empty range is a line too high in Cocoa text),
+  spans a selection that typing replaces, and carries the text's font
+  (`AXFont`); `AXManualAccessibility` wakes Chromium's tree. The viewer draws
+  the composition there in that font, on the host's baseline, with the
+  candidates below.
+- Small windows of the app that hold its focused text field (Finder's
+  rename field) stream as child windows; other small ones (indicators) don't.
 - **Child windows** — every 33 ms (8 ms while a button is down) the host
   looks for same-process windows on menu/popup layers, or non-standard
   layer-0 windows near the main window (sheets, popovers). Each streams as
@@ -394,7 +402,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 62 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 63 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -437,6 +445,10 @@ against this Mac's own host service unless `--connect` is given.
 - `--input-test` — clicks, keys, wheel and a context menu into a recorder
   window; prints what arrived and whether the menu showed as a child window
 - `--open <app> [--title <text>] [--menu-test [--choose Menu/Item]]`
+- `--open <app> --caret-test x,y [--rename]` — clicks at that window point
+  (or `none`), then composes `nihao` through this Mac's input method and
+  prints the caret, font and composition panel; `--rename` waits for a Finder
+  rename started from outside (`--open Finder --title <folder>`).
 - `--open <app> --text-test` — clicks into the window, sends composed text
   (CJK, more than 20 units, an emoji) and prints the carets the host reports.
   Use a throwaway text app: it types into the window.

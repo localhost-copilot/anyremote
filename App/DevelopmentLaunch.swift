@@ -225,6 +225,9 @@ enum DevelopmentLaunch {
         if arguments.contains("--resize-test") {
             app.developmentMirrorHandler = { mirror in ResizeTest.run(mirror) }
         }
+        if let point = value("--caret-test") {
+            app.developmentMirrorHandler = { mirror in CaretTest.run(mirror, click: point, rename: arguments.contains("--rename")) }
+        }
         if arguments.contains("--text-test") {
             app.developmentMirrorHandler = { mirror in TextTest.run(mirror) }
         }
@@ -351,7 +354,7 @@ enum DevelopmentLaunch {
             }
             if arguments.contains("--ime-hold") {
                 // Leaves "nihao" composing at a pretend host caret, for a screenshot.
-                desktop.caret = CGRect(x: 300, y: 200, width: 1, height: 18)
+                desktop.setCaret(CGRect(x: 300, y: 200, width: 1, height: 18), font: nil)
                 for keyCode: CGKeyCode in [45, 34, 4, 0, 31] { await post(keyCode) }
                 return print("dev: ime holding")
             }
@@ -399,6 +402,66 @@ enum TextTest {
             try? await Task.sleep(for: .milliseconds(600))
             print("text-test: caret after typing \(String(describing: mirror.caret))")
             if let rect = mirror.caretScreenRect() { print("text-test: caret on screen \(rect)") }
+        }
+    }
+}
+
+/// `--open <app> --caret-test x,y`: moves the mirror off the host window,
+/// clicks at that window point, then types `nihao` through this Mac's input
+/// method into the mirror and prints where the composition panel went.
+/// `--rename` presses Return after the click (Finder's rename field).
+@MainActor
+enum CaretTest {
+    private static var started = false
+
+    static func run(_ mirror: MirrorWindowController, click: String, rename: Bool) {
+        // Windows the test's input opens show up as mirrors too: test only the first.
+        guard !started else { return }
+        started = true
+        let parts = click.split(separator: ",").compactMap { Double($0) }
+        guard let window = mirror.window, let screen = window.screen else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            // Clicks injected on the host must not land on the mirror itself.
+            window.setFrameTopLeftPoint(NSPoint(x: screen.frame.maxX - window.frame.width - 20, y: screen.frame.maxY - 60))
+            try? await Task.sleep(for: .milliseconds(300))
+            if parts.count == 2 {
+                let p = CGPoint(x: parts[0], y: parts[1])
+                mirror.sendInput(.mouseDown(point: p, button: .left, buttonNumber: 0, clickCount: 1, modifiers: 0))
+                mirror.sendInput(.mouseUp(point: p, button: .left, buttonNumber: 0, clickCount: 1, modifiers: 0))
+                try? await Task.sleep(for: .milliseconds(700))
+            }
+            if rename {
+                // Finder's rename field, started from outside meanwhile: a small window of its own.
+                print("caret-test: waiting for a rename")
+                try? await Task.sleep(for: .seconds(3))
+                // A mouse release makes the host look the caret up (as after a click).
+                mirror.sendInput(.mouseUp(point: CGPoint(x: -50, y: -50), button: .left, buttonNumber: 0,
+                                          clickCount: 1, modifiers: 0))
+                try? await Task.sleep(for: .milliseconds(600))
+                let children = window.childWindows?.filter { $0 is ChildPanel && $0.isVisible }.map(\.frame) ?? []
+                print("caret-test: child windows \(children)")
+            }
+            for _ in 0..<10 where NSApp.keyWindow !== window {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            print("caret-test: caret \(String(describing: mirror.caret)) font \(String(describing: mirror.caretFont()))")
+            let source = CGEventSource(stateID: .hidSystemState)
+            for keyCode: CGKeyCode in [45, 34, 4, 0, 31] {
+                for down in [true, false] {
+                    CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: down)?.post(tap: .cghidEventTap)
+                    try? await Task.sleep(for: .milliseconds(60))
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(400))
+            let frame = window.frame
+            print("caret-test: mirror window \(frame), caret on screen \(String(describing: mirror.caretScreenRect()))")
+            print("caret-test: panel \(window.childWindows?.filter { $0 is NSPanel && $0.isVisible }.map(\.frame) ?? [])")
+            // For screencapture -R: the window in top-left global points.
+            let top = (NSScreen.screens.first?.frame.height ?? 0) - frame.maxY
+            print("caret-test: capture \(Int(frame.minX)),\(Int(top)),\(Int(frame.width)),\(Int(frame.height))")
         }
     }
 }

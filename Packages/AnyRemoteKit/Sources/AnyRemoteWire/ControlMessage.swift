@@ -193,6 +193,18 @@ public enum InputEvent: Codable, Equatable, Sendable {
     case text(String)
 }
 
+/// The font of the text at the host's caret, as Accessibility reports it.
+public struct CaretFont: Codable, Equatable, Sendable {
+    /// PostScript name, e.g. "Menlo-Regular" (".AppleSystemUIFont" for the system font).
+    public var name: String
+    public var size: Double
+
+    public init(name: String, size: Double) {
+        self.name = name
+        self.size = size
+    }
+}
+
 /// The host's current cursor. `png` is nil for "unchanged image, new
 /// visibility"; images are cached by `seed` on the viewer.
 public struct CursorImage: Codable, Equatable, Sendable {
@@ -365,9 +377,11 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case windowAction(streamID: UInt16, action: WindowAction)
     case windowStateRequest(streamID: UInt16, HostWindowStateRequest)
     /// Host → viewer: the text insertion point of the focused text field, in
-    /// points relative to the stream's top-left corner (nil: none known), so
-    /// the viewer's input method shows its candidates next to it.
-    case caret(streamID: UInt16, rect: CGRect?)
+    /// points relative to the stream's top-left corner (nil: none known; as
+    /// wide as the selection it replaces), so
+    /// the viewer's input method shows its candidates next to it, and the
+    /// text's font when the app tells (older hosts: nil).
+    case caret(streamID: UInt16, rect: CGRect?, font: CaretFont? = nil)
 
     // Menu bar
     case requestMenuBar(streamID: UInt16)

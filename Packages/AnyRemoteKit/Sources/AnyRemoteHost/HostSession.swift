@@ -152,10 +152,17 @@ final class HostSession: @unchecked Sendable {
     private let menuQueue = DispatchQueue(label: "anyremote.menu", qos: .userInitiated)
     private let caretQueue = DispatchQueue(label: "anyremote.caret", qos: .userInitiated)
     private let caretLocator = CaretLocator()
-    /// A caret lookup is scheduled; typing doesn't queue one per key.
+    /// A caret lookup is scheduled or running; typing doesn't queue one per key.
     private var caretLookupPending = false
+    /// Input arrived while a lookup was pending: look again once it's done.
+    private var caretLookupStale = false
+    /// When the last input that may move the caret arrived.
+    private var lastCaretInput: UInt64 = 0
     /// The caret last sent, per stream.
-    private var sentCarets: [UInt16: CGRect?] = [:]
+    private var sentCarets: [UInt16: CaretState] = [:]
+    /// Small same-app windows (Finder's rename field) and whether they hold
+    /// the focused text field, with when that was last checked.
+    private var textEditorWindows: [CGWindowID: (holdsFocus: Bool, checked: UInt64)] = [:]
     /// The stream that last got a key or click: the one whose caret matters.
     private var lastInputStreamID: UInt16?
 
@@ -1167,8 +1174,13 @@ final class HostSession: @unchecked Sendable {
             guard samePID || panelService else { continue }
             if window.layer == 0 {
                 // Tiny layer-0 helpers (the text input source indicator, ...)
-                // are not part of the window's UI.
-                guard window.frame.intersects(near), window.frame.width >= 80, window.frame.height >= 30 else { continue }
+                // are not part of the window's UI, unless they hold the text
+                // being edited (Finder's rename field is a window of its own).
+                guard window.frame.intersects(near) else { continue }
+                if window.frame.width < 80 || window.frame.height < 30 {
+                    guard samePID, window.frame.width >= 16, window.frame.height >= 12, holdsFocusedText(window)
+                    else { continue }
+                }
                 if samePID { needsStandardIDs = true }
                 candidates.append(window)
             } else if window.layer > 0, window.layer < 1000, window.layer != 24, window.layer != 25 {
@@ -1286,7 +1298,7 @@ final class HostSession: @unchecked Sendable {
     private func scheduleCaretLookup(after event: InputEvent, streamID: UInt16) {
         let delay: Int
         switch event {
-        case .mouseDown, .key(_, true, _, _), .text: lastInputStreamID = streamID
+        case .mouseDown, .mouseUp, .key(_, true, _, _), .text: lastInputStreamID = streamID
         default: break
         }
         switch event {
@@ -1294,34 +1306,75 @@ final class HostSession: @unchecked Sendable {
         case .mouseUp: delay = 120
         default: return
         }
-        guard !caretLookupPending else { return }
+        lastCaretInput = HostClock.nowNanos()
+        guard !caretLookupPending else {
+            caretLookupStale = true
+            return
+        }
         caretLookupPending = true
         queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in self?.lookUpCaret() }
     }
 
     private func lookUpCaret() {
-        caretLookupPending = false
+        caretLookupStale = false
         // The stream that has the host's focus: the last one given input.
-        guard let streamID = lastInputStreamID, let stream = streams[streamID] else { return }
+        guard let streamID = lastInputStreamID, let stream = streams[streamID] else {
+            caretLookupPending = false
+            return
+        }
         let pid: pid_t? = stream.description.role == .display ? nil : stream.pid
         let locator = caretLocator
         caretQueue.async { [weak self] in
-            let caret = locator.caretRect(pid: pid)
-            self?.queue.async { self?.sendCaret(caret, streamID: streamID) }
+            let caret = locator.caret(pid: pid)
+            self?.queue.async { [weak self] in
+                guard let self else { return }
+                self.sendCaret(caret, streamID: streamID)
+                // Keys typed during the lookup may have moved the caret again,
+                // and the app may still be reacting to the last input (Finder
+                // opens its rename field after Return): look again for half a
+                // second after it.
+                let reacting = HostClock.nowNanos() - self.lastCaretInput < 500_000_000
+                if self.caretLookupStale || reacting {
+                    let delay = self.caretLookupStale ? 40 : 150
+                    self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in self?.lookUpCaret() }
+                } else {
+                    self.caretLookupPending = false
+                }
+            }
         }
     }
 
-    private func sendCaret(_ caret: CGRect?, streamID: UInt16) {
+    private struct CaretState: Equatable {
+        var rect: CGRect?
+        var font: CaretFont?
+    }
+
+    private func sendCaret(_ caret: (rect: CGRect, font: CaretFont?)?, streamID: UInt16) {
         guard !ended, let stream = streams[streamID] else { return }
         let frame = stream.description.frame
         // A caret in another window of the app, or off this display, is no use here.
-        let relative = caret.flatMap { caret -> CGRect? in
-            guard frame.insetBy(dx: -4, dy: -4).intersects(caret) else { return nil }
-            return caret.offsetBy(dx: -frame.minX, dy: -frame.minY)
+        var state = CaretState()
+        if let caret, frame.insetBy(dx: -4, dy: -4).intersects(caret.rect) {
+            state = CaretState(rect: caret.rect.offsetBy(dx: -frame.minX, dy: -frame.minY), font: caret.font)
         }
-        if let sent = sentCarets[streamID], sent == relative { return }
-        sentCarets[streamID] = relative
-        connection.send(.caret(streamID: streamID, rect: relative))
+        if sentCarets[streamID] == state { return }
+        sentCarets[streamID] = state
+        connection.send(.caret(streamID: streamID, rect: state.rect, font: state.font))
+    }
+
+    /// Whether a small window of the app holds its focused text field: an
+    /// inline editor (Finder's rename field) rather than an indicator. Checked
+    /// again until it says yes, since focus moves in just after the window shows.
+    private func holdsFocusedText(_ window: WindowServerWindow) -> Bool {
+        let now = HostClock.nowNanos()
+        if let known = textEditorWindows[window.id], known.holdsFocus || now - known.checked < 300_000_000 {
+            return known.holdsFocus
+        }
+        let holds = caretLocator.focusedElementFrame(pid: window.pid)
+            .map { window.frame.insetBy(dx: -2, dy: -2).contains($0) } ?? false
+        textEditorWindows[window.id] = (holds, now)
+        if textEditorWindows.count > 64 { textEditorWindows = textEditorWindows.filter { now - $0.value.checked < 10_000_000_000 } }
+        return holds
     }
 
     /// The host window never moves for the viewer: dragging a mirror by its
