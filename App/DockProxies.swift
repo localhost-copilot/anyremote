@@ -225,7 +225,8 @@ final class DockProxies {
         let helperAttributes = try fileManager.attributesOfItem(atPath: helper.path)
         let helperStamp = "\(helperAttributes[.size] ?? 0)-\((helperAttributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)"
         let iconStamp = icon.map { SHA256.hash(data: $0).prefix(6).map { String(format: "%02x", $0) }.joined() } ?? "-"
-        let stamp = "\(helperStamp)|\(iconStamp)|\(name)"
+        // `badge2`: the badge moved inside the icon shape; bump it whenever the drawing changes.
+        let stamp = "\(helperStamp)|\(iconStamp)|badge2|\(name)"
 
         let base = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil,
                                        create: true)
@@ -272,6 +273,10 @@ final class DockProxies {
     }
 
     /// The app's icon with a small display badge, so it isn't mistaken for a local app.
+    ///
+    /// The badge stays inside the icon's own outline: since macOS 26 the Dock
+    /// shrinks any icon whose shape isn't the standard rounded square into a
+    /// grey tile, and a badge poking past the corner is enough to trigger it.
     private static func writeIcon(_ data: Data?, to url: URL) throws {
         let source = data.flatMap(NSImage.init(data:)) ?? NSApp.applicationIconImage ?? NSImage()
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.icns.identifier as CFString, 3, nil)
@@ -292,18 +297,25 @@ final class DockProxies {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
         icon.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
-        let badge = NSRect(x: size * 0.6, y: size * 0.04, width: size * 0.36, height: size * 0.36)
+        // Just inside the bottom-right corner of the standard icon shape
+        // (a rounded square inset 9.4 % with an 18 % corner radius), and
+        // drawn source-atop so nothing lands outside the icon's alpha.
+        let radius = size * 0.15
+        let center = NSPoint(x: size * 0.715, y: size * 0.285)
+        let badge = NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+        NSGraphicsContext.current?.compositingOperation = .sourceAtop
         NSColor.black.withAlphaComponent(0.25).setFill()
         NSBezierPath(ovalIn: badge.offsetBy(dx: 0, dy: -size * 0.01)).fill()
         NSColor.controlAccentColor.usingColorSpace(.sRGB)?.setFill()
         NSBezierPath(ovalIn: badge).fill()
-        let configuration = NSImage.SymbolConfiguration(pointSize: size * 0.17, weight: .semibold)
+        let configuration = NSImage.SymbolConfiguration(pointSize: size * 0.14, weight: .semibold)
             .applying(.init(paletteColors: [.white]))
         if let symbol = NSImage(systemSymbolName: "display", accessibilityDescription: nil)?
             .withSymbolConfiguration(configuration) {
             let symbolSize = symbol.size
             symbol.draw(in: NSRect(x: badge.midX - symbolSize.width / 2, y: badge.midY - symbolSize.height / 2,
-                                   width: symbolSize.width, height: symbolSize.height))
+                                   width: symbolSize.width, height: symbolSize.height),
+                        from: .zero, operation: .sourceAtop, fraction: 1)
         }
         NSGraphicsContext.restoreGraphicsState()
         return context.makeImage()
