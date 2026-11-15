@@ -9,6 +9,9 @@
 // Headless viewer against a running host:
 //   anyremote-bench --connect <host>:<port> --code <pairing code> [--app <name>] [--seconds N]
 //
+// Full frame vs strips (see TileBench.swift):
+//   anyremote-bench --tiles [--seconds N] [--strips 4]
+//
 // `--synthetic` opens a window of W×H points that scrolls dense text every
 // display frame: a reproducible worst-case workload for latency comparisons.
 
@@ -28,12 +31,14 @@ struct Options: Sendable {
     var bitrate = 40
     var loss = 0.0
     var pacing = 120
-    var realTime = true
+    var realTime = false
     var network = false
     var hostOnly = false
     var port: UInt16 = 0
     var connect: String?
     var code: String?
+    var tiles = false
+    var strips = 4
 }
 
 func parseOptions() -> Options {
@@ -50,12 +55,14 @@ func parseOptions() -> Options {
         case "--bitrate": options.bitrate = Int(arguments.next() ?? "") ?? options.bitrate
         case "--loss": options.loss = Double(arguments.next() ?? "") ?? options.loss
         case "--pacing": options.pacing = Int(arguments.next() ?? "") ?? options.pacing
-        case "--no-realtime": options.realTime = false
+        case "--realtime": options.realTime = true
         case "--network": options.network = true
         case "--host": options.hostOnly = true
         case "--port": options.port = UInt16(arguments.next() ?? "") ?? 0
         case "--connect": options.connect = arguments.next()
         case "--code": options.code = arguments.next()
+        case "--tiles": options.tiles = true
+        case "--strips": options.strips = Int(arguments.next() ?? "") ?? options.strips
         default:
             print("unknown argument \(argument)")
             exit(2)
@@ -244,7 +251,9 @@ Task.detached {
     // Let the synthetic window reach the window server before enumerating.
     if syntheticWindowID != nil { try? await Task.sleep(for: .milliseconds(500)) }
     do {
-        if options.network || options.hostOnly || options.connect != nil {
+        if options.tiles {
+            try await runTileBench(seconds: options.seconds, strips: options.strips, realTime: options.realTime)
+        } else if options.network || options.hostOnly || options.connect != nil {
             try await runNetwork(options, syntheticWindowID: syntheticWindowID)
         } else {
             try await runBenchmark(options, syntheticWindowID: syntheticWindowID)

@@ -22,7 +22,8 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
 
     let surface = RemoteSurfaceView()
     let stats = PipelineStats()
-    private let statisticsLabel = NSTextField(labelWithString: "")
+    /// Drawn into the video frames (a view on top of the video made full screen stutter on every update).
+    private var showsStatistics = ProcessInfo.processInfo.environment["ANYREMOTE_STATS"] == "1"
     private var noticeView: NSView?
     /// Host title bar buttons (relative to the host window's top-left).
     var controls: WindowControls?
@@ -87,7 +88,6 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         window.hideTitlebarChrome()
         window.makeFirstResponder(surface)
 
-        configureStatisticsLabel()
         surface.frameLayer.onGeometryChange = { [weak self] width, height, scale in
             self?.remoteGeometryChanged(pixelWidth: width, pixelHeight: height, scale: scale)
         }
@@ -356,27 +356,10 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
 
     // MARK: Statistics
 
-    private func configureStatisticsLabel() {
-        statisticsLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
-        statisticsLabel.textColor = .white
-        statisticsLabel.backgroundColor = NSColor.black.withAlphaComponent(0.65)
-        statisticsLabel.drawsBackground = true
-        statisticsLabel.maximumNumberOfLines = 0
-        statisticsLabel.lineBreakMode = .byTruncatingTail
-        // The overlay must never influence the window size.
-        statisticsLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        statisticsLabel.setContentCompressionResistancePriority(.init(1), for: .vertical)
-        statisticsLabel.translatesAutoresizingMaskIntoConstraints = false
-        statisticsLabel.isHidden = ProcessInfo.processInfo.environment["ANYREMOTE_STATS"] != "1"
-        surface.addSubview(statisticsLabel)
-        NSLayoutConstraint.activate([
-            statisticsLabel.leadingAnchor.constraint(equalTo: surface.leadingAnchor, constant: 8),
-            statisticsLabel.bottomAnchor.constraint(equalTo: surface.bottomAnchor, constant: -8),
-            statisticsLabel.trailingAnchor.constraint(lessThanOrEqualTo: surface.trailingAnchor, constant: -8),
-        ])
+    func toggleStatistics() {
+        showsStatistics.toggle()
+        if !showsStatistics { surface.frameLayer.overlayText = nil }
     }
-
-    func toggleStatistics() { statisticsLabel.isHidden.toggle() }
 
     private func updateStatistics() {
         let summary = stats.drain()
@@ -398,7 +381,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         \(native ? "1:1 native" : "scaled") · rtt \(rtt)
         """)
         let text = lines.joined(separator: "\n")
-        statisticsLabel.stringValue = text
+        if showsStatistics { surface.frameLayer.overlayText = text }
         if ProcessInfo.processInfo.environment["ANYREMOTE_STATS_STDOUT"] == "1" {
             print(text.replacingOccurrences(of: "\n", with: " | "))
         }

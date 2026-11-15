@@ -339,6 +339,9 @@ final class HostConnection {
                 guard let self else { return }
                 self.desktops[description.streamID] = nil
                 self.openDisplayIDs.remove(description.windowID)
+                for id in description.tileStreamIDs ?? [] where id != description.streamID {
+                    self.client.detach(streamID: id, closeOnHost: false)
+                }
                 self.client.detach(streamID: description.streamID)
             }
             desktops[description.streamID] = desktop

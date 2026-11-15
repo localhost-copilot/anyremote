@@ -1,3 +1,4 @@
+import AnyRemoteWire
 import CoreGraphics
 import CoreMedia
 import CoreVideo
@@ -10,12 +11,27 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// A complete captured window image at its native backing resolution.
 public struct CapturedFrame: @unchecked Sendable {
     public let pixelBuffer: CVPixelBuffer
-    /// SCK presentation time (host clock).
+    /// SCK presentation time: when the host shows the frame (host clock).
     public let captureTimeNanos: UInt64
     /// When the frame reached our handler.
     public let deliveredTimeNanos: UInt64
     public let pointSize: CGSize
     public let scale: CGFloat
+    /// What changed since the previous frame, in buffer pixels (top-left
+    /// origin); nil if unknown.
+    public var dirtyRects: [CGRect]?
+    /// Set when this is one strip of a larger picture.
+    public var tile: EncodedVideoFrame.Tile?
+
+    public init(pixelBuffer: CVPixelBuffer, captureTimeNanos: UInt64, deliveredTimeNanos: UInt64,
+                pointSize: CGSize, scale: CGFloat, dirtyRects: [CGRect]? = nil) {
+        self.dirtyRects = dirtyRects
+        self.pixelBuffer = pixelBuffer
+        self.captureTimeNanos = captureTimeNanos
+        self.deliveredTimeNanos = deliveredTimeNanos
+        self.pointSize = pointSize
+        self.scale = scale
+    }
 }
 
 /// Captures exactly one window, unscaled, in full-range 4:4:4 (`444f`) so the

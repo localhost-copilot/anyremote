@@ -6,30 +6,37 @@ import VideoToolbox
 
 private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category: "Encoder")
 
-/// Real-time HEVC encoder for one window stream.
+/// Low-latency HEVC encoder for one window stream (or one strip of a display, see `TiledEncoder`).
 ///
 /// Feeding `444f` buffers makes the Apple Silicon hardware encoder emit HEVC
 /// RExt 4:4:4 (profile_idc 4). Do not enable
 /// `kVTVideoEncoderSpecification_EnableLowLatencyRateControl`: on macOS 27 it
-/// selects a path that silently downgrades to 4:2:0. Splitting the picture
-/// into parallel tile sessions (as Apple's Screen Sharing does) measured no
-/// latency gain on M6, so one session per window is used.
+/// selects a path that silently downgrades to 4:2:0.
+///
+/// `RealTime` stays off and speed is put before quality. In real-time mode
+/// VT runs the engine just fast enough for the expected rate, so every frame
+/// took ~9–12 ms however small: a 3840×528 strip 11.6 ms, the same as a
+/// whole 4K frame. Without it, time follows the pixels. Measured on M6:
+/// strip 11.6 → 3.7 ms, four strips at once 8.7 → 7.8 ms, 4K frame
+/// 9.9 → 8.7 ms with PSNR 45.4 → 46.4 dB (about 13% more bits than asked
+/// for). `RealTime` off alone encodes best (53.5 dB) but slowest (14.5 ms).
 public final class HEVCEncoder: @unchecked Sendable {
     public struct Configuration: Sendable {
         public var averageBitRate: Int
         /// Capture cadence.
         public var expectedFrameRate: Int
-        /// Frame rate VideoToolbox is told to sustain. VT lowers encoder
-        /// clocks until a frame takes about 1/rate, so this is effectively a
-        /// per-frame latency budget, not a throughput hint.
+        /// Frame rate VideoToolbox is told to sustain. In real-time mode VT
+        /// lowers encoder clocks until a frame takes about 1/rate, so this is
+        /// effectively a per-frame latency budget, not a throughput hint.
         public var encoderPacingFrameRate: Int
+        /// VideoToolbox real-time mode (off: see the type's notes).
         public var realTime: Bool
         /// HEVC with a premultiplied alpha layer from BGRA input (4:2:0).
         /// Used for child windows (menus, popovers) whose corners are clear.
         public var alpha: Bool
 
         public init(averageBitRate: Int = 40_000_000, expectedFrameRate: Int = 60,
-                    encoderPacingFrameRate: Int = 120, realTime: Bool = true, alpha: Bool = false) {
+                    encoderPacingFrameRate: Int = 120, realTime: Bool = false, alpha: Bool = false) {
             self.averageBitRate = averageBitRate
             self.expectedFrameRate = expectedFrameRate
             self.encoderPacingFrameRate = encoderPacingFrameRate
@@ -213,6 +220,7 @@ public final class HEVCEncoder: @unchecked Sendable {
         }
         let properties: [CFString: Any] = [
             kVTCompressionPropertyKey_RealTime: configuration.realTime,
+            kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality: !configuration.realTime,
             kVTCompressionPropertyKey_AllowFrameReordering: false,
             kVTCompressionPropertyKey_AverageBitRate: averageBitRate,
             kVTCompressionPropertyKey_ExpectedFrameRate: configuration.encoderPacingFrameRate,
@@ -265,7 +273,8 @@ public final class HEVCEncoder: @unchecked Sendable {
                 parameterSets: parameterSets,
                 lengthPrefixedNALUnits: payload,
                 captureLeadMicros: UInt16(clamping: (captured.captureTimeNanos
-                    - min(captured.captureTimeNanos, captured.deliveredTimeNanos)) / 1000)
+                    - min(captured.captureTimeNanos, captured.deliveredTimeNanos)) / 1000),
+                tile: captured.tile
             ),
             capturedTimeNanos: captured.captureTimeNanos,
             deliveredTimeNanos: captured.deliveredTimeNanos,

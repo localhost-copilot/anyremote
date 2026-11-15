@@ -34,11 +34,12 @@ private func sampleFrame(sequence: UInt32 = 7, keyframe: Bool = true, payloadSiz
             captureLeadMicros: 0x0506
         )
         let expected: [UInt8] = [
-            0x41, 0x56, 0x02, 0x01,             // magic, version, flags
+            0x41, 0x56, 0x03, 0x01,             // magic, version, flags
             0xAA, 0xBB, 0xCC, 0xDD,             // sequence
             0, 0, 0, 0, 0, 0, 0, 1,             // capture time
             0x01, 0x02, 0x03, 0x04, 0x02,       // width, height, scale
             0x05, 0x06,                         // capture lead
+            0, 0, 0, 0, 0, 0,                   // no tile
             0x01, 0x00, 0x01, 0x40,             // one parameter set
             0, 0, 0, 1, 0x26,                   // NAL units
         ]
@@ -53,6 +54,35 @@ private func sampleFrame(sequence: UInt32 = 7, keyframe: Bool = true, payloadSiz
         ])
         let frame = try EncodedVideoFrame(serialized: data)
         #expect(frame.sequence == 9 && frame.captureLeadMicros == 0 && frame.handedOverTimeNanos == 10_000)
+    }
+
+    @Test func tileRoundTrips() throws {
+        var frame = sampleFrame()
+        frame.pixelHeight = 540
+        frame.tile = .init(index: 2, mask: 0b0110, originY: 1080, canvasHeight: 2160)
+        let parsed = try EncodedVideoFrame(serialized: frame.serialized())
+        #expect(parsed.tile == frame.tile)
+        #expect(parsed.tile?.isFirstOfFrame == false)
+        #expect(EncodedVideoFrame.Tile(index: 1, mask: 0b0110, originY: 0, canvasHeight: 1).isFirstOfFrame)
+        #expect(try EncodedVideoFrame(serialized: sampleFrame().serialized()).tile == nil)
+    }
+
+    @Test func rejectsTileOutsideItsCanvas() throws {
+        var frame = sampleFrame()
+        frame.pixelHeight = 540
+        frame.tile = .init(index: 3, mask: 0b1000, originY: 1700, canvasHeight: 2160)
+        #expect(throws: WireError.invalidField("tile")) { try EncodedVideoFrame(serialized: frame.serialized()) }
+        frame.tile = .init(index: 3, mask: 0b0001, originY: 0, canvasHeight: 2160)
+        #expect(throws: WireError.invalidField("tile")) { try EncodedVideoFrame(serialized: frame.serialized()) }
+    }
+
+    @Test func stripsCoverThePicture() {
+        let strips = TileLayout.strips(pixelHeight: 2160, count: 4)
+        #expect(strips.map(\.y) == [0, 528, 1056, 1584])
+        #expect(strips.last.map { $0.y + $0.height } == 2160)
+        #expect(strips.dropLast().allSatisfy { $0.height % 16 == 0 })
+        #expect(TileLayout.strips(pixelHeight: 40, count: 4).count == 2)
+        #expect(TileLayout.strips(pixelHeight: 10, count: 4).map(\.height) == [10])
     }
 
     @Test func handedOverTimeSubtractsTheLead() {

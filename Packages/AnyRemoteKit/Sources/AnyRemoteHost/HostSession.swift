@@ -76,6 +76,10 @@ final class HostSession: @unchecked Sendable {
     private var streams: [UInt16: HostStream] = [:]
     private var openingWindows: Set<CGWindowID> = []
     private var nextStreamID: UInt16 = 1
+    /// Further strips of display streams → the display stream.
+    private var tileOwners: [UInt16: UInt16] = [:]
+    /// Display streams go out as this many strips (`ANYREMOTE_TILES`, 1 for whole frames).
+    static let displayTiles = max(1, min(8, Int(ProcessInfo.processInfo.environment["ANYREMOTE_TILES"] ?? "") ?? 4))
     private let injector = InputInjector()
     private var tracker: DispatchSourceTimer?
     private var trackerFast = false
@@ -161,9 +165,14 @@ final class HostSession: @unchecked Sendable {
         case let .closeStream(streamID):
             endStream(streamID, reason: "Closed by viewer.", notify: false)
         case let .requestKeyframe(streamID):
-            streams[streamID]?.sender.requestKeyframe()
+            streams[tileOwners[streamID] ?? streamID]?.sender.requestKeyframe()
         case let .receiverReport(streamID, received, dropped):
-            adaptBitRate(streamID: streamID, received: received, dropped: dropped)
+            if let owner = tileOwners[streamID] {
+                // Strips: the first one's reports pace the stream; loss in any backs it off.
+                if dropped > 0 { adaptBitRate(streamID: owner, received: 0, dropped: dropped) }
+            } else {
+                adaptBitRate(streamID: streamID, received: received, dropped: dropped)
+            }
         case let .resize(streamID, size):
             scheduleResize(streamID: streamID, size: size)
         case let .focus(streamID):
@@ -442,16 +451,31 @@ final class HostSession: @unchecked Sendable {
             return
         }
         let streamID = allocateStreamID()
+        var tileStreamIDs: [UInt16]?
+        if Self.displayTiles > 1 {
+            var ids = [streamID]
+            // Reserve each before allocating the next.
+            tileOwners[streamID] = streamID
+            for _ in 1..<Self.displayTiles {
+                let id = allocateStreamID()
+                tileOwners[id] = streamID
+                ids.append(id)
+            }
+            tileOwners[streamID] = nil
+            tileStreamIDs = ids
+        }
         let name = DispatchQueue.main.sync { MainActor.assumeIsolated { HostWindows.displayName(displayID) } } ?? "Display"
         let description = StreamDescription(streamID: streamID, windowID: displayID, role: .display,
                                             parentStreamID: nil, frame: geometry.frame, layer: 0,
-                                            title: name, applicationName: ComputerName.current)
+                                            title: name, applicationName: ComputerName.current,
+                                            tileStreamIDs: tileStreamIDs)
         let configuration = HEVCEncoder.Configuration(averageBitRate: Self.displayInitialBitRate)
         // Development: a viewer on this same Mac would see its own desktop
         // window inside itself, endlessly.
         let sender = WindowStreamSender(
             displayID: displayID, excludingProcessID: Self.isLoopback ? getpid() : nil,
-            exceptingWindowIDs: service?.includedOwnWindowIDs ?? [], streamID: streamID, configuration: configuration,
+            exceptingWindowIDs: service?.includedOwnWindowIDs ?? [], streamID: streamID,
+            tileStreamIDs: tileStreamIDs, configuration: configuration,
             maximumDatagramSize: 1400 - DatagramEnvelope.overhead
         ) { [weak self] datagrams in
             self?.send(datagrams: datagrams)
@@ -607,7 +631,7 @@ final class HostSession: @unchecked Sendable {
     private func allocateStreamID() -> UInt16 {
         repeat {
             nextStreamID = nextStreamID == UInt16.max ? 1 : nextStreamID + 1
-        } while streams[nextStreamID] != nil
+        } while streams[nextStreamID] != nil || tileOwners[nextStreamID] != nil
         return nextStreamID
     }
 
@@ -665,6 +689,7 @@ final class HostSession: @unchecked Sendable {
 
     private func endStream(_ streamID: UInt16, reason: String, notify: Bool = true) {
         guard let stream = streams.removeValue(forKey: streamID) else { return }
+        tileOwners = tileOwners.filter { $0.value != streamID }
         for child in stream.children.values { endStream(child, reason: reason, notify: notify) }
         if let parent = stream.description.parentStreamID {
             streams[parent]?.children.removeValue(forKey: stream.windowID)

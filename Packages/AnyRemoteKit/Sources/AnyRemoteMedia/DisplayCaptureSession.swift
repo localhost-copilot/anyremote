@@ -180,7 +180,9 @@ public final class DisplayCaptureSession: NSObject, FrameCapturing, SCStreamOutp
             deliveredTimeNanos: HostClock.nowNanos(),
             pointSize: CGSize(width: CGFloat(configuredPixelSize.width) / scale,
                               height: CGFloat(configuredPixelSize.height) / scale),
-            scale: scale
+            scale: scale,
+            dirtyRects: ((attachments[.dirtyRects] as? [NSDictionary]) ?? [])
+                .compactMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
         ))
     }
 

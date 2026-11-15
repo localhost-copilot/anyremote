@@ -77,9 +77,10 @@ public final class PipelineStats: @unchecked Sendable {
         lock.unlock()
     }
 
-    public func recordFrame(bytes count: Int, keyframe: Bool, width: Int, height: Int) {
+    /// - Parameter countsFrame: false for the further strips of one host frame.
+    public func recordFrame(bytes count: Int, keyframe: Bool, width: Int, height: Int, countsFrame: Bool = true) {
         lock.lock()
-        frames += 1
+        if countsFrame { frames += 1 }
         bytes += count
         if keyframe { keyframes += 1 }
         pixelSize = (width, height)

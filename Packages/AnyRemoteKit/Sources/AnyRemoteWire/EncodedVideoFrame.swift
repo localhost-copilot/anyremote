@@ -24,6 +24,32 @@ public struct EncodedVideoFrame: Equatable, Sendable {
     /// How long before `captureTimeNanos` the frame was handed to the host
     /// (SCK delivers frames ahead of their display time), in microseconds.
     public var captureLeadMicros: UInt16
+    /// For a strip of a larger picture (Apple Screen Sharing style tiles):
+    /// where it goes. Strips of one host frame share `captureTimeNanos`.
+    public struct Tile: Equatable, Sendable {
+        /// Strip number, top to bottom (< 8).
+        public var index: UInt8
+        /// The strips sent for this host frame, as a bit mask; strips that
+        /// didn't change are not sent and keep their previous picture.
+        public var mask: UInt8
+        /// Top row of the strip in the whole picture, in pixels.
+        public var originY: UInt16
+        /// Height of the whole picture in pixels (its width is the strip's).
+        public var canvasHeight: UInt16
+
+        /// The topmost strip sent for its host frame (counts the frame once).
+        public var isFirstOfFrame: Bool { mask & ((1 << index) - 1) == 0 }
+
+        public init(index: UInt8, mask: UInt8, originY: UInt16, canvasHeight: UInt16) {
+            self.index = index
+            self.mask = mask
+            self.originY = originY
+            self.canvasHeight = canvasHeight
+        }
+    }
+    /// nil for a whole picture.
+    public var tile: Tile?
+
     /// When the frame was captured (handed over), in the sender clock.
     public var handedOverTimeNanos: UInt64 {
         captureTimeNanos - min(captureTimeNanos, UInt64(captureLeadMicros) * 1000)
@@ -48,9 +74,11 @@ public struct EncodedVideoFrame: Equatable, Sendable {
         scale: UInt8,
         parameterSets: [Data],
         lengthPrefixedNALUnits: Data,
-        captureLeadMicros: UInt16 = 0
+        captureLeadMicros: UInt16 = 0,
+        tile: Tile? = nil
     ) {
         self.captureLeadMicros = captureLeadMicros
+        self.tile = tile
         self.sequence = sequence
         self.captureTimeNanos = captureTimeNanos
         self.flags = flags
@@ -65,8 +93,8 @@ public struct EncodedVideoFrame: Equatable, Sendable {
     public var hasAlpha: Bool { flags.contains(.alpha) }
 
     static let magic: UInt16 = 0x4156 // "AV"
-    /// 2 added `captureLeadMicros`.
-    static let version: UInt8 = 2
+    /// 2 added `captureLeadMicros`, 3 the tile fields.
+    static let version: UInt8 = 3
 
     public func serialized() throws -> Data {
         guard parameterSets.count <= Int(UInt8.max) else { throw WireError.oversized }
@@ -80,6 +108,10 @@ public struct EncodedVideoFrame: Equatable, Sendable {
         writer.u16(pixelHeight)
         writer.u8(scale)
         writer.u16(captureLeadMicros)
+        writer.u8(tile?.index ?? 0)
+        writer.u8(tile?.mask ?? 0)
+        writer.u16(tile?.originY ?? 0)
+        writer.u16(tile?.canvasHeight ?? 0)
         writer.u8(UInt8(parameterSets.count))
         for set in parameterSets {
             guard set.count <= Int(UInt16.max) else { throw WireError.oversized }
@@ -94,7 +126,7 @@ public struct EncodedVideoFrame: Equatable, Sendable {
         var reader = ByteReader(data)
         guard try reader.u16() == Self.magic else { throw WireError.badMagic }
         let version = try reader.u8()
-        guard version == 1 || version == Self.version else { throw WireError.unsupportedVersion(version) }
+        guard (1...Self.version).contains(version) else { throw WireError.unsupportedVersion(version) }
         flags = Flags(rawValue: try reader.u8())
         sequence = try reader.u32()
         captureTimeNanos = try reader.u64()
@@ -102,6 +134,20 @@ public struct EncodedVideoFrame: Equatable, Sendable {
         pixelHeight = try reader.u16()
         scale = try reader.u8()
         captureLeadMicros = version >= 2 ? try reader.u16() : 0
+        if version >= 3 {
+            let index = try reader.u8(), mask = try reader.u8()
+            let originY = try reader.u16(), canvasHeight = try reader.u16()
+            if mask != 0 {
+                guard index < 8, mask & (1 << index) != 0, canvasHeight > 0,
+                      Int(originY) + Int(pixelHeight) <= Int(canvasHeight)
+                else { throw WireError.invalidField("tile") }
+                tile = Tile(index: index, mask: mask, originY: originY, canvasHeight: canvasHeight)
+            } else {
+                tile = nil
+            }
+        } else {
+            tile = nil
+        }
         guard pixelWidth > 0, pixelHeight > 0, scale > 0 else {
             throw WireError.invalidField("geometry")
         }

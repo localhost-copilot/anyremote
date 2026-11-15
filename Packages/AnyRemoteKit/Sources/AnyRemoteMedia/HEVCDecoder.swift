@@ -14,6 +14,8 @@ public struct DecodedFrame: @unchecked Sendable {
     public let captureTimeNanos: UInt64
     /// When the host was handed the frame, in the sender clock.
     public var handedOverTimeNanos: UInt64 = 0
+    /// Set for one strip of a larger picture.
+    public var tile: EncodedVideoFrame.Tile?
     /// Receiver clock domain.
     public let receivedTimeNanos: UInt64
     public let decodedTimeNanos: UInt64
@@ -76,6 +78,7 @@ public final class HEVCDecoder: @unchecked Sendable {
         let sequence = frame.sequence
         let captureTime = frame.captureTimeNanos
         let handedOver = frame.handedOverTimeNanos
+        let tile = frame.tile
         let scale = frame.scale
         let hasAlpha = frame.hasAlpha
         // No `_1xRealTimePlayback`: it lets VT clock the decoder down to just
@@ -100,6 +103,7 @@ public final class HEVCDecoder: @unchecked Sendable {
                 hasAlpha: hasAlpha
             )
             decoded.handedOverTimeNanos = handedOver
+            decoded.tile = tile
             self.output(decoded)
         }
         if status != noErr {

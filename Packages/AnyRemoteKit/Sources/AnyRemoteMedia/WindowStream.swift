@@ -10,7 +10,12 @@ public final class WindowStreamSender: @unchecked Sendable {
     public let streamID: UInt16
     public let stats: PipelineStats
     private var capture: (any FrameCapturing)!
-    private let encoder: HEVCEncoder
+    /// One session for the whole picture, or one per strip.
+    private enum Encoding {
+        case whole(HEVCEncoder)
+        case strips(TiledEncoder)
+    }
+    private let encoding: Encoding
 
     /// Called on the capture queue when SCK stops the stream on its own
     /// (window closed, display gone, permission revoked).
@@ -35,18 +40,22 @@ public final class WindowStreamSender: @unchecked Sendable {
     }
 
     /// A whole display.
+    /// - Parameter tileStreamIDs: with more than one, the display is sent as
+    ///   that many horizontal strips, each under its own stream ID (the
+    ///   first should be `streamID`).
     public convenience init(
         displayID: CGDirectDisplayID,
         excludingProcessID: pid_t? = nil,
         exceptingWindowIDs: Set<CGWindowID> = [],
         streamID: UInt16,
+        tileStreamIDs: [UInt16]? = nil,
         configuration: HEVCEncoder.Configuration = .init(),
         maximumDatagramSize: Int = 1200,
         stats: PipelineStats = PipelineStats(),
         send: @escaping @Sendable ([Data]) -> Void
     ) {
-        self.init(streamID: streamID, configuration: configuration, maximumDatagramSize: maximumDatagramSize,
-                  stats: stats, send: send) { encode in
+        self.init(streamID: streamID, tileStreamIDs: tileStreamIDs, configuration: configuration,
+                  maximumDatagramSize: maximumDatagramSize, stats: stats, send: send) { encode in
             DisplayCaptureSession(displayID: displayID, frameRate: configuration.expectedFrameRate,
                                   excludingProcessID: excludingProcessID,
                                   exceptingWindowIDs: exceptingWindowIDs, handler: encode)
@@ -55,6 +64,7 @@ public final class WindowStreamSender: @unchecked Sendable {
 
     private init(
         streamID: UInt16,
+        tileStreamIDs: [UInt16]? = nil,
         configuration: HEVCEncoder.Configuration,
         maximumDatagramSize: Int,
         stats: PipelineStats,
@@ -63,33 +73,51 @@ public final class WindowStreamSender: @unchecked Sendable {
     ) {
         self.streamID = streamID
         self.stats = stats
-        let encoder = HEVCEncoder(configuration: configuration) { output in
+        let emit: @Sendable (UInt16, HEVCEncoder.Output) -> Void = { streamID, output in
             stats.record(.capture, from: output.deliveredTimeNanos, to: output.capturedTimeNanos)
             stats.record(.encodeWait, from: output.deliveredTimeNanos, to: output.submittedTimeNanos)
             stats.record(.encode, from: output.submittedTimeNanos, to: output.encodedTimeNanos)
             do {
-                let bytes = try output.frame.serialized()
-                stats.recordFrame(bytes: bytes.count, keyframe: output.frame.isKeyframe,
-                                  width: Int(output.frame.pixelWidth), height: Int(output.frame.pixelHeight))
+                let frame = output.frame
+                let bytes = try frame.serialized()
+                stats.recordFrame(bytes: bytes.count, keyframe: frame.isKeyframe, width: Int(frame.pixelWidth),
+                                  height: Int(frame.tile?.canvasHeight ?? frame.pixelHeight),
+                                  countsFrame: frame.tile?.isFirstOfFrame ?? true)
                 send(try VideoFragmenter.fragment(bytes, streamID: streamID,
-                                                  frameSequence: output.frame.sequence,
+                                                  frameSequence: frame.sequence,
                                                   maximumDatagramSize: maximumDatagramSize))
             } catch {
                 log.error("frame framing failed: \(String(describing: error), privacy: .public)")
             }
         }
-        self.encoder = encoder
-        self.capture = makeCapture { frame in encoder.encode(frame) }
+        if let tileStreamIDs, tileStreamIDs.count > 1,
+           let tiled = TiledEncoder(streamIDs: tileStreamIDs, configuration: configuration, output: emit) {
+            encoding = .strips(tiled)
+            capture = makeCapture { frame in tiled.encode(frame) }
+        } else {
+            let encoder = HEVCEncoder(configuration: configuration) { emit(streamID, $0) }
+            encoding = .whole(encoder)
+            capture = makeCapture { frame in encoder.encode(frame) }
+        }
     }
 
     public func start() async throws { try await capture.start() }
 
     public func stop() async {
         await capture.stop()
-        encoder.invalidate()
+        switch encoding {
+        case let .whole(encoder): encoder.invalidate()
+        case let .strips(tiled): tiled.invalidate()
+        }
     }
 
-    public func requestKeyframe() { encoder.requestKeyframe() }
+    /// Strips: all of them, sent again right away.
+    public func requestKeyframe() {
+        switch encoding {
+        case let .whole(encoder): encoder.requestKeyframe()
+        case let .strips(tiled): tiled.requestKeyframe()
+        }
+    }
 
     /// The window's current frame (global points), for captures that crop it from its display.
     public func windowFrameChanged(_ frame: CGRect) {
@@ -105,10 +133,16 @@ public final class WindowStreamSender: @unchecked Sendable {
     public func switchDisplay(to displayID: CGDirectDisplayID) async throws {
         guard let capture = capture as? DisplayCaptureSession else { return }
         try await capture.switchDisplay(to: displayID)
-        encoder.requestKeyframe()
+        requestKeyframe()
     }
 
-    public func setAverageBitRate(_ bitRate: Int) { encoder.setAverageBitRate(bitRate) }
+    /// Strips share it.
+    public func setAverageBitRate(_ bitRate: Int) {
+        switch encoding {
+        case let .whole(encoder): encoder.setAverageBitRate(bitRate)
+        case let .strips(tiled): tiled.setAverageBitRate(bitRate)
+        }
+    }
 }
 
 /// Viewer side of one window stream: datagrams → reassembly → decode.
@@ -195,8 +229,9 @@ public final class WindowStreamReceiver: @unchecked Sendable {
             }
             report.framesReceived &+= 1
             if recordsFrames {
-                stats.recordFrame(bytes: data.count, keyframe: frame.isKeyframe,
-                                  width: Int(frame.pixelWidth), height: Int(frame.pixelHeight))
+                stats.recordFrame(bytes: data.count, keyframe: frame.isKeyframe, width: Int(frame.pixelWidth),
+                                  height: Int(frame.tile?.canvasHeight ?? frame.pixelHeight),
+                                  countsFrame: frame.tile?.isFirstOfFrame ?? true)
             }
             if let captured = remoteClock?.localTime(fromSender: frame.handedOverTimeNanos) {
                 stats.record(.receive, from: captured, to: received)

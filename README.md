@@ -248,17 +248,53 @@ Full screen skips WindowServer's composition (decode → glass 8 → 3.5 ms),
 but dynamic resolution then makes the host's desktop the whole screen, and
 the larger frame takes 4 ms longer to encode.
 
+Desktops go out as four horizontal strips, like Apple Screen Sharing's
+four tiles: one capture, and each strip its own HEVC session and stream ID.
+VideoToolbox's encode time follows the frame's pixel count, not how much
+changed, so a full 4K frame cost 10–15 ms even for one typed letter. Only
+strips that ScreenCaptureKit reports as changed are copied out (a GPU blit)
+and encoded, and the strips of a full-screen change encode, travel and
+decode overlapped. Every strip carries the host frame's display time and the
+set of strips sent with it; the viewer shows a host frame once all of them
+are decoded (or after 10 ms, or when a newer one starts), drawing every
+strip's latest picture into one drawable, so a frame never shows half old.
+Capture → decoded, no network (`anyremote-bench --tiles`, 3840×2160):
+
+| Host | Workload | Whole frame p50 / p95 | 4 strips p50 / p95 |
+|---|---|---|---|
+| M6 | typing | 15.3 / 32.0 ms | 9.6 / 10.2 ms |
+| M6 | full-screen motion | 14.6 / 18.5 ms | 11.3 / 13.9 ms |
+| M4 | typing | 21.0 / 32.6 ms | 11.3 / 20.4 ms |
+| M4 | full-screen motion | 15.1 / 16.7 ms | 14.0 / 15.1 ms |
+
+Eight strips gave nothing more for full-screen motion. `ANYREMOTE_TILES=1`
+on the host sends whole frames (any 2–8 sets the strip count).
+
 VideoToolbox findings behind the encoder settings (each measured
 before/after):
 
-- `kVTCompressionPropertyKey_ExpectedFrameRate` acts as a latency budget:
+- `RealTime` is off and `PrioritizeEncodingSpeedOverQuality` on. In
+  real-time mode VT runs the engine just fast enough for the expected rate,
+  so a frame takes ~9–12 ms however small: a 3840×528 strip took 11.6 ms,
+  as long as a whole 4K frame, and an idle M4 host took 22–35 ms per strip.
+  Without it time follows the pixels (M6: strip 3.7 ms, four strips at once
+  7.8 ms, 4K frame 8.7 ms), and the 4K frame decodes at 46.4 dB PSNR
+  instead of 45.4 (with ~13% more bits than asked for). `RealTime` off
+  without the speed priority encodes best (53.5 dB) but takes 14.5 ms.
+  Capture → decoded with four strips (`anyremote-bench --tiles` vs
+  `--realtime`): typing 16.2 → 9.8 ms, scrolling 13.2 → 8.7 ms,
+  full-screen motion 16.0 → 10.3 ms.
+- In real-time mode, `kVTCompressionPropertyKey_ExpectedFrameRate` acts as a latency budget:
   VT clocks the encoder down until one frame takes ~1/rate. 60 → 120 halved
   encode time (1280×800: 16.8 → 8.6 ms). 240 gave nothing further.
 - Removing `kVTDecodeFrame_1xRealTimePlayback` cut decode ~20%.
 - Any color-tagging compression property (primaries, transfer, matrix) adds
   ~2.5 ms per 4K frame.
 - `EnableLowLatencyRateControl` silently downgrades to 4:2:0. Don't use it.
-- Parallel tile sessions (Apple's four-tile layout) gave no gain on M6.
+- In full screen, any view over the video (the statistics overlay was an
+  `NSTextField`) made the window server composite instead of showing the
+  video directly each time it changed: one stutter a second (1.05/s → 0.10/s
+  once the text was drawn into the video frames themselves).
 - `displaySyncEnabled = false` on the windowed layer: decode → glass 25 → 7 ms.
   `ANYREMOTE_DISPLAY_SYNC=1` restores vsync for comparison.
 - ScreenCaptureKit's `minimumFrameInterval` at exactly the refresh period
@@ -269,18 +305,17 @@ before/after):
   hands it over before that: 9 ms on average, up to 15 ms. Frames carry that
   lead (`captureLeadMicros`), so latency counts from the handover while the
   stamps, exactly one refresh apart, still give the host's cadence.
-- Encoding time follows the pixel count: 3236×1820 4:4:4 takes 9.7 ms on
-  M6, 4:2:0 8.8 ms; `PrioritizeEncodingSpeedOverQuality`,
-  `MaximizePowerEfficiency = false` and an expected rate of 240 change
-  nothing. Two parallel half-height sessions take 8.8 ms, four 8.9 ms: one
+- In real-time mode, 3236×1820 4:4:4 takes 9.7 ms on M6, 4:2:0 8.8 ms;
+  `PrioritizeEncodingSpeedOverQuality`, `MaximizePowerEfficiency = false`
+  and an expected rate of 240 change nothing there. Two parallel half-height sessions take 8.8 ms, four 8.9 ms: one
   encode engine, so tiles only overlap a little. Chips with two engines
   (Max) may differ.
 - Frame pacing on the viewer (hold each frame until its host display time
   plus the 95th-percentile arrival, `ANYREMOTE_PACING=1`) added 5–6 ms and
   did not reliably cut stutters (windowed 0.41 → 0.61/s, full screen
   1.00 → 0.44/s), so frames are shown on arrival.
-- Sparse updates (e.g. typing) encode on a down-clocked engine: 800×600 takes
-  ~10 ms instead of ~4.5 ms.
+- Sparse updates (e.g. typing) were slow for the same reason (real-time
+  mode): 800×600 took ~10 ms instead of ~4.5 ms.
 
 ## Layout
 
@@ -320,9 +355,10 @@ project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated)
 xcodegen generate
 open AnyRemote.xcodeproj            # signed build with your team (Developer ID for distribution)
 
-swift test --package-path Packages/AnyRemoteKit     # 42 tests incl. VT round trips and a network session
+swift test --package-path Packages/AnyRemoteKit     # 45 tests incl. VT round trips and a network session
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
+Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
 ```
 
 The Debug configuration builds **AnyRemote Dev** (`com.localhost-copilot.anyremote.dev`),

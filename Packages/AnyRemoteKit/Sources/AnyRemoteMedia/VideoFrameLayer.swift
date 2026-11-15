@@ -1,3 +1,5 @@
+import AnyRemoteWire
+import CoreText
 import CoreVideo
 import Metal
 import OSLog
@@ -28,6 +30,31 @@ private struct RetainedTextures: @unchecked Sendable {
     let textures: [CVMetalTexture]
 }
 
+/// What one drawable shows: a frame, or the strips of a tiled stream.
+private struct Picture: @unchecked Sendable {
+    var parts: [DecodedFrame]
+    /// The part that completed it, for statistics.
+    var lead: DecodedFrame
+    var width: Int
+    var height: Int
+
+    init(_ frame: DecodedFrame) {
+        parts = [frame]
+        lead = frame
+        width = frame.pixelWidth
+        height = frame.pixelHeight
+    }
+
+    init(parts: [DecodedFrame], lead: DecodedFrame, width: Int, height: Int) {
+        self.parts = parts
+        self.lead = lead
+        self.width = width
+        self.height = height
+    }
+
+    var isTiled: Bool { lead.tile != nil }
+}
+
 final class NV24MetalContext: @unchecked Sendable {
     static let shared = NV24MetalContext()
 
@@ -35,6 +62,8 @@ final class NV24MetalContext: @unchecked Sendable {
     let commandQueue: MTLCommandQueue
     let pipeline: MTLRenderPipelineState
     let alphaPipeline: MTLRenderPipelineState
+    /// Premultiplied BGRA blended over what is drawn (the statistics overlay).
+    let overlayPipeline: MTLRenderPipelineState
     /// 4:4:4 with an area (box) filter, for pictures drawn smaller than their pixels.
     let areaPipeline: MTLRenderPipelineState
     let textureCache: CVMetalTextureCache
@@ -59,8 +88,18 @@ final class NV24MetalContext: @unchecked Sendable {
         areaDescriptor.vertexFunction = vertex
         areaDescriptor.fragmentFunction = areaFragment
         areaDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        let overlayDescriptor = MTLRenderPipelineDescriptor()
+        overlayDescriptor.vertexFunction = vertex
+        overlayDescriptor.fragmentFunction = alphaFragment
+        overlayDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        overlayDescriptor.colorAttachments[0].isBlendingEnabled = true
+        overlayDescriptor.colorAttachments[0].sourceRGBBlendFactor = .one
+        overlayDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+        overlayDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        overlayDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         var cache: CVMetalTextureCache?
-        guard let pipeline = try? device.makeRenderPipelineState(descriptor: descriptor),
+        guard let overlayPipeline = try? device.makeRenderPipelineState(descriptor: overlayDescriptor),
+              let pipeline = try? device.makeRenderPipelineState(descriptor: descriptor),
               let areaPipeline = try? device.makeRenderPipelineState(descriptor: areaDescriptor),
               let alphaPipeline = try? device.makeRenderPipelineState(descriptor: alphaDescriptor),
               CVMetalTextureCacheCreate(nil, nil, device, nil, &cache) == kCVReturnSuccess,
@@ -69,6 +108,7 @@ final class NV24MetalContext: @unchecked Sendable {
         self.commandQueue = commandQueue
         self.pipeline = pipeline
         self.alphaPipeline = alphaPipeline
+        self.overlayPipeline = overlayPipeline
         self.areaPipeline = areaPipeline
         self.textureCache = cache
     }
@@ -169,13 +209,20 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
     private let renderQueue = DispatchQueue(label: "anyremote.render", qos: .userInteractive)
     private let lock = NSLock()
     /// Frames waiting for their presentation time, oldest first. Under `lock`.
-    private var waiting: [(frame: DecodedFrame, due: UInt64, paced: Bool)] = []
+    private var waiting: [(picture: Picture, due: UInt64, paced: Bool)] = []
     private var inFlight = false
     private var wakeScheduledFor: UInt64 = 0
     private let pacer = FramePacer()
     private var lastGeometry: (Int, Int, Int) = (0, 0, 0)
-    private var lastFrame: DecodedFrame?
+    private var lastPicture: Picture?
+    // Strips (under `lock`): the latest of each, and the host frame being gathered.
+    private var strips: [Int: DecodedFrame] = [:]
+    private var stripCanvas = (width: 0, height: 0)
+    private var gathering: (time: UInt64, mask: UInt8, arrived: UInt8, frames: [DecodedFrame])?
+    /// How long a host frame's strips wait for the rest before showing without them.
+    private static let gatherTimeout: UInt64 = 10_000_000
     private var targetSize: CGSize?
+    private var overlay: (text: String, texture: MTLTexture)? // under `lock`
 
     /// When set, frames are scaled here to this drawable size (pixels),
     /// aspect-fitted and centered on black, with an area filter, instead of
@@ -223,29 +270,171 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         minificationFilter = .linear
     }
 
+    /// Text drawn over the bottom-left corner of every frame (statistics), or nil.
+    ///
+    /// Drawn into the frame itself: a view over the video made the window
+    /// server composite (rather than show the video directly) on every update
+    /// in full screen, a stutter a second. Thread-safe.
+    public var overlayText: String? {
+        get { lock.lock(); defer { lock.unlock() }; return overlay?.text }
+        set {
+            lock.lock()
+            let unchanged = overlay?.text == newValue
+            lock.unlock()
+            guard !unchanged else { return }
+            let scale = contentsScale
+            let updated = newValue.flatMap { text in Self.overlayTexture(text, scale: scale).map { (text, $0) } }
+            lock.lock()
+            overlay = updated
+            lock.unlock()
+            redrawLastFrame()
+        }
+    }
+
+    /// White monospaced lines on translucent black, premultiplied BGRA.
+    private static func overlayTexture(_ text: String, scale: CGFloat) -> MTLTexture? {
+        guard let device = NV24MetalContext.shared?.device else { return nil }
+        let scale = max(1, scale)
+        let font = CTFontCreateWithName("Menlo" as CFString, 10 * scale, nil)
+        let attributes: [CFString: Any] = [
+            kCTFontAttributeName: font,
+            kCTForegroundColorAttributeName: CGColor(gray: 1, alpha: 1),
+        ]
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map {
+            CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, String($0) as CFString,
+                                                                      attributes as CFDictionary))
+        }
+        let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font)
+        let lineHeight = (ascent + descent + CTFontGetLeading(font)).rounded(.up)
+        let padding = (3 * scale).rounded()
+        let textWidth = lines.map { CGFloat(CTLineGetTypographicBounds($0, nil, nil, nil)) }.max() ?? 0
+        let width = min(8192, Int((textWidth + 2 * padding).rounded(.up)))
+        let height = min(8192, Int(lineHeight * CGFloat(lines.count) + 2 * padding))
+        guard width > 0, height > 0,
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                          | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        context.setFillColor(CGColor(gray: 0, alpha: 0.65))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        for (index, line) in lines.enumerated() {
+            // Core Graphics is bottom-up; the first line goes at the top.
+            context.textPosition = CGPoint(x: padding,
+                                           y: CGFloat(height) - padding - lineHeight * CGFloat(index + 1) + descent)
+            CTLineDraw(line, context)
+        }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width,
+                                                                  height: height, mipmapped: false)
+        descriptor.usage = .shaderRead
+        guard let texture = device.makeTexture(descriptor: descriptor), let data = context.data else { return nil }
+        texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+                        withBytes: data, bytesPerRow: width * 4)
+        return texture
+    }
+
     /// Frame pacing state, for statistics.
     public var pacingDescription: String { pacer.description }
 
-    /// Thread-safe.
+    /// Thread-safe. Strips of a tiled stream (from every strip's receiver)
+    /// are shown together: those of one host frame wait for each other.
     public func enqueue(_ frame: DecodedFrame) {
-        let displayTime = remoteClock?.localTime(fromSender: frame.captureTimeNanos)
-        let due = pacer.due(displayTime: displayTime, decoded: frame.decodedTimeNanos)
-        add(frame, due: due ?? frame.decodedTimeNanos, paced: true)
+        if let tile = frame.tile {
+            gather(frame, tile: tile)
+        } else {
+            schedule(Picture(frame))
+        }
     }
 
-    /// Redraws the most recent frame, e.g. after the layer was resized.
+    private func schedule(_ picture: Picture) {
+        let displayTime = remoteClock?.localTime(fromSender: picture.lead.captureTimeNanos)
+        let due = pacer.due(displayTime: displayTime, decoded: picture.lead.decodedTimeNanos)
+        add(picture, due: due ?? picture.lead.decodedTimeNanos, paced: true)
+    }
+
+    /// Redraws the most recent picture, e.g. after the layer was resized.
     public func redrawLastFrame() {
         lock.lock()
-        let frame = lastFrame
+        let picture = lastPicture
         lock.unlock()
-        if let frame { add(frame, due: 0, paced: false) }
+        if let picture { add(picture, due: 0, paced: false) }
     }
 
-    private func add(_ frame: DecodedFrame, due: UInt64, paced: Bool) {
+    private func add(_ picture: Picture, due: UInt64, paced: Bool) {
         lock.lock()
-        waiting.append((frame, due, paced))
+        waiting.append((picture, due, paced))
         lock.unlock()
         renderQueue.async { self.pump() }
+    }
+
+    private func gather(_ frame: DecodedFrame, tile: EncodedVideoFrame.Tile) {
+        let time = frame.captureTimeNanos
+        let bit = UInt8(1) << tile.index
+        var ready: [[DecodedFrame]] = []
+        var startedGathering = false
+        lock.lock()
+        if var current = gathering, current.time == time {
+            current.arrived |= bit
+            current.frames.append(frame)
+            gathering = current
+        } else if gathering == nil || time > gathering!.time {
+            // A newer host frame: the previous one shows with what arrived.
+            if let previous = gathering { ready.append(previous.frames) }
+            gathering = (time, tile.mask, bit, [frame])
+            startedGathering = true
+        } else {
+            // A straggler from an older host frame.
+            ready.append([frame])
+        }
+        if let current = gathering, current.arrived & current.mask == current.mask {
+            ready.append(current.frames)
+            gathering = nil
+        }
+        let pictures = ready.compactMap(commitLocked)
+        lock.unlock()
+        pictures.forEach(schedule)
+        if startedGathering, gathering(isStillAt: time) {
+            renderQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(Self.gatherTimeout))) { [weak self] in
+                self?.gatherTimedOut(time)
+            }
+        }
+    }
+
+    private func gathering(isStillAt time: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return gathering?.time == time
+    }
+
+    private func gatherTimedOut(_ time: UInt64) {
+        lock.lock()
+        var picture: Picture?
+        if let current = gathering, current.time == time {
+            gathering = nil
+            picture = commitLocked(current.frames)
+        }
+        lock.unlock()
+        if let picture { schedule(picture) }
+    }
+
+    /// Under `lock`. Stores strips (unless newer ones are stored) and returns the whole picture.
+    private func commitLocked(_ frames: [DecodedFrame]) -> Picture? {
+        var lead: DecodedFrame?
+        for frame in frames {
+            guard let tile = frame.tile else { continue }
+            let canvas = (width: frame.pixelWidth, height: Int(tile.canvasHeight))
+            if canvas != stripCanvas {
+                // A new size: strips of the old one no longer fit.
+                stripCanvas = canvas
+                strips = [:]
+            }
+            let index = Int(tile.index)
+            if let stored = strips[index], stored.captureTimeNanos > frame.captureTimeNanos { continue }
+            strips[index] = frame
+            if lead == nil || frame.decodedTimeNanos > lead!.decodedTimeNanos { lead = frame }
+        }
+        guard let lead else { return nil }
+        let parts = strips.keys.sorted().compactMap { strips[$0] }
+        return Picture(parts: parts, lead: lead, width: stripCanvas.width, height: stripCanvas.height)
     }
 
     /// Render queue. Renders the newest frame that is due, unless one is
@@ -264,15 +453,18 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
             }
             return lock.unlock()
         }
-        let chosen = waiting[index]
-        let skipped = waiting[..<index].filter(\.paced).count
+        // A redraw (overlay, resize) behind a newer frame: that frame does it.
+        var shown = index
+        if !waiting[index].paced, let newer = waiting[..<index].lastIndex(where: \.paced) { shown = newer }
+        let chosen = waiting[shown]
+        let skipped = waiting[..<shown].filter(\.paced).count
         waiting.removeFirst(index + 1)
         inFlight = true
         lock.unlock()
         for _ in 0..<skipped { stats?.recordSkipped() }
-        if chosen.paced { stats?.record(.hold, from: chosen.frame.decodedTimeNanos, to: now) }
-        let held = chosen.paced && now > chosen.frame.decodedTimeNanos + 500_000
-        render(chosen.frame, startedAt: held ? 0 : now)
+        if chosen.paced { stats?.record(.hold, from: chosen.picture.lead.decodedTimeNanos, to: now) }
+        let held = chosen.paced && now > chosen.picture.lead.decodedTimeNanos + 500_000
+        render(chosen.picture, startedAt: held ? 0 : now)
     }
 
     private func finish() {
@@ -303,66 +495,109 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
     }
 
     /// - Parameter startedAt: when a frame that wasn't held back was taken; 0 if it was.
-    private func render(_ frame: DecodedFrame, startedAt: UInt64) {
+    private func render(_ picture: Picture, startedAt: UInt64) {
         guard let context = NV24MetalContext.shared else { return finish() }
-        let width = frame.pixelWidth
-        let height = frame.pixelHeight
+        let frame = picture.lead
+        let width = picture.width
+        let height = picture.height
+        guard width > 0, height > 0 else { return finish() }
         if frame.hasAlpha == isOpaque {
             isOpaque = !frame.hasAlpha
         }
+        // Where the whole picture goes in the drawable.
+        var placement = CGRect(x: 0, y: 0, width: width, height: height)
+        var taps: Int32?
         // Scaled here (desktops): the drawable takes the view's pixel size.
-        var viewport: MTLViewport?
-        var area: (footprint: SIMD2<Float>, taps: Int32)?
         if !frame.hasAlpha, let target = targetPixelSize, target.width >= 2, target.height >= 2 {
             let target = CGSize(width: target.width.rounded(), height: target.height.rounded())
             if drawableSize != target { drawableSize = target }
             let factor = min(target.width / CGFloat(width), target.height / CGFloat(height))
             let size = CGSize(width: (CGFloat(width) * factor).rounded(), height: (CGFloat(height) * factor).rounded())
-            viewport = MTLViewport(originX: Double(((target.width - size.width) / 2).rounded()),
-                                   originY: Double(((target.height - size.height) / 2).rounded()),
-                                   width: Double(size.width), height: Double(size.height), znear: 0, zfar: 1)
-            // Source texels per output pixel, in texture coordinates.
-            let taps = Int32(min(6, max(1, (1 / factor).rounded(.up))))
-            area = (SIMD2(Float(1 / size.width), Float(1 / size.height)), taps)
+            placement = CGRect(x: ((target.width - size.width) / 2).rounded(),
+                               y: ((target.height - size.height) / 2).rounded(),
+                               width: size.width, height: size.height)
+            // Source texels per output pixel.
+            taps = Int32(min(6, max(1, (1 / factor).rounded(.up))))
         } else if drawableSize.width != CGFloat(width) || drawableSize.height != CGFloat(height) {
             drawableSize = CGSize(width: width, height: height)
         }
+        let scaleY = placement.height / CGFloat(height)
+
         var textures: [CVMetalTexture] = []
-        if frame.hasAlpha {
-            guard let image = makeTexture(context, frame.pixelBuffer, plane: 0, format: .bgra8Unorm,
-                                          planar: false) else { return finish() }
-            textures = [image]
-        } else {
-            guard CVPixelBufferGetPlaneCount(frame.pixelBuffer) == 2,
-                  let luma = makeTexture(context, frame.pixelBuffer, plane: 0, format: .r8Unorm),
-                  let chroma = makeTexture(context, frame.pixelBuffer, plane: 1, format: .rg8Unorm)
-            else { return finish() }
-            textures = [luma, chroma]
+        var draws: [(textures: [MTLTexture], viewport: MTLViewport)] = []
+        for part in picture.parts {
+            var partTextures: [CVMetalTexture] = []
+            if part.hasAlpha {
+                guard let image = makeTexture(context, part.pixelBuffer, plane: 0, format: .bgra8Unorm,
+                                              planar: false) else { continue }
+                partTextures = [image]
+            } else {
+                guard CVPixelBufferGetPlaneCount(part.pixelBuffer) == 2,
+                      let luma = makeTexture(context, part.pixelBuffer, plane: 0, format: .r8Unorm),
+                      let chroma = makeTexture(context, part.pixelBuffer, plane: 1, format: .rg8Unorm)
+                else { continue }
+                partTextures = [luma, chroma]
+            }
+            let metal = partTextures.compactMap { CVMetalTextureGetTexture($0) }
+            guard metal.count == partTextures.count else { continue }
+            textures += partTextures
+            // Metal viewports are top-left origin, like the strips.
+            let originY = CGFloat(part.tile?.originY ?? 0)
+            let viewport = MTLViewport(originX: Double(placement.minX),
+                                       originY: Double(placement.minY + originY * scaleY),
+                                       width: Double(placement.width),
+                                       height: Double(CGFloat(part.pixelHeight) * scaleY), znear: 0, zfar: 1)
+            draws.append((metal, viewport))
         }
-        let metalTextures = textures.compactMap { CVMetalTextureGetTexture($0) }
-        guard metalTextures.count == textures.count,
+        guard !draws.isEmpty,
               let drawable = nextDrawable(),
               let commandBuffer = context.commandQueue.makeCommandBuffer() else { return finish() }
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
-        let letterboxed = viewport.map { $0.width < Double(drawable.texture.width) || $0.height < Double(drawable.texture.height) } ?? false
-        pass.colorAttachments[0].loadAction = letterboxed ? .clear : .dontCare
+        let letterboxed = placement.width < CGFloat(drawable.texture.width) || placement.height < CGFloat(drawable.texture.height)
+        // Strips not received yet show black.
+        pass.colorAttachments[0].loadAction = letterboxed || picture.isTiled ? .clear : .dontCare
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return finish() }
-        if let viewport { encoder.setViewport(viewport) }
-        if let area {
+        if taps != nil {
             encoder.setRenderPipelineState(context.areaPipeline)
-            var parameters = AreaParameters(footprint: area.footprint, taps: area.taps)
-            encoder.setFragmentBytes(&parameters, length: MemoryLayout<AreaParameters>.stride, index: 0)
         } else {
             encoder.setRenderPipelineState(frame.hasAlpha ? context.alphaPipeline : context.pipeline)
         }
-        for (index, texture) in metalTextures.enumerated() {
-            encoder.setFragmentTexture(texture, index: index)
+        for draw in draws {
+            encoder.setViewport(draw.viewport)
+            if let taps {
+                // One output pixel's footprint in this part's texture coordinates.
+                var parameters = AreaParameters(footprint: SIMD2(Float(1 / draw.viewport.width),
+                                                                 Float(1 / draw.viewport.height)), taps: taps)
+                encoder.setFragmentBytes(&parameters, length: MemoryLayout<AreaParameters>.stride, index: 0)
+            }
+            for (index, texture) in draw.textures.enumerated() {
+                encoder.setFragmentTexture(texture, index: index)
+            }
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
-        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        lock.lock()
+        let overlayTexture = overlay?.texture
+        lock.unlock()
+        if let overlayTexture {
+            // Bottom left, 8 points in, at the window's scale (clipped to the drawable).
+            let margin = Double((8 * max(1, contentsScale)).rounded())
+            let target = drawable.texture
+            let x = margin, y = Double(target.height) - margin - Double(overlayTexture.height)
+            let visibleWidth = min(Double(overlayTexture.width), Double(target.width) - margin - x)
+            if visibleWidth > 0, y >= 0 {
+                encoder.setRenderPipelineState(context.overlayPipeline)
+                encoder.setViewport(MTLViewport(originX: x, originY: y, width: Double(overlayTexture.width),
+                                                height: Double(overlayTexture.height), znear: 0, zfar: 1))
+                encoder.setScissorRect(MTLScissorRect(x: Int(x), y: Int(y), width: Int(visibleWidth),
+                                                      height: overlayTexture.height))
+                encoder.setFragmentTexture(overlayTexture, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            }
+        }
         encoder.endEncoding()
 
         // Admit the next frame only once this one is on glass. Releasing on
@@ -395,7 +630,7 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         commandBuffer.commit()
 
         lock.lock()
-        lastFrame = frame
+        lastPicture = picture
         lock.unlock()
 
         let geometry = (width, height, Int(frame.scale))

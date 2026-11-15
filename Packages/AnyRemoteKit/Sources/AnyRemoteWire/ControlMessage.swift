@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 7
+public let anyRemoteProtocolVersion: UInt16 = 8
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -148,9 +148,15 @@ public struct StreamDescription: Codable, Equatable, Sendable {
     public var layer: Int
     public var title: String
     public var applicationName: String
+    /// Display streams sent as horizontal strips: the stream carrying each
+    /// strip, top to bottom; the first is `streamID` itself. Video for a
+    /// strip arrives under its own stream ID; everything else (input, size,
+    /// close) uses `streamID`.
+    public var tileStreamIDs: [UInt16]?
 
     public init(streamID: UInt16, windowID: UInt32, role: Role, parentStreamID: UInt16?, frame: CGRect,
-                layer: Int, title: String, applicationName: String) {
+                layer: Int, title: String, applicationName: String, tileStreamIDs: [UInt16]? = nil) {
+        self.tileStreamIDs = tileStreamIDs
         self.streamID = streamID
         self.windowID = windowID
         self.role = role
