@@ -76,7 +76,43 @@ final class InputInjector {
             event.type = .flagsChanged
             event.flags = CGEventFlags(rawValue: modifiers)
             event.post(tap: .cghidEventTap)
+
+        case let .text(text):
+            postText(text)
         }
+    }
+
+    /// Types text whatever the host's keyboard layout: each key event carries
+    /// its characters in place of a key's. No modifiers, so a held Shift or
+    /// Option on the viewer doesn't turn it into a shortcut.
+    private func postText(_ text: String) {
+        for chunk in Self.chunks(of: text) {
+            for down in [true, false] {
+                guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { return }
+                event.flags = []
+                chunk.withUnsafeBufferPointer { buffer in
+                    event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+                }
+                event.post(tap: .cghidEventTap)
+            }
+        }
+    }
+
+    /// A key event carries at most 20 UTF-16 units (more are cut off); the
+    /// text is split between characters, so no character is ever split.
+    static func chunks(of text: String, maxLength: Int = 20) -> [[UniChar]] {
+        var chunks: [[UniChar]] = []
+        var current: [UniChar] = []
+        for character in text {
+            let units = Array(String(character).utf16)
+            if !current.isEmpty, current.count + units.count > maxLength {
+                chunks.append(current)
+                current = []
+            }
+            current += units
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
     }
 
     /// Releases anything still held, e.g. when the viewer disconnects mid-drag.

@@ -115,6 +115,10 @@ enum DevelopmentLaunch {
                         desktop.window?.toggleFullScreen(nil)
                     }
                 }
+                if arguments.contains("--ime-test") {
+                    runInputMethodTest(desktop, arguments: arguments)
+                    return
+                }
                 if arguments.contains("--shortcut-test") {
                     desktop.inputTap = { event in
                         if case let .key(keyCode, down, _, modifiers) = event {
@@ -221,6 +225,9 @@ enum DevelopmentLaunch {
         if arguments.contains("--resize-test") {
             app.developmentMirrorHandler = { mirror in ResizeTest.run(mirror) }
         }
+        if arguments.contains("--text-test") {
+            app.developmentMirrorHandler = { mirror in TextTest.run(mirror) }
+        }
 
         Task { @MainActor in
             let target: HostTarget
@@ -300,6 +307,70 @@ enum DevelopmentLaunch {
         return true
     }
 
+    /// `--desktop --ime-test`: types through this Mac's input method into the
+    /// desktop window and prints what would go to the host.
+    private static func runInputMethodTest(_ desktop: DesktopWindowController, arguments: [String]) {
+        desktop.inputTap = { event in
+            switch event {
+            case let .key(keyCode, down, _, _): print("dev: ime key \(keyCode) \(down ? "down" : "up")")
+            case let .text(text): print("dev: ime text \(text)")
+            default: break
+            }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            for _ in 0..<20 where !NSApp.isActive {
+                NSRunningApplication.current.activate(options: [])
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            for _ in 0..<10 where NSApp.keyWindow !== desktop.window {
+                NSApp.activate(ignoringOtherApps: true)
+                desktop.window?.makeKeyAndOrderFront(nil)
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            guard NSApp.keyWindow === desktop.window else {
+                return print("dev: ime desktop not key (active \(NSApp.isActive), key \(String(describing: NSApp.keyWindow)))")
+            }
+            let source = CGEventSource(stateID: .hidSystemState)
+            func post(_ keyCode: CGKeyCode, flags: CGEventFlags = []) async {
+                for down in [true, false] {
+                    let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: down)
+                    event?.flags = flags
+                    event?.post(tap: .cghidEventTap)
+                    try? await Task.sleep(for: .milliseconds(60))
+                }
+            }
+            func shiftTap() async {
+                for flags: CGEventFlags in [.maskShift, []] {
+                    let event = CGEvent(keyboardEventSource: source, virtualKey: 56, keyDown: !flags.isEmpty)
+                    event?.type = .flagsChanged
+                    event?.flags = flags
+                    event?.post(tap: .cghidEventTap)
+                    try? await Task.sleep(for: .milliseconds(60))
+                }
+            }
+            if arguments.contains("--ime-hold") {
+                // Leaves "nihao" composing at a pretend host caret, for a screenshot.
+                desktop.caret = CGRect(x: 300, y: 200, width: 1, height: 18)
+                for keyCode: CGKeyCode in [45, 34, 4, 0, 31] { await post(keyCode) }
+                return print("dev: ime holding")
+            }
+            for round in 0..<2 {
+                print("dev: ime round \(round), composes \(LocalInputSource.composes)")
+                for keyCode: CGKeyCode in [45, 34, 4, 0, 31, 49, 43, 36, 123] { await post(keyCode) } // nihao␣,⏎←
+                try? await Task.sleep(for: .milliseconds(300))
+                await shiftTap()
+            }
+            print("dev: ime ⌃Space")
+            await post(49, flags: .maskControl)
+            try? await Task.sleep(for: .milliseconds(500))
+            print("dev: ime composes after ⌃Space \(LocalInputSource.composes)")
+            await post(49, flags: .maskControl)
+            try? await Task.sleep(for: .milliseconds(500))
+            print("dev: ime composes after second ⌃Space \(LocalInputSource.composes)")
+        }
+    }
+
     private static func parseSize(_ text: String) -> CGSize? {
         let parts = text.lowercased().split(separator: "x").compactMap { Double($0) }
         guard parts.count == 2 else { return nil }
@@ -308,6 +379,30 @@ enum DevelopmentLaunch {
 }
 
 /// Resizes the mirror through a series of sizes and reports how the host followed.
+/// `--open <app> --text-test`: clicks into the host window, types composed
+/// text there and prints the caret the host reports.
+@MainActor
+enum TextTest {
+    static func run(_ mirror: MirrorWindowController) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            let size = mirror.stream.frame.size
+            let p = CGPoint(x: size.width / 2, y: size.height / 2)
+            mirror.sendInput(.mouseDown(point: p, button: .left, buttonNumber: 0, clickCount: 1, modifiers: 0))
+            mirror.sendInput(.mouseUp(point: p, button: .left, buttonNumber: 0, clickCount: 1, modifiers: 0))
+            try? await Task.sleep(for: .milliseconds(500))
+            print("text-test: caret after click \(String(describing: mirror.caret))")
+            mirror.sendInput(.text("你好，世界"))
+            mirror.sendInput(.key(keyCode: 49, down: true, isRepeat: false, modifiers: 0))
+            mirror.sendInput(.key(keyCode: 49, down: false, isRepeat: false, modifiers: 0))
+            mirror.sendInput(.text("これは長い日本語のテキストで二十文字を超えるかどうかを確かめます👍🏽"))
+            try? await Task.sleep(for: .milliseconds(600))
+            print("text-test: caret after typing \(String(describing: mirror.caret))")
+            if let rect = mirror.caretScreenRect() { print("text-test: caret on screen \(rect)") }
+        }
+    }
+}
+
 @MainActor
 enum ResizeTest {
     static func run(_ mirror: MirrorWindowController) {

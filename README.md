@@ -166,8 +166,16 @@ the *remote* app). AnyRemote's own commands use ⌃⌥⌘:
 | ⌃⌥⌘W | Close on this Mac (the host window stays open) |
 | ⌃⌥⌘I | Statistics overlay |
 
-Keys are sent as virtual key codes, so the host's keyboard layout and input
-method apply.
+Keys are sent as virtual key codes, so the host's keyboard layout applies.
+
+**Input methods** (Pinyin, WeChat, Sogou, Kotoeri…) are this Mac's: switch
+them here as usual (menu bar, 🌐, ⌃Space — also while a desktop captures
+system shortcuts), compose here, and the host gets the text. The candidates
+show next to the host's caret, in any window. Keys the input method passes
+through unchanged (letters in its English mode, Return, arrows outside a
+composition, every ⌘-shortcut) still go as key codes. While a viewer types,
+the host is switched to a plain keyboard layout, and gets its own input
+source back when the viewer leaves.
 
 ### Sound
 
@@ -216,6 +224,11 @@ behind the host on loopback, close enough to the picture for lip sync.
 - On the host, macOS covers each shared window's close/minimize/zoom buttons
   with a purple sharing indicator. It is a system privacy indicator with no
   API to turn it off; the viewer sees the normal buttons.
+- Input methods: text being composed is shown in a small panel over the
+  host's caret, not inside the host's text field. Apps that don't report
+  their caret through Accessibility get the candidates at the last click.
+  Composed text arrives as typed characters, so an app that reads key codes
+  only (some games) sees no keys for it.
 - Full desktop: keys outside the window server's hot keys (Touch ID, the
   power key) still act on this Mac. Dynamic resolution rearranges the host's
   windows like any resolution change.
@@ -285,6 +298,16 @@ Core Audio process taps → AAC-ELD ─────── UDP ────→  j
 - **Input** — mouse, scroll and keys as `CGEvent`s posted at the HID tap, at
   points relative to the window's top-left (frozen during a press so
   title-bar drags work). Focus via AX `AXFrontmost` + `AXMain` + `AXRaise`.
+- **Text input** — while the viewer's input source is an input method, its
+  keys go to the surface view's `NSTextInputContext` (`TextComposer`):
+  committed text travels as `InputEvent.text` and is posted with
+  `CGEventKeyboardSetUnicodeString` (≤20 UTF-16 units per event, split
+  between characters); keys the input method passes through or turns into
+  commands go as key codes. The host keeps a plain keyboard layout selected
+  meanwhile and reports the focused element's caret
+  (`AXSelectedTextRange` → `AXBoundsForRange`, `AXManualAccessibility` for
+  Chromium) as `caret` after typing and clicks; the viewer places the
+  composition panel and candidates there.
 - **Child windows** — every 33 ms (8 ms while a button is down) the host
   looks for same-process windows on menu/popup layers, or non-standard
   layer-0 windows near the main window (sheets, popovers). Each streams as
@@ -340,6 +363,7 @@ App/                        AppKit + SwiftUI app
   MirrorWindowController    mirror window: geometry, input mapping, resize, stats
   ChildWindowController     menus/popovers/sheets as local child windows
   RemoteSurfaceView         Metal surface + mouse/scroll; KeyForwarder
+  RemoteTextInput           this Mac's input method for the host: composer, composition panel, ⌃Space
   RemoteMenuBar             host menu bar as native NSMenus
   HostSettingsView          sharing + viewers, permission checklist, pairing code, display, sound
   SoundSharing              the viewer's "Play Sound from Other Macs" setting
@@ -350,8 +374,9 @@ Packages/AnyRemoteKit/
   AnyRemoteNetwork          TCP control connection, UDP socket, Bonjour, storage
   AnyRemoteMedia            capture, encoder (whole/strips), decoder, Metal layer, stats, clocks;
                             AAC-ELD codec, sound sender/receiver, jitter buffer
-  AnyRemoteWindowControl    AX window geometry/focus, menu bar reader
-  AnyRemoteHost             host service + sessions, input, cursor, virtual display, process audio taps
+  AnyRemoteWindowControl    AX window geometry/focus, menu bar reader, text caret
+  AnyRemoteHost             host service + sessions, input, cursor, virtual display, process audio taps,
+                            keyboard layout while a viewer types
   AnyRemoteClient           viewer-side connection, paired-host store
   CGVirtualDisplayPrivate   private CGVirtualDisplay declarations
   AnyRemoteDiagnostics      synthetic workload window
@@ -369,7 +394,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 60 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 62 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -412,13 +437,19 @@ against this Mac's own host service unless `--connect` is given.
 - `--input-test` — clicks, keys, wheel and a context menu into a recorder
   window; prints what arrived and whether the menu showed as a child window
 - `--open <app> [--title <text>] [--menu-test [--choose Menu/Item]]`
+- `--open <app> --text-test` — clicks into the window, sends composed text
+  (CJK, more than 20 units, an emoji) and prints the carets the host reports.
+  Use a throwaway text app: it types into the window.
 - `--launch <app>` / `--quit <app>` — through the Apps list
 - `--desktop [--display <n>] [--fullscreen]` — the host's full desktop; checks
   that a pointer move lands on the matching display point.
   `--test-display WxH` shows a virtual display made for the test;
   `--desktop-size 1280x720,1600x1000,off` then resizes the window through
   those sizes and prints the display list after each. `--shortcut-test`
-  posts ⌘Tab and ⌘Space and prints what was forwarded.
+  posts ⌘Tab and ⌘Space and prints what was forwarded. `--ime-test` types
+  `nihao`, `,`, Return and ← through this Mac's input method in both of its
+  modes and ⌃Space, and prints what would go to the host; `--ime-hold`
+  leaves `nihao` composing for a screenshot.
   `-DesktopFitsWindow NO` turns dynamic resolution off for one launch.
 - `--permission-guide` — Settings with the permission card
 - `--status-panel` — opens the menu bar panel and prints its frame for `screencapture -R`

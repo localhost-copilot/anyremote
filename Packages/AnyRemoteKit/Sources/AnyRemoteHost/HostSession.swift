@@ -150,6 +150,14 @@ final class HostSession: @unchecked Sendable {
     private var audioRequested = false
     private var audio: (scope: AudioScope, tap: ProcessAudioTap)?
     private let menuQueue = DispatchQueue(label: "anyremote.menu", qos: .userInitiated)
+    private let caretQueue = DispatchQueue(label: "anyremote.caret", qos: .userInitiated)
+    private let caretLocator = CaretLocator()
+    /// A caret lookup is scheduled; typing doesn't queue one per key.
+    private var caretLookupPending = false
+    /// The caret last sent, per stream.
+    private var sentCarets: [UInt16: CGRect?] = [:]
+    /// The stream that last got a key or click: the one whose caret matters.
+    private var lastInputStreamID: UInt16?
 
     init(sessionID: UInt32, connection: ControlConnection, queue: DispatchQueue, service: HostService) {
         self.sessionID = sessionID
@@ -249,6 +257,26 @@ final class HostSession: @unchecked Sendable {
 
     /// Main-thread only.
     nonisolated(unsafe) private var pasteboardBridge: PasteboardBridge?
+    /// Main-thread only.
+    nonisolated(unsafe) private var keyboardLayout: HostKeyboardLayout?
+
+    private func ensureKeyboardLayout() {
+        DispatchQueue.main.async { [self] in
+            MainActor.assumeIsolated {
+                if keyboardLayout == nil { keyboardLayout = HostKeyboardLayout() }
+                keyboardLayout?.ensureKeyboardLayout()
+            }
+        }
+    }
+
+    private func restoreKeyboardLayout() {
+        DispatchQueue.main.async { [self] in
+            MainActor.assumeIsolated {
+                keyboardLayout?.restore()
+                keyboardLayout = nil
+            }
+        }
+    }
 
     private func setPasteboardSharing(_ enabled: Bool) {
         let connection = connection
@@ -273,6 +301,7 @@ final class HostSession: @unchecked Sendable {
             tracker?.cancel()
             reportTimer?.cancel()
             setPasteboardSharing(false)
+            restoreKeyboardLayout()
             cursor?.stop()
             if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             for id in Array(streams.keys) { endStream(id, reason: reason, notify: false) }
@@ -794,6 +823,7 @@ final class HostSession: @unchecked Sendable {
 
     private func endStream(_ streamID: UInt16, reason: String, notify: Bool = true) {
         guard let stream = streams.removeValue(forKey: streamID) else { return }
+        sentCarets[streamID] = nil
         tileOwners = tileOwners.filter { $0.value != streamID }
         if let audience = stream.audience {
             let wasLeader = audience.leader === self
@@ -1186,9 +1216,11 @@ final class HostSession: @unchecked Sendable {
         guard let stream = streams[streamID], stream.description.role != .child else { return }
         // The whole desktop: points are relative to the display, nothing to
         // focus or keep in place, and windows it opens stay on it.
+        prepareKeyboard(for: event)
         if stream.description.role == .display {
             if stream.offScreenSince != nil, case .mouseDown = event { return }
             injector.post(event, windowOrigin: stream.description.frame.origin)
+            scheduleCaretLookup(after: event, streamID: streamID)
             return
         }
         // The window is closing or closed: don't let the viewer's pointer and
@@ -1203,7 +1235,7 @@ final class HostSession: @unchecked Sendable {
         }
         var origin = stream.description.frame.origin
         switch event {
-        case .mouseDown, .mouseUp, .key(_, true, _, _):
+        case .mouseDown, .mouseUp, .key(_, true, _, _), .text:
             lastInputTime = HostClock.nowNanos()
         default:
             break
@@ -1219,12 +1251,13 @@ final class HostSession: @unchecked Sendable {
             origin = current.frame.origin
             if !injector.isPressed { stream.pressFrame = stream.description.frame }
             setTrackerFast(true)
-        case .key(_, true, _, _):
+        case .key(_, true, _, _), .text:
             focus(stream, force: false)
         default:
             break
         }
         injector.post(event, windowOrigin: origin)
+        scheduleCaretLookup(after: event, streamID: streamID)
         if case .mouseUp = event, !injector.isPressed {
             setTrackerFast(false)
             // Once the drag has ended, and again after macOS's own snap-back
@@ -1235,6 +1268,60 @@ final class HostSession: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Typing needs a plain keyboard layout here (see `HostKeyboardLayout`).
+    private func prepareKeyboard(for event: InputEvent) {
+        switch event {
+        case .key(_, true, _, _), .text: ensureKeyboardLayout()
+        default: break
+        }
+    }
+
+    // MARK: Caret
+
+    /// Looks up the caret once typing or a click may have moved it, and tells
+    /// the viewer when it changed. At most one lookup is pending, so fast
+    /// typing updates it a few times a second rather than once per key.
+    private func scheduleCaretLookup(after event: InputEvent, streamID: UInt16) {
+        let delay: Int
+        switch event {
+        case .mouseDown, .key(_, true, _, _), .text: lastInputStreamID = streamID
+        default: break
+        }
+        switch event {
+        case .key(_, true, _, _), .text: delay = 60
+        case .mouseUp: delay = 120
+        default: return
+        }
+        guard !caretLookupPending else { return }
+        caretLookupPending = true
+        queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in self?.lookUpCaret() }
+    }
+
+    private func lookUpCaret() {
+        caretLookupPending = false
+        // The stream that has the host's focus: the last one given input.
+        guard let streamID = lastInputStreamID, let stream = streams[streamID] else { return }
+        let pid: pid_t? = stream.description.role == .display ? nil : stream.pid
+        let locator = caretLocator
+        caretQueue.async { [weak self] in
+            let caret = locator.caretRect(pid: pid)
+            self?.queue.async { self?.sendCaret(caret, streamID: streamID) }
+        }
+    }
+
+    private func sendCaret(_ caret: CGRect?, streamID: UInt16) {
+        guard !ended, let stream = streams[streamID] else { return }
+        let frame = stream.description.frame
+        // A caret in another window of the app, or off this display, is no use here.
+        let relative = caret.flatMap { caret -> CGRect? in
+            guard frame.insetBy(dx: -4, dy: -4).intersects(caret) else { return nil }
+            return caret.offsetBy(dx: -frame.minX, dy: -frame.minY)
+        }
+        if let sent = sentCarets[streamID], sent == relative { return }
+        sentCarets[streamID] = relative
+        connection.send(.caret(streamID: streamID, rect: relative))
     }
 
     /// The host window never moves for the viewer: dragging a mirror by its

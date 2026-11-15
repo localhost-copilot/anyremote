@@ -332,6 +332,9 @@ final class HostConnection {
             mirrors[streamID]?.controls = controls
         case let .windowStateRequest(streamID, request):
             mirrors[streamID]?.applyHostStateRequest(request)
+        case let .caret(streamID, rect):
+            mirrors[streamID]?.caret = rect
+            desktops[streamID]?.caret = rect
         case let .pasteboard(items):
             pasteboard?.apply(items)
         }

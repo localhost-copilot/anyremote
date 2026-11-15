@@ -241,6 +241,20 @@ final class DesktopWindowController: NSWindowController, NSWindowDelegate, Remot
 
     var remoteCursor: NSCursor? { connection.currentCursor }
 
+    /// The host's text caret, relative to the stream's top-left corner.
+    var caret: CGRect? {
+        didSet { if caret != oldValue { surface.composer.caretMoved() } }
+    }
+
+    func caretScreenRect() -> NSRect? {
+        guard let caret else { return nil }
+        let topLeft = videoScreenTopLeft
+        let scale = currentScale
+        let height = caret.height / scale.height
+        return NSRect(x: topLeft.x + caret.minX / scale.width, y: topLeft.y - caret.minY / scale.height - height,
+                      width: max(1, caret.width / scale.width), height: height)
+    }
+
     private var isFullScreen: Bool { window?.styleMask.contains(.fullScreen) ?? false }
 
     /// Where the picture is drawn in the surface (flipped coordinates): the

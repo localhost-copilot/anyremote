@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 9
+public let anyRemoteProtocolVersion: UInt16 = 10
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -188,6 +188,9 @@ public enum InputEvent: Codable, Equatable, Sendable {
     /// `keyCode` is the macOS virtual key code; `modifiers` are CGEventFlags.
     case key(keyCode: UInt16, down: Bool, isRepeat: Bool, modifiers: UInt64)
     case flagsChanged(keyCode: UInt16, modifiers: UInt64)
+    /// Text the viewer's input method composed (Chinese, Japanese, ...),
+    /// typed on the host as is, whatever its keyboard layout.
+    case text(String)
 }
 
 /// The host's current cursor. `png` is nil for "unchanged image, new
@@ -361,6 +364,10 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case windowControls(streamID: UInt16, WindowControls)
     case windowAction(streamID: UInt16, action: WindowAction)
     case windowStateRequest(streamID: UInt16, HostWindowStateRequest)
+    /// Host → viewer: the text insertion point of the focused text field, in
+    /// points relative to the stream's top-left corner (nil: none known), so
+    /// the viewer's input method shows its candidates next to it.
+    case caret(streamID: UInt16, rect: CGRect?)
 
     // Menu bar
     case requestMenuBar(streamID: UInt16)

@@ -221,6 +221,20 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
 
     var remoteCursor: NSCursor? { connection.currentCursor }
 
+    /// The host's text caret, relative to the stream's top-left corner.
+    var caret: CGRect? {
+        didSet { if caret != oldValue { surface.composer.caretMoved() } }
+    }
+
+    func caretScreenRect() -> NSRect? {
+        guard let caret else { return nil }
+        let topLeft = surfaceScreenTopLeft
+        let scale = currentScale
+        let height = caret.height / scale.height
+        return NSRect(x: topLeft.x + caret.minX / scale.width, y: topLeft.y - caret.minY / scale.height - height,
+                      width: max(1, caret.width / scale.width), height: height)
+    }
+
     func hostPoint(forScreenPoint point: NSPoint) -> CGPoint {
         let topLeft = pressScreenTopLeft ?? surfaceScreenTopLeft
         let scale = pressScreenTopLeft == nil ? currentScale : pressScale

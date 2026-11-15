@@ -19,6 +19,8 @@ protocol RemoteInputSink: AnyObject {
     /// drag), mouse moves move the window and the release stays local.
     func continueLocalDrag(at point: NSPoint) -> Bool
     func finishLocalDrag() -> Bool
+    /// The host's text caret on this screen, when it reported one.
+    func caretScreenRect() -> NSRect?
 }
 
 extension RemoteInputSink {
@@ -26,6 +28,7 @@ extension RemoteInputSink {
     func endLocalPress(at point: NSPoint) {}
     func continueLocalDrag(at point: NSPoint) -> Bool { false }
     func finishLocalDrag() -> Bool { false }
+    func caretScreenRect() -> NSRect? { nil }
 }
 
 /// A view showing one host surface and forwarding the mouse to the host.
@@ -38,6 +41,8 @@ final class RemoteSurfaceView: NSView {
     private var pressedButtons: UInt32 = 0
     private var localPress = false
     private var tracking: NSTrackingArea?
+    private(set) lazy var composer = TextComposer(view: self)
+    private var resignObserver: NSObjectProtocol?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -49,6 +54,19 @@ final class RemoteSurfaceView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func makeBackingLayer() -> CALayer { frameLayer }
+    /// This Mac's input method composes through `composer` (see `KeyForwarder`).
+    override var inputContext: NSTextInputContext? { composer.context }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        resignObserver = nil
+        guard let window else { composer.cancel(); return }
+        resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
+                                                                object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.composer.cancel() }
+        }
+    }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -117,6 +135,9 @@ final class RemoteSurfaceView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        // The click moves the host's caret: what was being composed goes.
+        composer.cancel()
+        composer.clickPoint = screenPoint(event)
         if pressedButtons == 0, sink?.beginLocalPress(at: screenPoint(event)) == true {
             localPress = true
             return
@@ -163,34 +184,53 @@ final class RemoteSurfaceView: NSView {
 @MainActor
 protocol RemoteKeyTarget: AnyObject {
     func sendInput(_ event: InputEvent)
+    var surface: RemoteSurfaceView { get }
     /// True when the key was handled by the local window instead.
     func handleWindowShortcut(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool
 }
 
 /// Forwards every key event to the host while a mirror or desktop window is key.
 ///
-/// A local monitor sees keys before menus and input methods, so Command
-/// shortcuts, Tab and the host's own input methods all behave as on the host.
-/// ⌃⌥⌘-shortcuts stay local (close mirror, statistics, library).
+/// A local monitor sees keys before menus, so Command shortcuts and Tab
+/// behave as on the host. While this Mac's input source is an input method,
+/// other keys go through it first (`TextComposer`), and the host gets what it
+/// composed. ⌃⌥⌘-shortcuts stay local (close mirror, statistics, library).
 @MainActor
 final class KeyForwarder {
     private var monitor: Any?
+    /// Keys handled here (input source shortcuts): their releases stay here too.
+    private var localKeys: Set<UInt16> = []
     static let localModifiers: NSEvent.ModifierFlags = [.control, .option, .command]
 
     func install(target: @escaping @MainActor () -> (any RemoteKeyTarget)?) {
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
-            guard let mirror = target() else { return event }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
+            guard let self, let mirror = target() else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if event.type != .flagsChanged, flags.isSuperset(of: Self.localModifiers) { return event }
             // Window management shortcuts act on the local window: a minimized
             // or full-screen host window can't be shown here.
             if event.type == .keyDown, mirror.handleWindowShortcut(keyCode: event.keyCode, flags: flags) { return nil }
             let modifiers = event.cgEvent?.flags.rawValue ?? UInt64(event.modifierFlags.rawValue)
+            let composer = mirror.surface.composer
             switch event.type {
             case .keyDown:
+                if LocalInputSource.handleSwitchShortcut(event) {
+                    localKeys.insert(event.keyCode)
+                    return nil
+                }
+                if !flags.contains(.command), LocalInputSource.composes {
+                    if mirror.surface.window?.firstResponder !== mirror.surface {
+                        mirror.surface.window?.makeFirstResponder(mirror.surface)
+                    }
+                    if composer.handleKeyDown(event) { return nil }
+                } else {
+                    // A shortcut, or a keyboard layout now: the composition is over.
+                    composer.cancel()
+                }
                 mirror.sendInput(.key(keyCode: event.keyCode, down: true, isRepeat: event.isARepeat,
                                       modifiers: modifiers))
             case .keyUp:
+                if localKeys.remove(event.keyCode) != nil || composer.handleKeyUp(event) { return nil }
                 mirror.sendInput(.key(keyCode: event.keyCode, down: false, isRepeat: false, modifiers: modifiers))
             case .flagsChanged:
                 mirror.sendInput(.flagsChanged(keyCode: event.keyCode, modifiers: modifiers))
