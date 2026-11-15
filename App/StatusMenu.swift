@@ -67,9 +67,18 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         menu.addItem(open)
         let mirrors = viewer().allMirrors.sorted { ($0.window?.title ?? "") < ($1.window?.title ?? "") }
         for mirror in mirrors {
-            let entry = action(mirror.window?.title ?? String(localized: "Window"), #selector(focusMirror(_:)))
-            entry.representedObject = mirror
+            let title = mirror.window?.title ?? String(localized: "Window")
+            let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             entry.indentationLevel = 1
+            let submenu = NSMenu(title: title)
+            let show = action(String(localized: "Bring to Front"), #selector(focusMirror(_:)))
+            show.representedObject = mirror
+            submenu.addItem(show)
+            let close = action(String(localized: "Close on This Mac"), #selector(closeMirror(_:)))
+            close.representedObject = mirror
+            close.toolTip = String(localized: "The window stays open on the other Mac.")
+            submenu.addItem(close)
+            entry.submenu = submenu
             menu.addItem(entry)
         }
 
@@ -99,6 +108,10 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     @objc private func showSettings() { actions.showSettings() }
     @objc private func showPicker() { actions.showPicker() }
     @objc private func enableSharing() { settings.setEnabled(true); updateIcon() }
+
+    @objc private func closeMirror(_ sender: NSMenuItem) {
+        (sender.representedObject as? MirrorWindowController)?.close()
+    }
 
     @objc private func focusMirror(_ sender: NSMenuItem) {
         guard let mirror = sender.representedObject as? MirrorWindowController else { return }

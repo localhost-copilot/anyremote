@@ -11,9 +11,52 @@ final class RemoteMenuBar: NSObject, NSMenuDelegate {
     private var hiddenItems: [NSMenuItem] = []
     private weak var mirror: MirrorWindowController?
     static let ownMenuTitle = String(localized: "Remote")
+    /// Changing the menu bar while one of its menus is open closes that
+    /// menu, so updates wait until tracking ends.
+    private var isTracking = false
+    private var pendingInstall: (mirror: MirrorWindowController?, mainMenu: NSMenu)?
+
+    override init() {
+        super.init()
+        let center = NotificationCenter.default
+        center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] note in
+            let menu = (note.object as AnyObject?).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let self, menu != nil, menu == NSApp.mainMenu.map(ObjectIdentifier.init) else { return }
+                self.isTracking = true
+            }
+        }
+        center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] note in
+            let menu = (note.object as AnyObject?).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let self, menu != nil, menu == NSApp.mainMenu.map(ObjectIdentifier.init) else { return }
+                self.isTracking = false
+                if let pending = self.pendingInstall {
+                    self.pendingInstall = nil
+                    self.install(for: pending.mirror, in: pending.mainMenu)
+                }
+            }
+        }
+    }
 
     /// Replaces the remote menus in `mainMenu` (inserted after the app menu).
     func install(for mirror: MirrorWindowController?, in mainMenu: NSMenu) {
+        if isTracking {
+            pendingInstall = (mirror, mainMenu)
+            return
+        }
+        let nodes = (mirror?.remoteMenus ?? []).enumerated().filter { $0.offset > 0 && !$0.element.children.isEmpty }
+        // Same menus as shown: refresh their contents in place, so the menu
+        // bar doesn't flicker on every refresh.
+        if let mirror, mirror === self.mirror, !installedItems.isEmpty,
+           installedItems.map(\.title) == nodes.map(\.element.title) {
+            for (item, (index, node)) in zip(installedItems, nodes) {
+                guard let menu = item.submenu else { continue }
+                menu.removeAllItems()
+                build(node.children, into: menu, path: [index])
+            }
+            return
+        }
         for item in installedItems { mainMenu.removeItem(item) }
         installedItems.removeAll()
         for item in hiddenItems { item.isHidden = false }
@@ -28,7 +71,7 @@ final class RemoteMenuBar: NSObject, NSMenuDelegate {
             hiddenItems.append(item)
         }
         // Index 0 is the host's Apple menu; ours stays in charge of that.
-        for (index, node) in mirror.remoteMenus.enumerated() where index > 0 && !node.children.isEmpty {
+        for (index, node) in nodes {
             let item = NSMenuItem(title: node.title, action: nil, keyEquivalent: "")
             let menu = NSMenu(title: node.title)
             menu.autoenablesItems = false

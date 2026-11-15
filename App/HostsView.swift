@@ -292,12 +292,19 @@ private struct AppGroup: Identifiable {
     var windows: [WindowSummary]
 }
 
+private enum PickerMode: String {
+    case windows, apps
+}
+
 private struct WindowPicker: View {
     let connection: HostConnection
     let model: ViewerModel
     let target: HostTarget
+    @AppStorage("pickerMode") private var mode = PickerMode.windows
     @State private var query = ""
     @State private var selection: UInt32?
+    @State private var appSelection: String?
+    @State private var launching: String?
     /// Until the user picks a window, the selection follows the first match.
     @State private var userSelected = false
     @State private var columns = 3
@@ -324,45 +331,90 @@ private struct WindowPicker: View {
         return groups
     }
 
+    /// Apps matching the search, by name.
+    private var apps: [HostApplication] {
+        let needle = query.trimmingCharacters(in: .whitespaces)
+        let all = connection.applications?.applications ?? []
+        return needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
+    }
+
     var body: some View {
         let groups = groups
         let flat = groups.flatMap(\.windows)
+        let apps = mode == .apps ? apps : []
         VStack(spacing: 0) {
             banners
+            Picker("Show", selection: $mode) {
+                Text("Windows").tag(PickerMode.windows)
+                Text("Apps").tag(PickerMode.apps)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Windows open on that Mac, or apps to open there")
+            .padding(.top, 12)
             GeometryReader { proxy in
                 ScrollViewReader { scroller in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 20, pinnedViews: []) {
-                            ForEach(groups) { group in
-                                AppSection(group: group, connection: connection, selection: selection,
-                                           select: { selection = $0; userSelected = true; gridFocused = true },
-                                           open: open)
+                        if mode == .windows {
+                            LazyVStack(alignment: .leading, spacing: 20, pinnedViews: []) {
+                                ForEach(groups) { group in
+                                    AppSection(group: group, connection: connection, selection: selection,
+                                               select: { selection = $0; userSelected = true; gridFocused = true },
+                                               open: open)
+                                }
                             }
+                            .padding(20)
+                        } else {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.appTileWidth), spacing: 8)], spacing: 8) {
+                                ForEach(apps, id: \.path) { app in
+                                    AppTile(application: app, icon: connection.applications?.icons[app.path],
+                                            isSelected: appSelection == app.path, isLaunching: launching == app.path)
+                                        .id(app.path)
+                                        .onTapGesture(count: 2) { launch(app) }
+                                        .simultaneousGesture(TapGesture().onEnded { appSelection = app.path; gridFocused = true })
+                                        .contextMenu { Button("Open") { launch(app) } }
+                                }
+                            }
+                            .padding(20)
                         }
-                        .padding(20)
                     }
                     .onChange(of: selection) { _, id in
                         if let id { withAnimation(.easeOut(duration: 0.15)) { scroller.scrollTo(id) } }
                     }
+                    .onChange(of: appSelection) { _, path in
+                        if let path { withAnimation(.easeOut(duration: 0.15)) { scroller.scrollTo(path) } }
+                    }
                 }
-                .onAppear { columns = Self.columnCount(width: proxy.size.width) }
-                .onChange(of: proxy.size.width) { _, width in columns = Self.columnCount(width: width) }
+                .onAppear { columns = Self.columnCount(width: proxy.size.width, mode: mode) }
+                .onChange(of: proxy.size.width) { _, width in columns = Self.columnCount(width: width, mode: mode) }
+                .onChange(of: mode) { _, mode in columns = Self.columnCount(width: proxy.size.width, mode: mode) }
             }
             .focusable()
             .focusEffectDisabled()
             .focused($gridFocused)
-            .onKeyPress(.return) { openSelected(in: flat); return .handled }
-            .onKeyPress(.leftArrow) { move(-1, in: flat); return .handled }
-            .onKeyPress(.rightArrow) { move(1, in: flat); return .handled }
-            .onKeyPress(.upArrow) { move(-columns, in: flat); return .handled }
-            .onKeyPress(.downArrow) { move(columns, in: flat); return .handled }
-            .overlay { emptyState(isEmpty: flat.isEmpty) }
+            .onKeyPress(.return) { openSelected(in: flat, apps: apps); return .handled }
+            .onKeyPress(.leftArrow) { move(-1, in: flat, apps: apps); return .handled }
+            .onKeyPress(.rightArrow) { move(1, in: flat, apps: apps); return .handled }
+            .onKeyPress(.upArrow) { move(-columns, in: flat, apps: apps); return .handled }
+            .onKeyPress(.downArrow) { move(columns, in: flat, apps: apps); return .handled }
+            .overlay { mode == .windows ? AnyView(emptyState(isEmpty: flat.isEmpty)) : AnyView(appsEmptyState(isEmpty: apps.isEmpty)) }
             footer
         }
-        .searchable(text: $query, placement: .toolbar, prompt: "Search windows or apps")
+        .searchable(text: $query, placement: .toolbar, prompt: mode == .windows ? "Search windows" : "Search apps")
         .searchFocused($searchFocused)
-        .onSubmit(of: .search) { openSelected(in: flat) }
-        .onChange(of: query) { userSelected = false; selection = flat.first?.windowID }
+        .onSubmit(of: .search) { openSelected(in: flat, apps: apps) }
+        .onChange(of: query) {
+            userSelected = false
+            selection = flat.first?.windowID
+            appSelection = apps.first?.path
+        }
+        .onChange(of: apps.map(\.path)) { _, paths in
+            if appSelection.map({ !paths.contains($0) }) ?? true { appSelection = paths.first }
+        }
+        .task(id: mode) {
+            if mode == .apps { await connection.loadApplications() }
+        }
         .onChange(of: flat.map(\.windowID), initial: true) { _, ids in
             if !userSelected || selection.map({ !ids.contains($0) }) ?? true {
                 userSelected = false
@@ -380,9 +432,12 @@ private struct WindowPicker: View {
         }
     }
 
-    private static func columnCount(width: CGFloat) -> Int {
-        // Mirrors GridItem(.adaptive(minimum: 200), spacing: 16) inside 20 pt padding.
-        max(1, Int((width - 40 + 16) / (200 + 16)))
+    private static let appTileWidth: CGFloat = 112
+
+    private static func columnCount(width: CGFloat, mode: PickerMode) -> Int {
+        // Mirrors the grids' adaptive GridItems inside 20 pt padding.
+        let (tile, spacing): (CGFloat, CGFloat) = mode == .windows ? (200, 16) : (appTileWidth, 8)
+        return max(1, Int((width - 40 + spacing) / (tile + spacing)))
     }
 
     @ToolbarContentBuilder
@@ -423,11 +478,21 @@ private struct WindowPicker: View {
         }
     }
 
+    @ViewBuilder
+    private func appsEmptyState(isEmpty: Bool) -> some View {
+        if connection.applications == nil {
+            ProgressView()
+        } else if isEmpty, !query.isEmpty {
+            ContentUnavailableView.search(text: query)
+        }
+    }
+
     private var footer: some View {
         HStack(spacing: 16) {
-            Text("Double-click or press ↩ to open · Arrow keys to select · Hold ⌥ to keep this window open")
+            Text(mode == .windows ? "↩ or double-click opens · ⌥ keeps this window"
+                                  : "↩ or double-click opens the app there")
             Spacer()
-            Text("Press ⌃⌥⌘0 anytime to come back here")
+            Text("⌃⌥⌘W closes on this Mac only · ⌃⌥⌘0 comes back here")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -436,19 +501,77 @@ private struct WindowPicker: View {
         .background(.bar)
     }
 
-    private func move(_ offset: Int, in flat: [WindowSummary]) {
+    private func move(_ offset: Int, in flat: [WindowSummary], apps: [HostApplication]) {
+        if mode == .apps {
+            guard !apps.isEmpty else { return }
+            let current = apps.firstIndex { $0.path == appSelection } ?? (offset > 0 ? -1 : apps.count)
+            appSelection = apps[min(max(current + offset, 0), apps.count - 1)].path
+            return
+        }
         guard !flat.isEmpty else { return }
         let current = flat.firstIndex { $0.windowID == selection } ?? (offset > 0 ? -1 : flat.count)
         selection = flat[min(max(current + offset, 0), flat.count - 1)].windowID
         userSelected = true
     }
 
-    private func openSelected(in flat: [WindowSummary]) {
+    private func openSelected(in flat: [WindowSummary], apps: [HostApplication]) {
+        if mode == .apps {
+            if let app = apps.first(where: { $0.path == appSelection }) ?? apps.first { launch(app) }
+            return
+        }
         if let window = flat.first(where: { $0.windowID == selection }) ?? flat.first { open(window) }
     }
 
     private func open(_ window: WindowSummary) {
         model.open(window, on: connection, keepPicker: NSEvent.modifierFlags.contains(.option))
+    }
+
+    private func launch(_ app: HostApplication) {
+        launching = app.path
+        model.launch(app, on: connection, keepPicker: NSEvent.modifierFlags.contains(.option))
+        Task {
+            try? await Task.sleep(for: .seconds(8))
+            if launching == app.path { launching = nil }
+        }
+    }
+}
+
+private struct AppTile: View {
+    let application: HostApplication
+    let icon: Data?
+    let isSelected: Bool
+    let isLaunching: Bool
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack(alignment: .bottomTrailing) {
+                if let icon, let image = NSImage(data: icon) {
+                    Image(nsImage: image).resizable().frame(width: 56, height: 56)
+                } else {
+                    Image(systemName: "app.dashed").font(.system(size: 40)).frame(width: 56, height: 56)
+                        .foregroundStyle(.tertiary)
+                }
+                if isLaunching {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            Text(application.name)
+                .font(.callout)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+            Circle()
+                .fill(application.isRunning ? Color.secondary : .clear)
+                .frame(width: 4, height: 4)
+                .help(application.isRunning ? "Running" : "")
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 6)
+        .frame(width: 112)
+        .background(RoundedRectangle(cornerRadius: 10).fill(isSelected ? Color.accentColor.opacity(0.18) : .clear))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2))
+        .contentShape(Rectangle())
+        .help(application.path)
     }
 }
 
@@ -479,7 +602,14 @@ private struct AppSection: View {
                         .id(window.windowID)
                         .onTapGesture(count: 2) { open(window) }
                         .simultaneousGesture(TapGesture().onEnded { select(window.windowID) })
-                        .contextMenu { Button(connection.openWindowIDs.contains(window.windowID) ? LocalizedStringKey("Switch to This Window") : LocalizedStringKey("Open")) { open(window) } }
+                        .contextMenu {
+                            if connection.openWindowIDs.contains(window.windowID) {
+                                Button("Switch to This Window") { open(window) }
+                                Button("Close on This Mac") { connection.closeMirror(windowID: window.windowID) }
+                            } else {
+                                Button("Open") { open(window) }
+                            }
+                        }
                 }
             }
         }

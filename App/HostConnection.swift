@@ -54,6 +54,10 @@ final class HostConnection {
     private(set) var state: State = .connecting
     private(set) var welcome: HostWelcome?
     private(set) var listing: WindowListing?
+    /// The host's apps, loaded when the picker shows them.
+    private(set) var applications: ApplicationListing?
+    @ObservationIgnored private var launchRequested: Date?
+    @ObservationIgnored var onLaunchedWindow: (() -> Void)?
     private(set) var isRefreshing = false
     /// Host windows currently mirrored here.
     private(set) var openWindowIDs: Set<UInt32> = []
@@ -77,6 +81,11 @@ final class HostConnection {
     var hostName: String { welcome?.hostName ?? target.name }
     var openMirrors: [MirrorWindowController] { Array(mirrors.values) }
 
+    /// Closes the mirror only; the window stays open on the host.
+    func closeMirror(windowID: UInt32) {
+        mirrors.values.first { $0.windowID == windowID }?.close()
+    }
+
     func connect(takeOver: Bool = false) async throws {
         state = .connecting
         do {
@@ -94,6 +103,21 @@ final class HostConnection {
         for mirror in mirrors.values { mirror.close() }
         client.disconnect()
         state = .disconnected
+    }
+
+    func loadApplications() async {
+        guard state == .connected else { return }
+        do {
+            applications = try await client.listApplications()
+        } catch {
+            log.error("application list failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Opens the app on the host; its window opens here when it appears.
+    func launch(_ application: HostApplication) {
+        launchRequested = Date()
+        client.launchApplication(path: application.path)
     }
 
     func refresh() async {
@@ -207,6 +231,10 @@ final class HostConnection {
                 return
             }
             pendingOpen.remove(description.windowID)
+            if let launchRequested, Date().timeIntervalSince(launchRequested) < 25 {
+                self.launchRequested = nil
+                onLaunchedWindow?()
+            }
             let mirror = MirrorWindowController(connection: self, description: description)
             mirror.onClose = { [weak self] in
                 guard let self else { return }

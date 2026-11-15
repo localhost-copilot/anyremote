@@ -32,13 +32,19 @@ viewer. One viewer controls a host at a time; a second one may take over.
    field and groups windows by app. Type to filter, arrows to select,
    Return or double-click to open; the picker then hides (hold ⌥ to keep
    it). An already open window is brought forward instead of opened twice.
+5. **Apps** (next to **Windows** above the grid) lists the host's apps
+   (`/Applications`, `/System/Applications`, their Utilities, `~/Applications`
+   and anything running). Opening one launches it there, or brings it
+   forward if it's running, and its front window opens here as a mirror; an
+   app with no window gets a new one, as if its Dock icon was clicked.
 
 If the host lacks Accessibility, mirrors show a banner saying input won't
 work; the picker shows the same, live, until it is granted.
 
 "This Mac" is not listed: controlling a Mac from itself feeds the injected
 clicks back into the mirror. `ANYREMOTE_LOOPBACK=1` lists it for
-development.
+development. There, `ANYREMOTE_NO_HOST_FOCUS=1` also stops the host from
+activating the mirrored app, so the remote menu bar can be tried out.
 
 A mirror behaves like a local window. Dragging it (by the title bar,
 toolbar or any area the app treats as draggable) moves only the mirror: the
@@ -62,7 +68,8 @@ Simplified Chinese (or the system language) after a restart.
 
 While a mirror is key, every key goes to the host (⌘Q quits the *remote*
 app). AnyRemote's own commands use ⌃⌥⌘: Hosts ⌃⌥⌘0, Statistics ⌃⌥⌘I,
-Full Desktop ⌃⌥⌘D, Close Mirror ⌃⌥⌘W.
+Full Desktop ⌃⌥⌘D, Close on This Mac ⌃⌥⌘W (the host window stays open; also in
+the picker's and the menu bar icon's menus).
 
 Settings → *HiDPI virtual display*: on a headless Mac mini (or one with a 1x
 monitor) shared windows move to a 1920×1200 pt virtual display rendered at
@@ -226,6 +233,8 @@ the real network path against this Mac's own host service:
 - `--input-test` — clicks, keys, wheel and a context menu into a recorder
   window; prints what arrived and whether the menu showed as a child window
 - `--open <app> [--title <text>] [--menu-test [--choose Menu/Item]]`
+- `--launch <app>` — opens the app on the host through the Apps list and
+  prints when its window arrives
 - `--connect host[:port] --code CODE` — another Mac
 - `--discovery-test`, `--exit-after <seconds>`
 - `ANYREMOTE_STATS_STDOUT=1` prints pipeline statistics every second,

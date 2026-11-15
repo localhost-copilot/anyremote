@@ -191,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(String(localized: "Show Statistics"), #selector(toggleStatistics(_:)), "i")
         add(String(localized: "Open Full Desktop"), #selector(openFullDesktop(_:)), "d")
         remoteMenu.addItem(.separator())
-        add(String(localized: "Close This Remote Window"), #selector(closeMirror(_:)), "w")
+        add(String(localized: "Close on This Mac"), #selector(closeMirror(_:)), "w")
         remoteItem.submenu = remoteMenu
         main.addItem(remoteItem)
 

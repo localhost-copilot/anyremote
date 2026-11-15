@@ -77,6 +77,8 @@ final class HostSession: @unchecked Sendable {
     /// New windows that may still turn out to be standard windows, by first sighting.
     private var newWindowCandidates: [CGWindowID: UInt64] = [:]
     private var lastCandidateCheck: UInt64 = 0
+    /// An app the viewer asked to open; its first window opens on the viewer.
+    private var pendingLaunch: (path: String, pid: pid_t?, deadline: UInt64)?
     private var ended = false
     private let menuQueue = DispatchQueue(label: "anyremote.menu", qos: .userInitiated)
 
@@ -124,6 +126,10 @@ final class HostSession: @unchecked Sendable {
             listWindows(requestID: requestID, thumbnailMaxPixels: thumbnailMaxPixels)
         case let .openWindow(windowID):
             openWindow(windowID)
+        case let .listApplications(requestID):
+            listApplications(requestID: requestID)
+        case let .launchApplication(path):
+            launchApplication(path)
         case let .closeStream(streamID):
             endStream(streamID, reason: "Closed by viewer.", notify: false)
         case let .requestKeyframe(streamID):
@@ -266,6 +272,60 @@ final class HostSession: @unchecked Sendable {
                                             icons: [:], missingPermissions: Self.missingPermissions()))
             }
         }
+    }
+
+    // MARK: Applications
+
+    private func listApplications(requestID: UInt32) {
+        let service = service
+        let connection = connection
+        Task { @MainActor in
+            let list = service?.applicationList() ?? (applications: [], icons: [:])
+            connection.send(.applicationList(requestID: requestID, applications: list.applications, icons: list.icons))
+        }
+    }
+
+    private func launchApplication(_ path: String) {
+        let now = HostClock.nowNanos()
+        pendingLaunch = (path, nil, now + 20_000_000_000)
+        // Windows on screen now are not the app's new one.
+        knownWindows = Self.trackedWindowIDs(WindowServerWindow.onScreen())
+        log.notice("launching \(path, privacy: .public)")
+        let url = URL(fileURLWithPath: path)
+        Task { @MainActor [self] in
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            let application = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+            let pid = application?.processIdentifier
+            queue.async { [self] in
+                guard pendingLaunch?.path == path else { return }
+                guard let pid else {
+                    log.error("could not open \(path, privacy: .public)")
+                    pendingLaunch = nil
+                    return
+                }
+                pendingLaunch?.pid = pid
+                // Already running: no new window may come; show its front one.
+                queue.asyncAfter(deadline: .now() + 1) { [self] in openExistingWindow(pid: pid) }
+            }
+        }
+    }
+
+    private func openExistingWindow(pid: pid_t) {
+        guard pendingLaunch?.pid == pid else { return }
+        let streamed = Set(streams.values.map(\.windowID))
+        let standard = AXWindow.standardWindowIDs(pid: pid)
+        // On-screen windows come front to back.
+        guard let window = WindowServerWindow.onScreen().first(where: {
+            $0.pid == pid && $0.layer == 0 && standard.contains($0.id) && !streamed.contains($0.id)
+        }) else { return }
+        pendingLaunch = nil
+        openWindow(window.id)
+    }
+
+    private static func trackedWindowIDs(_ onScreen: [WindowServerWindow]) -> Set<CGWindowID> {
+        let ownPID = getpid()
+        return Set(onScreen.lazy.filter { $0.layer == 0 && $0.pid != ownPID }.map(\.id))
     }
 
     // MARK: Streams
@@ -411,7 +471,12 @@ final class HostSession: @unchecked Sendable {
 
     private func track() {
         let mains = streams.values.filter { $0.description.role == .window }
-        guard !mains.isEmpty else { return }
+        if let launch = pendingLaunch, HostClock.nowNanos() > launch.deadline { pendingLaunch = nil }
+        guard !mains.isEmpty else {
+            // Nothing to follow, but an app opened from the viewer may still bring its window.
+            if pendingLaunch != nil { openNewWindows(WindowServerWindow.onScreen()) } else { knownWindows = nil }
+            return
+        }
         checkWindowStates(mains)
         let onScreen = WindowServerWindow.onScreen()
         var byID: [CGWindowID: WindowServerWindow] = [:]
@@ -487,11 +552,15 @@ final class HostSession: @unchecked Sendable {
     /// like a window picked from the list. Windows that show up on their own
     /// stay on the host.
     private func openNewWindows(_ onScreen: [WindowServerWindow]) {
-        let ownPID = getpid()
         let now = HostClock.nowNanos()
-        let current = Set(onScreen.lazy.filter { $0.layer == 0 && $0.pid != ownPID }.map(\.id))
-        if let known = knownWindows, now - lastInputTime < Self.causedWindowInterval {
-            for id in current.subtracting(known) { newWindowCandidates[id] = now }
+        let current = Self.trackedWindowIDs(onScreen)
+        if let known = knownWindows {
+            let recentInput = now - lastInputTime < Self.causedWindowInterval
+            let launchPID = pendingLaunch?.pid
+            for window in onScreen where current.contains(window.id) && !known.contains(window.id)
+                && (recentInput || (launchPID != nil && window.pid == launchPID)) {
+                newWindowCandidates[window.id] = now
+            }
         }
         knownWindows = current
         guard !newWindowCandidates.isEmpty, now - lastCandidateCheck >= 100_000_000 else { return }
@@ -509,6 +578,7 @@ final class HostSession: @unchecked Sendable {
                   !Self.panelServiceNames.contains(where: { window.ownerName.contains($0) }),
                   AXWindow.standardWindowIDs(pid: window.pid).contains(window.id) else { continue }
             newWindowCandidates[window.id] = nil
+            if window.pid == pendingLaunch?.pid { pendingLaunch = nil }
             log.notice("opening new window \(window.id) of \(window.ownerName, privacy: .public)")
             openWindow(window.id)
         }
@@ -630,7 +700,12 @@ final class HostSession: @unchecked Sendable {
     }
 
     /// Brings the window's app forward when another window is frontmost.
+    /// Development: controlling this Mac from itself, activating the host app
+    /// takes the menu bar and key window away from the viewer.
+    private static let skipsFocus = ProcessInfo.processInfo.environment["ANYREMOTE_NO_HOST_FOCUS"] != nil
+
     private func focus(_ stream: HostStream, force: Bool) {
+        guard !Self.skipsFocus else { return }
         let now = HostClock.nowNanos()
         if !force, now - lastFocusCheck < 300_000_000 { return }
         lastFocusCheck = now

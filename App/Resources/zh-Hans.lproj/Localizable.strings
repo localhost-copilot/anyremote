@@ -18,7 +18,6 @@
 "Can’t connect to “%@”" = "连不上「%@」";
 "Can’t connect: AnyRemote isn’t running on that Mac, or a firewall is blocking the port." = "连不上：那台 Mac 上 AnyRemote 没在运行，或者端口被防火墙挡住了。";
 "Close" = "关闭";
-"Close This Remote Window" = "关闭这个远程窗口";
 "Connect" = "连接";
 "Connect Another Mac" = "连接另一台 Mac";
 "Connect by address" = "按地址连接";
@@ -37,7 +36,6 @@
 "Disconnected from “%@”" = "与「%@」的连接已断开";
 "Disconnected." = "已断开连接。";
 "Display" = "显示";
-"Double-click or press ↩ to open · Arrow keys to select · Hold ⌥ to keep this window open" = "双击或按 ↩ 打开 · 方向键选择 · 按住 ⌥ 打开时保留此窗口";
 "Edit" = "编辑";
 "Enter it once on the Mac that will control this one. Anyone with this code can control this Mac, so keep it private." = "在要控制这台 Mac 的那台 Mac 上输入一次即可。拿到配对码的人都能控制这台 Mac，不要外传。";
 "Enter the 20-character code below. Each Mac only needs to be paired once." = "把那 20 位配对码输入到下面。每台 Mac 只需配对一次。";
@@ -87,7 +85,6 @@
 "Paste" = "粘贴";
 "Permissions" = "权限";
 "Permissions missing; the other Mac won’t work properly when it connects" = "缺少权限，对方连上后无法正常使用";
-"Press ⌃⌥⌘0 anytime to come back here" = "随时按 ⌃⌥⌘0 回到这里";
 "Quit AnyRemote" = "退出 AnyRemote";
 "Ready" = "已就绪";
 "Ready, waiting for a connection (port %@)" = "已就绪，等待连接（端口 %@）";
@@ -106,7 +103,6 @@
 "Restart AnyRemote to change the language?" = "重新启动 AnyRemote 以切换语言？";
 "Restart Now" = "立即重新启动";
 "Screen Recording" = "屏幕录制";
-"Search windows or apps" = "搜索窗口或 App";
 "Select All" = "全选";
 "Settings…" = "设置…";
 "Sharing: Off" = "共享本机：已关闭";
@@ -143,3 +139,16 @@
 "“%@” is controlling this Mac" = "「%@」正在控制这台 Mac";
 "“%@” is offline" = "「%@」现在不在线";
 "“%@” took over control of this Mac." = "「%@」接管了这台 Mac 的控制。";
+"Close on This Mac" = "只在本机关闭";
+"Bring to Front" = "前置";
+"The window stays open on the other Mac." = "那台 Mac 上的窗口保持打开。";
+"↩ or double-click opens · ⌥ keeps this window" = "↩ 或双击打开 · 按住 ⌥ 保留此窗口";
+"⌃⌥⌘W closes on this Mac only · ⌃⌥⌘0 comes back here" = "⌃⌥⌘W 只在本机关闭 · ⌃⌥⌘0 回到这里";
+"Search windows" = "搜索窗口";
+"Search apps" = "搜索 App";
+"Show" = "显示";
+"Windows" = "窗口";
+"Apps" = "App";
+"Windows open on that Mac, or apps to open there" = "那台 Mac 上打开的窗口，或可以在那里打开的 App";
+"↩ or double-click opens the app there" = "↩ 或双击在那台 Mac 上打开 App";
+"Running" = "正在运行";

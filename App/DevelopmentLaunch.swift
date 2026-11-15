@@ -9,6 +9,7 @@ import AppKit
 ///     --input-test                          inject clicks, keys, scroll and a context menu into a recorder window
 ///     --open <application> [--title <text>] [--menu-test [--choose Menu/Item]]
 ///                                           mirror a window of this Mac (or of the --connect host)
+///     --launch <application>                open an app on the host and mirror its first window
 ///     --connect host[:port] --code CODE     connect to another Mac
 ///     --discovery-test                      print the hosts Bonjour finds
 ///     --exit-after <seconds>
@@ -52,7 +53,9 @@ enum DevelopmentLaunch {
         }
         let application = value("--open")
         let connectAddress = value("--connect")
-        guard synthetic != nil || recorder != nil || application != nil || connectAddress != nil else { return false }
+        let launch = value("--launch")
+        guard synthetic != nil || recorder != nil || application != nil || connectAddress != nil || launch != nil
+        else { return false }
 
         let model = app.viewerModel
         var syntheticWindowID = recorder.map { UInt32($0.windowNumber) }
@@ -113,6 +116,22 @@ enum DevelopmentLaunch {
                 print("dev: connect failed: \(model.lastError ?? "unknown")"); return
             }
             print("dev: connected to \(connection.hostName)")
+            if let launch {
+                await connection.loadApplications()
+                let apps = connection.applications?.applications ?? []
+                print("dev: \(apps.count) apps, \(connection.applications?.icons.count ?? 0) icons")
+                guard let match = apps.first(where: { $0.name.localizedCaseInsensitiveCompare(launch) == .orderedSame })
+                else { print("dev: app not found"); return }
+                print("dev: launching \(match.name) running=\(match.isRunning) \(match.path)")
+                let start = Date()
+                let picked = model.onPickedWindow
+                model.onPickedWindow = { keep in
+                    picked?(keep)
+                    print(String(format: "dev: launched window opened after %.1f s", Date().timeIntervalSince(start)))
+                }
+                model.launch(match, on: connection, keepPicker: false)
+                return
+            }
             guard syntheticWindowID != nil || application != nil else { return }
             let title = value("--title")
             for _ in 0..<20 {

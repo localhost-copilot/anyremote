@@ -194,6 +194,11 @@ final class ViewerModel {
     /// Called before a window opens from the picker; `keepPicker` when ⌥ was held.
     @ObservationIgnored var onPickedWindow: ((_ keepPicker: Bool) -> Void)?
 
+    func launch(_ application: HostApplication, on connection: HostConnection, keepPicker: Bool) {
+        connection.onLaunchedWindow = { [weak self] in self?.onPickedWindow?(keepPicker) }
+        connection.launch(application)
+    }
+
     func open(_ window: WindowSummary, on connection: HostConnection, keepPicker: Bool) {
         connection.open(window)
         onPickedWindow?(keepPicker)

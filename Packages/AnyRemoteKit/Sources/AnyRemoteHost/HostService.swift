@@ -41,6 +41,7 @@ public final class HostService: @unchecked Sendable {
     private var pending: [UInt32: HostSession] = [:]
     private var active: HostSession?
     private var iconCache: [String: Data] = [:]
+    private var applicationIconCache: [String: Data] = [:]
     private var virtualDisplay: VirtualDisplay?
     private var ownWindowIDs: Set<CGWindowID> = []
     private var status = Status()
@@ -272,6 +273,21 @@ public final class HostService: @unchecked Sendable {
         let result = HostWindows.icons(for: summaries, cache: &cache)
         iconCache = cache
         return result
+    }
+
+    @MainActor
+    func applicationList() -> (applications: [HostApplication], icons: [String: Data]) {
+        let applications = HostApplications.list()
+        var icons: [String: Data] = [:]
+        for application in applications {
+            if let cached = applicationIconCache[application.path] {
+                icons[application.path] = cached
+            } else if let icon = HostApplications.icon(path: application.path) {
+                applicationIconCache[application.path] = icon
+                icons[application.path] = icon
+            }
+        }
+        return (applications, icons)
     }
 
     // MARK: Status

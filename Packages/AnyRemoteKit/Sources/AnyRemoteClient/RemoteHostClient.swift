@@ -7,6 +7,12 @@ import OSLog
 
 private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category: "Client")
 
+public struct ApplicationListing: Sendable {
+    public var applications: [HostApplication]
+    /// PNG icons keyed by app path.
+    public var icons: [String: Data]
+}
+
 public struct WindowListing: Sendable {
     public var windows: [WindowSummary]
     public var displays: [DisplaySummary]
@@ -54,6 +60,7 @@ public final class RemoteHostClient: @unchecked Sendable {
     private var lastPongNanos: UInt64 = 0
     private var nextRequestID: UInt32 = 0
     private var listings: [UInt32: CheckedContinuation<WindowListing, Error>] = [:]
+    private var applicationListings: [UInt32: CheckedContinuation<ApplicationListing, Error>] = [:]
     private var connectContinuation: CheckedContinuation<HostWelcome, Error>?
     private var finished = false
     public private(set) var welcome: HostWelcome?
@@ -206,6 +213,8 @@ public final class RemoteHostClient: @unchecked Sendable {
         connectContinuation?.resume(throwing: error)
         connectContinuation = nil
         listings.values.forEach { $0.resume(throwing: error) }
+        applicationListings.values.forEach { $0.resume(throwing: error) }
+        applicationListings.removeAll()
         listings.removeAll()
         receiverLock.lock()
         let current = receivers
@@ -233,6 +242,9 @@ public final class RemoteHostClient: @unchecked Sendable {
             listings.removeValue(forKey: requestID)?.resume(returning: WindowListing(
                 windows: windows, displays: displays, thumbnails: thumbnails, icons: icons,
                 missingPermissions: missing))
+        case let .applicationList(requestID, applications, icons):
+            applicationListings.removeValue(forKey: requestID)?.resume(
+                returning: ApplicationListing(applications: applications, icons: icons))
         case .streamStarted(let description):
             emit(.streamStarted(description))
         case let .streamMoved(streamID, frame, title):
@@ -281,6 +293,22 @@ public final class RemoteHostClient: @unchecked Sendable {
     }
 
     public func openWindow(_ windowID: UInt32) { send(.openWindow(windowID: windowID)) }
+
+    public func listApplications() async throws -> ApplicationListing {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
+                guard !finished, let control else {
+                    continuation.resume(throwing: ConnectionError.closed)
+                    return
+                }
+                nextRequestID &+= 1
+                applicationListings[nextRequestID] = continuation
+                control.send(.listApplications(requestID: nextRequestID))
+            }
+        }
+    }
+
+    public func launchApplication(path: String) { send(.launchApplication(path: path)) }
 
     // MARK: Video
 
