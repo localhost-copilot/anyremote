@@ -168,6 +168,14 @@ final class HostConnection {
         state = .disconnected
     }
 
+    /// The host's apps minus AnyRemote itself and the Dock stand-ins it makes
+    /// for remote apps: opening those here would only mirror AnyRemote.
+    var offeredApplications: [HostApplication] {
+        (applications?.applications ?? []).filter {
+            !($0.bundleIdentifier ?? "").hasPrefix("com.localhost-copilot.anyremote")
+        }
+    }
+
     func loadApplications() async {
         guard state == .connected else { return }
         do {
@@ -308,9 +316,10 @@ final class HostConnection {
                 existing.window?.makeKeyAndOrderFront(nil)
                 return
             }
-            pendingOpen.remove(description.windowID)
+            var requested = pendingOpen.remove(description.windowID) != nil
             if let launchRequested, Date().timeIntervalSince(launchRequested) < 25 {
                 self.launchRequested = nil
+                requested = true
                 onLaunchedWindow?()
             }
             let mirror = MirrorWindowController(connection: self, description: description)
@@ -326,6 +335,9 @@ final class HostConnection {
             }
             mirrors[description.streamID] = mirror
             openWindowIDs.insert(description.windowID)
+            // A window asked for from the menu bar panel opens while another
+            // app is active; bring it forward, as the user is waiting for it.
+            if requested { NSApp.activate() }
             mirror.showWindow(nil)
             mirror.start()
             onOpenedMirror?(mirror)

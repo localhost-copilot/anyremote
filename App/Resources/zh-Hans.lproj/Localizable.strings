@@ -31,7 +31,6 @@
 "Cut" = "剪切";
 "Disconnect" = "断开连接";
 "Disconnect from this Mac and close all of its windows" = "断开与这台 Mac 的连接，并关闭它的所有窗口";
-"Disconnect “%@”" = "断开「%@」";
 "Disconnected from “%@”" = "与「%@」的连接已断开";
 "Disconnected." = "已断开连接。";
 "Display" = "显示";
@@ -65,7 +64,7 @@
 "OK" = "好";
 "Off: other Macs can’t connect to this Mac" = "已关闭：其他 Mac 连不上这台 Mac";
 "Offline" = "不在线";
-"On “%@”, click the AnyRemote icon in the menu bar and choose “Show Pairing Code”." = "在「%@」上点菜单栏的 AnyRemote 图标，选「显示配对码」。";
+"On “%@”, click the AnyRemote icon in the menu bar and choose ⋯ › Show Pairing Code." = "在「%@」上点菜单栏的 AnyRemote 图标，选 ⋯ › 显示配对码。";
 "Online" = "在线";
 "Only one Mac can control it at a time. Taking over disconnects the other one." = "同一时间只能有一台 Mac 控制它。接管后，对方会被断开。";
 "Open" = "打开";
@@ -105,10 +104,7 @@
 "Screen Recording" = "屏幕录制";
 "Select All" = "全选";
 "Settings…" = "设置…";
-"Sharing: Off" = "共享本机：已关闭";
-"Sharing: Permissions Missing" = "共享本机：缺少权限";
 "Sharing: Starting…" = "共享本机：正在启动…";
-"Sharing: Waiting for Connection" = "共享本机：等待连接";
 "Show Pairing Code…" = "显示配对码…";
 "Show Statistics" = "显示统计信息";
 "Starting…" = "正在启动…";
@@ -128,7 +124,7 @@
 "Try Again" = "重试";
 "Try Anyway" = "仍然尝试连接";
 "Undo" = "撤销";
-"Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Find the pairing code on that Mac under the AnyRemote menu bar icon › Show Pairing Code." = "不在同一局域网、或者「附近」里找不到时使用。配对码在那台 Mac 的菜单栏 AnyRemote 图标 › 显示配对码。";
+"Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Find the pairing code on that Mac under the AnyRemote menu bar icon › ⋯ › Show Pairing Code." = "不在同一局域网、或者「附近」里找不到时使用。配对码在那台 Mac 的菜单栏 AnyRemote 图标 › ⋯ › 显示配对码。";
 "When No Retina Display Is Connected" = "没有 Retina 显示器时";
 "While being controlled, windows move to a %@×%@ pt virtual display rendered at 2×, so even a Mac mini without a display shows sharp windows. They move back afterwards." = "被控制时，窗口移到一块 %@×%@ pt、2 倍渲染的虚拟显示器上，所以没接显示器的 Mac mini 也能显示清晰的窗口。结束后窗口移回原处。";
 "Window" = "窗口";
@@ -139,7 +135,6 @@
 "“%@” is offline" = "「%@」现在不在线";
 "“%@” took over control of this Mac." = "「%@」接管了这台 Mac 的控制。";
 "Close on This Mac" = "只在本机关闭";
-"Bring to Front" = "前置";
 "The window stays open on the other Mac." = "那台 Mac 上的窗口保持打开。";
 "↩ or double-click opens" = "↩ 或双击打开";
 "⌃⌥⌘W closes on this Mac only · ⌃⌥⌘0 comes back here" = "⌃⌥⌘W 只在本机关闭 · ⌃⌥⌘0 回到这里";
@@ -189,3 +184,30 @@
 "Where this Mac connects to it. Change it when that Mac is on another subnet or got a new IP address; the default port is 47800." = "本机连接它时使用的地址。那台 Mac 在另一个网段、或者 IP 变了时修改这里；默认端口是 47800。";
 "Save" = "保存";
 "Enter an address like mac-mini.local or 192.168.1.20:47800." = "请输入类似 mac-mini.local 或 192.168.1.20:47800 的地址。";
+
+/* Menu bar panel */
+"All windows and apps, with previews" = "所有窗口和 App（带预览）";
+"Close on This Mac; the window stays open on the other Mac." = "在本机关闭；窗口在那台 Mac 上保持打开";
+"Enter that Mac’s pairing code once, in the AnyRemote window." = "在 AnyRemote 窗口中输入那台 Mac 的配对码，只需一次。";
+"Fix…" = "修复…";
+"Is controlling this Mac" = "正在控制这台 Mac";
+"No Macs Yet" = "还没有 Mac";
+"No Results" = "没有结果";
+"No app or window on “%@” matches “%@”." = "「%1$@」上没有与「%2$@」匹配的 App 或窗口。";
+"Nothing Open Yet" = "还没有打开过";
+"Open AnyRemote Window" = "打开 AnyRemote 窗口";
+"Open AnyRemote on another Mac and pair with it to open its apps from here." = "在另一台 Mac 上打开 AnyRemote 并与它配对，就能在这里打开它的 App。";
+"Open Here" = "已在本机打开";
+"Open an app on “%@”" = "在「%@」上打开 App";
+"Open on This Mac" = "在本机打开的窗口";
+"Others can control this Mac" = "其他 Mac 可以控制这台 Mac";
+"Others can’t control this Mac" = "其他 Mac 无法控制这台 Mac";
+"Pair a Mac…" = "配对 Mac…";
+"Pairing code, settings and more" = "配对码、设置等";
+"Pair…" = "配对…";
+"Recent" = "最近使用";
+"Sharing needs permissions" = "共享本机缺少权限";
+"Stop Sharing This Mac" = "停止共享这台 Mac";
+"Taking over disconnects the other one." = "接管会断开另一台 Mac。";
+"Turn On" = "打开";
+"Type the name of an app on “%@” to open it here." = "输入「%@」上 App 的名称，即可在这里打开。";

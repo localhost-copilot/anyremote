@@ -47,6 +47,20 @@ enum DevelopmentLaunch {
             PermissionGuide.shared.start(.accessibility)
             return true
         }
+        if arguments.contains("--status-panel") {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                app.showStatusPanel()
+                // The panel's frame in screen points from the top left, for `screencapture -R`.
+                for _ in 0..<20 {
+                    try? await Task.sleep(for: .seconds(1))
+                    if let frame = app.statusPanelFrame, let screen = NSScreen.screens.first {
+                        print("dev: status panel \(Int(frame.minX)),\(Int(screen.frame.maxY - frame.maxY)),\(Int(frame.width)),\(Int(frame.height))")
+                    }
+                }
+            }
+            return true
+        }
         if arguments.contains("--discovery-test") {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(3))

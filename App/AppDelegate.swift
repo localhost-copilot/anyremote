@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
         }
         statusMenu = StatusMenuController(
-            settings: hostSettings, viewer: { [unowned self] in viewer },
+            settings: hostSettings, viewer: viewer,
             actions: .init(showPicker: { [weak self] in self?.showHosts() },
                            showSettings: { [weak self] in self?.showSettings() }))
         hostSettings.onStatusChange = { [weak self] _ in self?.statusMenu?.updateIcon() }
@@ -97,6 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     var viewerModel: ViewerModel { viewer }
     var host: HostService { hostService }
+
+    func showStatusPanel() { statusMenu?.showPanel() }
+    var statusPanelFrame: NSRect? { statusMenu?.panelFrame }
 
     func keepDiagnosticWindow(_ window: NSWindow) { diagnosticWindows.append(window) }
 

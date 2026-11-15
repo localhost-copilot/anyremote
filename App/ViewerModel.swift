@@ -261,10 +261,16 @@ final class ViewerModel {
     func launch(_ application: HostApplication, on connection: HostConnection, keepPicker: Bool) {
         connection.onLaunchedWindow = { [weak self] in self?.onPickedWindow?(keepPicker) }
         connection.launch(application)
+        if let host = connection.welcome?.hostID { RecentApplications.record(application.path, host: host) }
     }
 
     func open(_ window: WindowSummary, on connection: HostConnection, keepPicker: Bool) {
         connection.open(window)
+        // Opening a window counts as using its app, when the app list says which one it is.
+        if let host = connection.welcome?.hostID, let bundle = window.bundleIdentifier,
+           let app = connection.applications?.applications.first(where: { $0.bundleIdentifier == bundle }) {
+            RecentApplications.record(app.path, host: host)
+        }
         onPickedWindow?(keepPicker)
     }
 }

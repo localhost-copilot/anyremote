@@ -1,30 +1,40 @@
 import AnyRemoteHost
 import AppKit
 import Carbon.HIToolbox
+import SwiftUI
 
-/// The menu bar icon. A Mac mini that is only ever controlled has no reason
-/// to show windows, so everything a host needs lives here: whether sharing is
-/// on, who is in control (and a way to cut them off), and the pairing code.
+/// The menu bar icon and its panel. Clicking it opens `StatusPanelView`:
+/// open apps on another Mac, get back to windows open here, and see whether
+/// this Mac is being controlled. A Mac mini that is only ever controlled has
+/// no reason to show windows, so the host controls live there too. A right
+/// click gives a short classic menu for people who expect one.
 @MainActor
-final class StatusMenuController: NSObject, NSMenuDelegate {
+final class StatusMenuController: NSObject, NSWindowDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let settings: HostSettingsModel
-    private let viewer: () -> ViewerModel
+    private let model: StatusPanelModel
     private let actions: Actions
+    private lazy var panel = makePanel()
+    /// When the panel last closed because focus moved, so the click on the
+    /// icon that moved it doesn't open it again straight away.
+    private var closedAt = Date.distantPast
 
     struct Actions {
         var showPicker: () -> Void
         var showSettings: () -> Void
     }
 
-    init(settings: HostSettingsModel, viewer: @escaping () -> ViewerModel, actions: Actions) {
+    init(settings: HostSettingsModel, viewer: ViewerModel, actions: Actions) {
         self.settings = settings
-        self.viewer = viewer
         self.actions = actions
+        model = StatusPanelModel(viewer: viewer, host: settings)
         super.init()
-        let menu = NSMenu()
-        menu.delegate = self
-        item.menu = menu
+        model.actions = .init(dismiss: { [weak self] in self?.closePanel() },
+                              showPicker: actions.showPicker, showSettings: actions.showSettings,
+                              resize: { [weak self] size in self?.contentSize = size; self?.placePanel() })
+        item.button?.target = self
+        item.button?.action = #selector(clicked(_:))
+        item.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
         updateIcon()
     }
 
@@ -40,95 +50,123 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         item.button?.toolTip = controlled ? "AnyRemote: " + Self.controlling(settings.status.viewers) : "AnyRemote"
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
-        let status = settings.status
-
-        let header = NSMenuItem(title: statusLine, action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
-        for viewer in status.viewers {
-            let item = action(String(localized: "Disconnect “\(viewer.name)”"), #selector(disconnectViewer(_:)))
-            item.representedObject = viewer.id
-            menu.addItem(item)
+    @objc private func clicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseDown || NSApp.currentEvent?.modifierFlags.contains(.control) == true {
+            closePanel()
+            showClassicMenu()
+        } else if panel.isVisible {
+            closePanel()
+        } else if Date().timeIntervalSince(closedAt) > 0.3 {
+            showPanel()
         }
-        if settings.settings.isEnabled {
-            let code = settings.settings.code?.description ?? ""
-            let show = action(String(localized: "Show Pairing Code…"), #selector(showSettings))
-            show.toolTip = code
-            menu.addItem(show)
-            menu.addItem(action(String(localized: "Copy Pairing Code"), #selector(copyCode)))
-        } else {
-            menu.addItem(action(String(localized: "Allow Other Macs to Control This Mac"), #selector(enableSharing)))
-        }
+    }
 
-        menu.addItem(.separator())
-        let open = action(String(localized: "Open Remote Window…"), #selector(showPicker))
-        open.keyEquivalent = "0"
+    /// The SwiftUI content's own size, as it last reported it.
+    private var contentSize = CGSize(width: 340, height: 420)
+
+    func showPanel() {
+        model.willShow()
+        placePanel()
+        panel.makeKeyAndOrderFront(nil)
+        item.button?.highlight(true)
+    }
+
+    var panelFrame: NSRect? { panel.isVisible ? panel.frame : nil }
+
+    /// Hangs the panel just below the icon, inside the screen, sized to its content.
+    private func placePanel() {
+        guard let button = item.button, let buttonWindow = button.window else { return }
+        let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let screen = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+        let size = contentSize
+        var origin = NSPoint(x: anchor.midX - size.width / 2, y: anchor.minY - 6 - size.height)
+        origin.x = min(max(origin.x, screen.minX + 8), screen.maxX - size.width - 8)
+        let frame = NSRect(origin: origin, size: size).integral
+        if frame != panel.frame { panel.setFrame(frame, display: true) }
+    }
+
+    func closePanel() {
+        guard panel.isVisible else { return }
+        panel.orderOut(nil)
+        item.button?.highlight(false)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        guard panel.isVisible else { return }
+        closedAt = Date()
+        closePanel()
+    }
+
+    private func makePanel() -> NSPanel {
+        let panel = StatusPanel()
+        panel.delegate = self
+        let effect = NSVisualEffectView()
+        effect.material = .popover
+        effect.state = .active
+        effect.blendingMode = .behindWindow
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 12
+        effect.layer?.masksToBounds = true
+        let hosting = NSHostingView(rootView: StatusPanelView(model: model))
+        hosting.sizingOptions = []
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            hosting.topAnchor.constraint(equalTo: effect.topAnchor),
+            hosting.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+        ])
+        panel.contentView = effect
+        return panel
+    }
+
+    private func showClassicMenu() {
+        let menu = NSMenu()
+        let open = NSMenuItem(title: String(localized: "Open AnyRemote Window"), action: #selector(showPicker), keyEquivalent: "0")
         open.keyEquivalentModifierMask = [.control, .option, .command]
+        open.target = self
         menu.addItem(open)
-        let mirrors = ((viewer().allDesktops as [NSWindowController]) + viewer().allMirrors)
-            .sorted { ($0.window?.title ?? "") < ($1.window?.title ?? "") }
-        for mirror in mirrors {
-            let title = mirror.window?.title ?? String(localized: "Window")
-            let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            entry.indentationLevel = 1
-            let submenu = NSMenu(title: title)
-            let show = action(String(localized: "Bring to Front"), #selector(focusMirror(_:)))
-            show.representedObject = mirror
-            submenu.addItem(show)
-            let close = action(String(localized: "Close on This Mac"), #selector(closeMirror(_:)))
-            close.representedObject = mirror
-            close.toolTip = String(localized: "The window stays open on the other Mac.")
-            submenu.addItem(close)
-            entry.submenu = submenu
-            menu.addItem(entry)
-        }
-
-        menu.addItem(.separator())
-        let settingsItem = action(String(localized: "Settings…"), #selector(showSettings))
-        settingsItem.keyEquivalent = ","
+        let settingsItem = NSMenuItem(title: String(localized: "Settings…"), action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.target = self
         menu.addItem(settingsItem)
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: String(localized: "Quit AnyRemote"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+        item.menu = menu
+        item.button?.performClick(nil)
+        item.menu = nil
     }
 
-    private var statusLine: String {
-        if !settings.settings.isEnabled { return String(localized: "Sharing: Off") }
-        if !settings.status.viewers.isEmpty { return Self.controlling(settings.status.viewers) }
-        if !settings.permissions.allGranted { return String(localized: "Sharing: Permissions Missing") }
-        if settings.status.isListening { return String(localized: "Sharing: Waiting for Connection") }
-        return String(localized: "Sharing: Starting…")
-    }
-
-    private func action(_ title: String, _ selector: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-        item.target = self
-        return item
-    }
+    @objc private func showPicker() { actions.showPicker() }
+    @objc private func showSettings() { actions.showSettings() }
 
     /// "“M6” is controlling this Mac", or how many are.
     static func controlling(_ viewers: [HostService.Viewer]) -> String {
         if viewers.count == 1 { return String(localized: "“\(viewers[0].name)” is controlling this Mac") }
         return String(localized: "\(viewers.count) Macs are controlling this Mac")
     }
+}
 
-    @objc private func disconnectViewer(_ sender: NSMenuItem) {
-        settings.service.disconnectViewer(id: sender.representedObject as? UInt32)
+/// A borderless panel that takes typing without making AnyRemote the active
+/// app, like Spotlight: the app the user was in stays in front until a remote
+/// window actually opens.
+private final class StatusPanel: NSPanel {
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 340, height: 420),
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        isFloatingPanel = true
+        level = .statusBar
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
     }
-    @objc private func copyCode() { settings.copyCode() }
-    @objc private func showSettings() { actions.showSettings() }
-    @objc private func showPicker() { actions.showPicker() }
-    @objc private func enableSharing() { settings.setEnabled(true); updateIcon() }
 
-    @objc private func closeMirror(_ sender: NSMenuItem) {
-        (sender.representedObject as? NSWindowController)?.close()
-    }
+    override var canBecomeKey: Bool { true }
 
-    @objc private func focusMirror(_ sender: NSMenuItem) {
-        guard let mirror = sender.representedObject as? NSWindowController else { return }
-        NSApp.activate()
-        mirror.window?.makeKeyAndOrderFront(nil)
-    }
+    override func cancelOperation(_ sender: Any?) { (delegate as? StatusMenuController)?.closePanel() }
 }
 
 /// A system-wide hot key (Carbon; needs no permission).

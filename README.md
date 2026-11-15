@@ -48,9 +48,9 @@ Requires macOS 15 or later, Apple silicon or Intel.
 
 ## Getting started
 
-1. On the Mac to be controlled, the menu bar icon shows its pairing code
-   (`XXXXX-XXXXX-XXXXX-XXXXX`), whether it can be controlled and who is
-   controlling it (each viewer with **Disconnect**).
+1. On the Mac to be controlled, the menu bar panel shows whether it can be
+   controlled and who is controlling it (each viewer with **Disconnect**);
+   its ⋯ menu shows or copies the pairing code (`XXXXX-XXXXX-XXXXX-XXXXX`).
 2. On the controlling Mac, open the window picker (⌃⌥⌘0 from anywhere). It
    lists *My Macs* (paired) and *Nearby* (unpaired, found with Bonjour).
    Select a Mac and enter its code once. **Add by address** covers Macs on
@@ -72,6 +72,23 @@ Requires macOS 15 or later, Apple silicon or Intel.
 The picker connects to the last used Mac, groups windows by app and stays
 open behind a new window (the AnyRemote Dock icon or ⌃⌥⌘0 brings it back).
 An already open window is brought forward instead of opened twice.
+
+### Menu bar
+
+Clicking the menu bar icon opens a panel for the moments between remote
+windows, without making AnyRemote the active app: the search field has
+focus, so typing an app's name and pressing Return opens it on the chosen
+Mac (the panel stays with a spinner until its window arrives). Before
+anything is typed it lists the apps recently opened on that Mac, then the
+ones running there; a search also finds windows. Paired Macs are tabs along the
+top, each with its connection state (⌘1…⌘9 switch, + pairs another); the
+chosen one is remembered and connected on opening, and each Mac keeps its
+own recent apps. Buttons beside the search field open that Mac's full
+desktop and the window picker. *Open on This Mac* lists remote windows shown here,
+to bring one forward or close it here. The footer is this Mac as a host:
+sharing on or off, who is controlling it with **Disconnect**, and a ⋯ menu
+with the pairing code, Settings and Quit. A right click gives a short
+classic menu.
 
 A mirror behaves like a local window. Dragging it moves only the mirror:
 the host window stays where it is, so it never ends up partly off its
@@ -281,7 +298,8 @@ VideoToolbox findings behind the encoder settings are in
 App/                        AppKit + SwiftUI app
   AppDelegate               host service + viewer, menus, ⌃⌥⌘ commands
   HostsView / ViewerModel   window picker: My Macs / Nearby, grouped searchable grid, pairing
-  StatusMenu                menu bar icon (sharing state, viewers, pairing code), ⌃⌥⌘0 hot key
+  StatusMenu / StatusPanel  menu bar icon and panel: open apps on a Mac, open windows, sharing state; ⌃⌥⌘0 hot key
+  RecentApplications        apps recently opened on each host, for the panel
   FriendlyText              user-facing wording for wire/system errors
   AppLanguage               interface language (English default; Simplified Chinese in Settings › General)
   Resources/*.lproj         string tables; keys are the English source strings
@@ -370,6 +388,7 @@ against this Mac's own host service unless `--connect` is given.
   posts ⌘Tab and ⌘Space and prints what was forwarded.
   `-DesktopFitsWindow NO` turns dynamic resolution off for one launch.
 - `--permission-guide` — Settings with the permission card
+- `--status-panel` — opens the menu bar panel and prints its frame for `screencapture -R`
 - `--discovery-test`, `--exit-after <seconds>`
 
 Environment:

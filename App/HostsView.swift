@@ -251,7 +251,7 @@ private struct PairingPane: View {
             Image(systemName: "lock.shield").font(.system(size: 40)).foregroundStyle(.tint)
             Text("Pair with “\(target.name)”").font(.title2.weight(.semibold))
             VStack(alignment: .leading, spacing: 6) {
-                Label("On “\(target.name)”, click the AnyRemote icon in the menu bar and choose “Show Pairing Code”.", systemImage: "1.circle")
+                Label("On “\(target.name)”, click the AnyRemote icon in the menu bar and choose ⋯ › Show Pairing Code.", systemImage: "1.circle")
                 Label("Enter the 20-character code below. Each Mac only needs to be paired once.", systemImage: "2.circle")
             }
             .foregroundStyle(.secondary)
@@ -344,7 +344,7 @@ private struct WindowPicker: View {
     /// Apps matching the search, by name.
     private var apps: [HostApplication] {
         let needle = query.trimmingCharacters(in: .whitespaces)
-        let all = (connection.applications?.applications ?? []).filter { !runningOnly || $0.isRunning }
+        let all = connection.offeredApplications.filter { !runningOnly || $0.isRunning }
         return needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
     }
 
@@ -703,7 +703,7 @@ private struct AddHostSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Add a Mac by Address").font(.title3.weight(.semibold))
-            Text("Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Find the pairing code on that Mac under the AnyRemote menu bar icon › Show Pairing Code.")
+            Text("Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Find the pairing code on that Mac under the AnyRemote menu bar icon › ⋯ › Show Pairing Code.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Form {
                 TextField("Address", text: $address, prompt: Text("192.168.1.20 or mac-mini.local"))
