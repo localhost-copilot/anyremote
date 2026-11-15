@@ -15,11 +15,17 @@ protocol RemoteInputSink: AnyObject {
     /// buttons, letterbox area) and must not reach the host.
     func beginLocalPress(at point: NSPoint) -> Bool
     func endLocalPress(at point: NSPoint)
+    /// While the window is dragged locally (the host app began a window
+    /// drag), mouse moves move the window and the release stays local.
+    func continueLocalDrag(at point: NSPoint) -> Bool
+    func finishLocalDrag() -> Bool
 }
 
 extension RemoteInputSink {
     func beginLocalPress(at point: NSPoint) -> Bool { false }
     func endLocalPress(at point: NSPoint) {}
+    func continueLocalDrag(at point: NSPoint) -> Bool { false }
+    func finishLocalDrag() -> Bool { false }
 }
 
 /// A view showing one host surface and forwarding the mouse to the host.
@@ -123,6 +129,12 @@ final class RemoteSurfaceView: NSView {
             sink?.endLocalPress(at: screenPoint(event))
             return
         }
+        if sink?.finishLocalDrag() == true {
+            // The host already got its release when the local drag began.
+            pressedButtons &= ~1
+            if pressedButtons == 0 { sink?.pressEnded() }
+            return
+        }
         up(event, .left)
     }
     override func rightMouseDown(with event: NSEvent) { down(event, .right) }
@@ -130,7 +142,10 @@ final class RemoteSurfaceView: NSView {
     override func otherMouseDown(with event: NSEvent) { down(event, .other) }
     override func otherMouseUp(with event: NSEvent) { up(event, .other) }
     override func mouseMoved(with event: NSEvent) { moved(event) }
-    override func mouseDragged(with event: NSEvent) { if !localPress { moved(event) } }
+    override func mouseDragged(with event: NSEvent) {
+        if localPress || sink?.continueLocalDrag(at: screenPoint(event)) == true { return }
+        moved(event)
+    }
     override func rightMouseDragged(with event: NSEvent) { moved(event) }
     override func otherMouseDragged(with event: NSEvent) { moved(event) }
     // Keep context menus and gestures from being handled locally.

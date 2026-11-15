@@ -41,7 +41,11 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
 
     // Press tracking: the host window may move under a drag (title bar).
     private var pressScreenTopLeft: NSPoint?
-    private var pressHostOrigin: CGPoint?
+    private var pressHostFrame: CGRect?
+    private var pressMouse: NSPoint?
+    /// The user is dragging this window by an area the host app treats as
+    /// draggable; the host window stays put.
+    private var localDrag = false
     private var pressWindowOrigin: NSPoint?
     private var pressScale: CGSize = CGSize(width: 1, height: 1)
 
@@ -165,12 +169,34 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         stream.frame = frame
         stream.title = title
         if title != oldTitle { updateTitle() }
-        // Follow host-side moves only while the user drags (title bar drags).
-        if let pressHostOrigin, let pressWindowOrigin, let window {
-            let dx = frame.minX - pressHostOrigin.x
-            let dy = frame.minY - pressHostOrigin.y
-            window.setFrameOrigin(NSPoint(x: pressWindowOrigin.x + dx, y: pressWindowOrigin.y - dy))
+        // The host window moving under a press means the app started a
+        // window drag. Drag this window instead; the host puts its window back.
+        if let pressHostFrame, !localDrag, frame.size == pressHostFrame.size, frame.origin != pressHostFrame.origin {
+            beginLocalDrag()
         }
+    }
+
+    private func beginLocalDrag() {
+        guard let pressMouse else { return }
+        localDrag = true
+        // End the host's drag where it began.
+        sendInput(.mouseUp(point: hostPoint(forScreenPoint: pressMouse), button: .left, buttonNumber: 0,
+                           clickCount: 1, modifiers: 0))
+        continueLocalDrag(at: NSEvent.mouseLocation)
+    }
+
+    @discardableResult
+    func continueLocalDrag(at point: NSPoint) -> Bool {
+        guard localDrag, let window, let pressMouse, let pressWindowOrigin else { return false }
+        window.setFrameOrigin(NSPoint(x: pressWindowOrigin.x + point.x - pressMouse.x,
+                                      y: pressWindowOrigin.y + point.y - pressMouse.y))
+        return true
+    }
+
+    func finishLocalDrag() -> Bool {
+        guard localDrag else { return false }
+        localDrag = false
+        return true
     }
 
     func hostResizeApplied(_ size: CGSize) {
@@ -224,14 +250,17 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     func pressBegan() {
         pressScreenTopLeft = surfaceScreenTopLeft
         pressScale = currentScale
-        pressHostOrigin = stream.frame.origin
+        pressHostFrame = stream.frame
         pressWindowOrigin = window?.frame.origin
+        pressMouse = NSEvent.mouseLocation
     }
 
     func pressEnded() {
         pressScreenTopLeft = nil
-        pressHostOrigin = nil
+        pressHostFrame = nil
         pressWindowOrigin = nil
+        pressMouse = nil
+        localDrag = false
     }
 
     private var surfaceScreenTopLeft: NSPoint {

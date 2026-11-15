@@ -40,7 +40,10 @@ work; the picker shows the same, live, until it is granted.
 clicks back into the mirror. `ANYREMOTE_LOOPBACK=1` lists it for
 development.
 
-A mirror behaves like a local window. Its title bar buttons act on it:
+A mirror behaves like a local window. Dragging it (by the title bar,
+toolbar or any area the app treats as draggable) moves only the mirror: the
+host window stays where it is, so it never ends up partly off its display.
+Its title bar buttons act on it:
 close closes the host window (and with it the mirror; a save sheet appears
 as usual), minimize minimizes the mirror only, green enters full screen on
 this Mac (the host window is resized to this screen) and ⌥-green zooms. ⌘M

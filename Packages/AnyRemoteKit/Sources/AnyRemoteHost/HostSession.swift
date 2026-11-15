@@ -21,6 +21,8 @@ final class HostStream: @unchecked Sendable {
     var bitRate: Int
     var cleanReports = 0
     var controls: WindowControls?
+    /// The window frame when the current press began.
+    var pressFrame: CGRect?
 
     init(description: StreamDescription, sender: WindowStreamSender, pid: pid_t, bitRate: Int) {
         self.description = description
@@ -590,6 +592,7 @@ final class HostSession: @unchecked Sendable {
         case .mouseDown:
             focus(stream, force: false)
             if let current = WindowServerWindow.describe(stream.windowID) { origin = current.frame.origin }
+            if !injector.isPressed { stream.pressFrame = stream.description.frame }
             setTrackerFast(true)
         case .key(_, true, _, _):
             focus(stream, force: false)
@@ -597,7 +600,33 @@ final class HostSession: @unchecked Sendable {
             break
         }
         injector.post(event, windowOrigin: origin)
-        if case .mouseUp = event, !injector.isPressed { setTrackerFast(false) }
+        if case .mouseUp = event, !injector.isPressed {
+            setTrackerFast(false)
+            // Once the drag has ended, and again after macOS's own snap-back
+            // (it keeps 40 pt of a window visible) has run.
+            for (delay, final) in [(150, false), (600, true)] {
+                queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+                    self?.keepInPlace(streamID: streamID, final: final)
+                }
+            }
+        }
+    }
+
+    /// The host window never moves for the viewer: dragging a mirror by its
+    /// title bar (or toolbar, or background) moves only the local window. The
+    /// press reaches the host first, so the app starts a drag; the viewer
+    /// notices the move, ends the press and drags locally, and the window is
+    /// put back here. Left moved, it could end up partly off its display,
+    /// where clicks go nowhere.
+    private func keepInPlace(streamID: UInt16, final: Bool) {
+        guard let stream = streams[streamID], !injector.isPressed, let pressFrame = stream.pressFrame else { return }
+        if final { stream.pressFrame = nil }
+        if stream.axWindow == nil { stream.axWindow = try? AXWindow(pid: stream.pid, windowID: stream.windowID) }
+        // A resize from the left or top edge moves the origin too; that stays.
+        guard let ax = stream.axWindow, let origin = ax.position, let size = ax.size,
+              size == pressFrame.size, origin != pressFrame.origin else { return }
+        log.notice("window \(stream.windowID) moved back: \(origin.debugDescription) -> \(pressFrame.origin.debugDescription)")
+        try? ax.setPosition(pressFrame.origin)
     }
 
     /// Brings the window's app forward when another window is frontmost.
