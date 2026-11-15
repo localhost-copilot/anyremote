@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
+        PermissionGuide.cleanUpStaleEntries()
         if hostService.settingsStore.settings.isEnabled {
             do { try hostService.start() } catch {
                 log.error("host failed to start: \(error.localizedDescription, privacy: .public)")

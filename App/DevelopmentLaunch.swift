@@ -12,6 +12,7 @@ import AppKit
 ///     --launch <application>                open an app on the host and mirror its first window
 ///     --connect host[:port] --code CODE     connect to another Mac
 ///     --discovery-test                      print the hosts Bonjour finds
+///     --permission-guide                    show Settings and the permission guide card
 ///     --exit-after <seconds>
 ///
 /// Set ANYREMOTE_STATS_STDOUT=1 to print pipeline statistics every second,
@@ -30,6 +31,12 @@ enum DevelopmentLaunch {
         let permissions = HostService.permissions
         print("dev: permissions screen=\(permissions.screenRecording) ax=\(permissions.accessibility) "
               + "post=\(permissions.postEvents)")
+        if arguments.contains("--permission-guide") {
+            app.showSettings()
+            PermissionGuide.shared.isPreview = true
+            PermissionGuide.shared.start(.accessibility)
+            return true
+        }
         if arguments.contains("--discovery-test") {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(3))

@@ -73,7 +73,6 @@
 "Open AnyRemote at Login" = "登录时打开 AnyRemote";
 "Open Full Desktop" = "打开完整桌面";
 "Open Remote Window…" = "打开远程窗口…";
-"Open System Settings" = "打开系统设置";
 "Open the whole desktop in Screen Sharing (or iScreenSharing, if installed)" = "用屏幕共享打开整个桌面（装了 iScreenSharing 时用它）";
 "Opened" = "已打开";
 "Optional; defaults to the Mac’s name" = "可选，默认用那台 Mac 的名字";
@@ -95,7 +94,6 @@
 "Remote" = "远程";
 "Rename “%@”" = "重命名「%@」";
 "Rename…" = "重命名…";
-"Request Permissions" = "请求权限";
 "Reset" = "重置";
 "Reset Pairing Code…" = "重置配对码…";
 "Reset the pairing code?" = "重置配对码？";
@@ -120,7 +118,6 @@
 "That Mac is being controlled by “%@”." = "那台 Mac 正被「%@」控制。";
 "The connection was closed." = "连接被关闭了。";
 "The connection was ended on that Mac." = "对方在那台 Mac 上断开了连接。";
-"The copy that needs permission: %@" = "需要授权的是这一份：%@";
 "The new language is used the next time AnyRemote opens. Open remote windows will close." = "新语言在 AnyRemote 下次打开时生效。打开的远程窗口会被关闭。";
 "The pairing code is wrong. Check the code shown in AnyRemote › Settings on that Mac." = "配对码不对。请核对那台 Mac 上 AnyRemote › 设置 里显示的配对码。";
 "The two Macs run different versions of AnyRemote. Install the same version on both." = "两台 Mac 上的 AnyRemote 版本不一致，请装同一个版本。";
@@ -128,7 +125,6 @@
 "This window has been closed." = "这个窗口已经关闭了。";
 "Try Again" = "重试";
 "Try Anyway" = "仍然尝试连接";
-"Turn on AnyRemote in System Settings. If AnyRemote is already listed and on but has no effect, remove it with “−”, grant it again, then restart AnyRemote." = "在系统设置里打开 AnyRemote 的开关。如果列表里已经有 AnyRemote 但开着也不生效，先用「−」删掉它再重新授权，然后重新启动 AnyRemote。";
 "Undo" = "撤销";
 "Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Find the pairing code on that Mac under the AnyRemote menu bar icon › Show Pairing Code." = "不在同一局域网、或者「附近」里找不到时使用。配对码在那台 Mac 的菜单栏 AnyRemote 图标 › 显示配对码。";
 "When No Retina Display Is Connected" = "没有 Retina 显示器时";
@@ -157,3 +153,13 @@
 "Each app with windows open here gets its own Dock icon and ⌘Tab entry. Quitting it closes its windows on this Mac only." = "每个在本机打开了窗口的远程 App 都有自己的程序坞图标和 ⌘Tab 项。退出它只会关闭本机上的窗口。";
 "Share Clipboard" = "共享剪贴板";
 "Copy on one Mac, paste on the other: text, images and links. Files and passwords stay on their Mac." = "在一台 Mac 上拷贝，在另一台上粘贴：文本、图片和链接。文件和密码不会离开各自的 Mac。";
+"Turn On…" = "打开…";
+"On" = "已打开";
+"Drag into the list in System Settings" = "拖到系统设置的列表中";
+"Not Working?" = "不起作用？";
+"Removes AnyRemote’s entry from this list, so it can be added again" = "从列表中移除 AnyRemote，以便重新添加";
+"macOS may only apply Screen Recording after a restart" = "macOS 可能要在重启后才应用录屏权限";
+"Later" = "稍后";
+"Let AnyRemote record the screen" = "允许 AnyRemote 录制屏幕";
+"Let AnyRemote control this Mac" = "允许 AnyRemote 控制这台 Mac";
+"Turn on the switch next to AnyRemote in the list that just opened. Not in the list? Drag this icon into it." = "在刚打开的列表里，打开 AnyRemote 旁边的开关。列表里没有？把这个图标拖进去。";

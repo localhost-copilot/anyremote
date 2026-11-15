@@ -17,7 +17,9 @@ final class InputInjector {
     private var frozenOrigin: CGPoint?
     private var lastClickCount = 1
 
-    static var isAllowed: Bool { CGPreflightPostEventAccess() }
+    /// Accessibility covers posting events. Its check updates as soon as the
+    /// switch is turned on; the PostEvent check only after a relaunch.
+    static var isAllowed: Bool { CGPreflightPostEventAccess() || AXIsProcessTrusted() }
 
     static func requestAccess() { _ = CGRequestPostEventAccess() }
 

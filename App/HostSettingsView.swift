@@ -170,26 +170,9 @@ struct HostSettingsView: View {
 
     private var permissionsSection: some View {
         Section {
-            permissionRow("Screen Recording", detail: "Lets the other Mac see window contents", granted: model.permissions.screenRecording,
-                          pane: "Privacy_ScreenCapture")
+            permissionRow("Screen Recording", detail: "Lets the other Mac see window contents", permission: .screenRecording)
             permissionRow("Accessibility", detail: "Lets the other Mac click, type, resize windows and use menus",
-                          granted: model.permissions.accessibility && model.permissions.postEvents,
-                          pane: "Privacy_Accessibility")
-            if !model.permissions.allGranted {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Turn on AnyRemote in System Settings. If AnyRemote is already listed and on but has no effect, remove it with “−”, grant it again, then restart AnyRemote.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Text("The copy that needs permission: \(Bundle.main.bundlePath)")
-                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    HStack {
-                        Button("Request Permissions") {
-                            HostService.requestPermissions()
-                            model.refreshPermissions()
-                        }
-                        Button("Restart AnyRemote") { HostSettingsModel.relaunch() }
-                    }
-                }
-            }
+                          permission: .accessibility)
         } header: {
             HStack {
                 Text("Permissions")
@@ -242,8 +225,11 @@ struct HostSettingsView: View {
         return .green
     }
 
-    private func permissionRow(_ title: LocalizedStringKey, detail: LocalizedStringKey, granted: Bool, pane: String) -> some View {
-        HStack {
+    private func permissionRow(_ title: LocalizedStringKey, detail: LocalizedStringKey,
+                               permission: PermissionGuide.Permission) -> some View {
+        let granted = permission.isGranted(model.permissions)
+        let isNext = PermissionGuide.Permission.allCases.first { !$0.isGranted(model.permissions) } == permission
+        return HStack {
             Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .foregroundStyle(granted ? .green : .orange)
                 .font(.title3)
@@ -252,10 +238,13 @@ struct HostSettingsView: View {
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if !granted {
-                Button("Open System Settings") {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
-                }
+            if granted {
+                Text("On").foregroundStyle(.secondary)
+            } else if isNext {
+                Button("Turn On…") { PermissionGuide.shared.start(permission) }
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button("Turn On…") { PermissionGuide.shared.start(permission) }
             }
         }
     }

@@ -228,7 +228,7 @@ project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated)
 xcodegen generate
 open AnyRemote.xcodeproj            # signed build with your team (Developer ID for distribution)
 
-swift test --package-path Packages/AnyRemoteKit     # 28 tests incl. VT round trips and a network session
+swift test --package-path Packages/AnyRemoteKit     # 32 tests incl. VT round trips and a network session
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 ```
@@ -236,13 +236,29 @@ Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x7
 The Debug configuration builds **AnyRemote Dev** (`com.localhost-copilot.anyremote.dev`),
 so development builds never take over the installed app's privacy grants.
 
-Distribution zip (ad-hoc signed unless built with a Developer ID in Xcode):
+Distribution zip, and optionally install it here and restart it:
 
 ```sh
-xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Release \
-  -derivedDataPath build/dd-release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO
-ditto -c -k --keepParent build/dd-release/Build/Products/Release/AnyRemote.app build/dist/AnyRemote.zip
+scripts/release.sh             # build/dist/AnyRemote-<version>.zip
+scripts/release.sh --install   # also replace /Applications/AnyRemote.app
 ```
+
+Screen Recording and Accessibility are keyed by the app's signature. An
+ad-hoc signature changes with every build, so each update lost them. The
+script signs with a stable local identity instead (`scripts/signing-identity.sh`
+creates it once: a self-signed code-signing certificate in its own keychain
+under `~/Library/Application Support/AnyRemoteSigning`, never committed), so
+permissions survive updates on every Mac that installs the zip. Other Macs
+need the zip from the Mac that holds that identity.
+
+Granting them: Settings → *Turn On…* asks macOS for the permission, which
+adds AnyRemote to the list switched off, then opens that list in System
+Settings with a small card beside it (its icon drags into the list as a
+fallback). It notices the switch and moves on. Accessibility also covers
+posting events, so that row turns on without a relaunch. At launch, entries
+left by an earlier signature, listed as on but without effect, are removed
+once per signature (`tccutil reset`), so turning a permission on is always one
+switch.
 
 Development launch arguments (see `App/DevelopmentLaunch.swift`), all through
 the real network path against this Mac's own host service:
@@ -254,6 +270,7 @@ the real network path against this Mac's own host service:
 - `--launch <app>` — opens the app on the host through the Apps list and
   prints when its window arrives
 - `--connect host[:port] --code CODE` — another Mac
+- `--permission-guide` — Settings with the permission card (kept up)
 - `--discovery-test`, `--exit-after <seconds>`
 - `ANYREMOTE_STATS_STDOUT=1` prints pipeline statistics every second,
   `ANYREMOTE_HOME=<dir>` uses a separate settings directory
@@ -271,7 +288,7 @@ that app, so the mirror stops being key; that only affects this loopback.
   characters. Input-method composition happens on the host.
 - Windows hidden behind others still stream (ScreenCaptureKit captures them),
   but macOS throttles occluded windows' rendering.
-- Drag and drop and clipboard sharing between Macs are not implemented.
+- Drag and drop between Macs is not implemented.
 - Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
   there is no FEC.
 - The virtual display sits right of the main display; on a Mac with a real
