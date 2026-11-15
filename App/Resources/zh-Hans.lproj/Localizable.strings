@@ -170,12 +170,9 @@
 "You can control “%@” from here too. It’s now in My Macs." = "你也可以在这里控制“%@”，它已出现在“我的 Mac”中。";
 
 /* Apps */
-"All" = "全部";
-"All apps on that Mac, or only the ones running there" = "显示那台 Mac 上的所有 App，或只显示正在运行的";
+"Not Running" = "未运行";
 "Quit" = "退出";
 "Force Quit" = "强制退出";
-"No Running Apps" = "没有正在运行的 App";
-"No apps are running on “%@”." = "“%@”上没有正在运行的 App。";
 
 "Fit Desktop to Window" = "桌面适应窗口大小";
 "Send System Shortcuts to Desktop" = "将系统快捷键发送到桌面";
@@ -224,3 +221,6 @@
 "The Other Mac's" = "另一台 Mac 的";
 "Type with this Mac's input method; its candidates show next to the other Mac's text." = "用这台 Mac 的输入法打字，候选词显示在另一台 Mac 的文字旁边。";
 "The other Mac's input method composes. It switches along with the input source you select here, if that Mac has it." = "由另一台 Mac 的输入法组字。你在这里切换输入法时，如果那台 Mac 也有这个输入法，它会跟着切换。";
+"Latency %lld ms · %lld fps" = "延迟 %lld 毫秒 · %lld 帧/秒";
+"Slow connection · %lld ms" = "网络较慢 · %lld 毫秒";
+"Unstable connection" = "网络不稳定";

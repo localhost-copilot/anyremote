@@ -21,6 +21,9 @@ final class HostStream: @unchecked Sendable {
     var originalOrigin: CGPoint?
     var bitRate: Int
     var controls: WindowControls?
+    /// Where macOS's sharing indicator covers the title bar buttons (window
+    /// points from the top-left corner), painted over before encoding.
+    var concealedRect: CGRect?
     /// The window frame when the current press began.
     var pressFrame: CGRect?
     /// When the window left the screen (closed, hidden), while it stays off.
@@ -1042,6 +1045,7 @@ final class HostSession: @unchecked Sendable {
             }
             main.offScreenSince = nil
             updateFrame(main, frame: current.frame, title: current.title)
+            updateSharingIndicator(main, frame: current.frame, onScreen: onScreen)
             trackChildren(of: main, mainFrame: current.frame, onScreen: onScreen)
         }
         for stream in streams.values where stream.description.role == .child {
@@ -1089,6 +1093,27 @@ final class HostSession: @unchecked Sendable {
     }
 
     // MARK: Title bar buttons and window state
+
+    /// macOS 27 covers a captured window's close, minimize and zoom buttons
+    /// with a purple sharing indicator: a small window of the captured app
+    /// that the window server also composites into the capture. The viewer
+    /// draws its own buttons there, so the indicator is painted over.
+    private func updateSharingIndicator(_ stream: HostStream, frame: CGRect, onScreen: [WindowServerWindow]) {
+        var rect: CGRect?
+        if let button = stream.controls?.close ?? stream.controls?.minimize ?? stream.controls?.zoom {
+            let anchor = CGPoint(x: frame.minX + button.midX, y: frame.minY + button.midY)
+            let indicator = onScreen.first {
+                $0.pid == stream.pid && $0.id != stream.windowID && $0.layer == 0
+                    && $0.frame.width <= 120 && $0.frame.height <= 40 && $0.frame.contains(anchor)
+            }
+            // A little more on each side takes in its antialiased edge and its shadow.
+            rect = indicator.map { $0.frame.offsetBy(dx: -frame.minX, dy: -frame.minY).insetBy(dx: -2, dy: -3) }
+        }
+        guard rect != stream.concealedRect else { return }
+        stream.concealedRect = rect
+        stream.sender.setConcealedRect(rect)
+        log.debug("sharing indicator of window \(stream.windowID): \(String(describing: rect), privacy: .public)")
+    }
 
     /// Tells the viewer where the title bar buttons are, so it can handle
     /// minimize and full screen on its own window.

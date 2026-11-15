@@ -232,6 +232,17 @@ enum DevelopmentLaunch {
         if let point = value("--host-ime-test") {
             app.developmentMirrorHandler = { mirror in HostInputMethodTest.run(mirror, click: point) }
         }
+        if arguments.contains("--fullscreen"), app.developmentMirrorHandler == nil {
+            app.developmentMirrorHandler = { mirror in
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1))
+                    mirror.window?.makeKeyAndOrderFront(nil)
+                    mirror.window?.toggleFullScreen(nil)
+                    try? await Task.sleep(for: .seconds(2))
+                    print("dev: mirror full screen \(mirror.window?.styleMask.contains(.fullScreen) ?? false)")
+                }
+            }
+        }
         if arguments.contains("--text-test") {
             app.developmentMirrorHandler = { mirror in TextTest.run(mirror) }
         }

@@ -30,6 +30,7 @@ final class DesktopWindowController: NSWindowController, NSWindowDelegate, Remot
     private var showsStatistics = ProcessInfo.processInfo.environment["ANYREMOTE_STATS"] == "1"
     private var noticeView: NSView?
     private var statisticsTimer: Timer?
+    let connectionStatus = ConnectionStatus()
     /// The display's size in host points.
     private var remotePointSize: CGSize
     private var remoteScale = 0
@@ -401,6 +402,10 @@ final class DesktopWindowController: NSWindowController, NSWindowDelegate, Remot
         shown \(Int(videoPixels.width))×\(Int(videoPixels.height))px @\(Int(backing))x · \
         \(native ? "1:1 native" : "scaled") · rtt \(rtt)
         """)
+        if let content = window?.contentView {
+            connectionStatus.update(viewer: summary, host: hostReport, roundTrip: connection.client.roundTripMilliseconds,
+                                    in: content)
+        }
         let text = lines.joined(separator: "\n")
         if showsStatistics { surface.frameLayer.overlayText = text }
         if ProcessInfo.processInfo.environment["ANYREMOTE_STATS_STDOUT"] == "1" {

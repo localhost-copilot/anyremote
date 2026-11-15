@@ -68,6 +68,16 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     private var switching = false
     /// Set in crop mode: the display the crop is relative to, and its scale.
     private var crop: (displayFrame: CGRect, scale: CGFloat)?
+    /// The system's sharing indicator, in window points from the top-left
+    /// corner; painted over in every frame (see `SharingIndicatorConcealer`).
+    private var concealedRect: CGRect?
+    /// The latest frame, kept only until the indicator is known: SCK sends
+    /// nothing while the window doesn't change, so that frame is sent again
+    /// with the indicator painted over. Only during the first seconds (the
+    /// indicator appears when capture starts), since a kept buffer is one
+    /// fewer for SCK's small pool.
+    private var unconcealedFrame: CapturedFrame?
+    private var firstFrameNanos: UInt64 = 0
 
     public var onStop: (@Sendable (Error?) -> Void)?
 
@@ -109,6 +119,37 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
             windowFrame = frame
             if crop != nil { requestCrop() }
         }
+    }
+
+    /// Where macOS draws its sharing indicator on the window (window points
+    /// from the top-left corner), or nil.
+    public func setConcealedRect(_ rect: CGRect?) {
+        queue.async { [self] in
+            guard rect != concealedRect else { return }
+            concealedRect = rect
+            guard rect != nil, let frame = unconcealedFrame else { return }
+            unconcealedFrame = nil
+            conceal(in: frame.pixelBuffer, scale: frame.scale)
+            let now = HostClock.nowNanos()
+            handler(CapturedFrame(pixelBuffer: frame.pixelBuffer, captureTimeNanos: now, deliveredTimeNanos: now,
+                                  pointSize: frame.pointSize, scale: frame.scale))
+        }
+    }
+
+    /// Queue-confined. Hands a frame on, keeping it while the indicator isn't known yet.
+    private func deliver(_ frame: CapturedFrame) {
+        if firstFrameNanos == 0 { firstFrameNanos = frame.deliveredTimeNanos }
+        let early = frame.deliveredTimeNanos &- firstFrameNanos < 3_000_000_000
+        unconcealedFrame = concealedRect == nil && early ? frame : nil
+        handler(frame)
+    }
+
+    /// Queue-confined.
+    private func conceal(in pixelBuffer: CVPixelBuffer, scale: CGFloat) {
+        guard let concealedRect else { return }
+        let pixels = CGRect(x: concealedRect.minX * scale, y: concealedRect.minY * scale,
+                            width: concealedRect.width * scale, height: concealedRect.height * scale)
+        SharingIndicatorConcealer.conceal(pixels, in: pixelBuffer)
     }
 
     /// Queue-confined. Restarts the capture as a display capture of only this window.
@@ -243,7 +284,8 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
             // Display capture: the buffer is the crop, at the display's scale.
             guard CVPixelBufferGetWidth(pixelBuffer) == configuredPixelSize.width,
                   CVPixelBufferGetHeight(pixelBuffer) == configuredPixelSize.height else { return }
-            handler(CapturedFrame(
+            conceal(in: pixelBuffer, scale: crop.scale)
+            deliver(CapturedFrame(
                 pixelBuffer: pixelBuffer,
                 captureTimeNanos: Self.displayTime(of: sampleBuffer),
                 deliveredTimeNanos: HostClock.nowNanos(),
@@ -278,7 +320,8 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
             return
         }
 
-        handler(CapturedFrame(
+        conceal(in: pixelBuffer, scale: scale)
+        deliver(CapturedFrame(
             pixelBuffer: pixelBuffer,
             captureTimeNanos: Self.displayTime(of: sampleBuffer),
             deliveredTimeNanos: HostClock.nowNanos(),

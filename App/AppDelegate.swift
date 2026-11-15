@@ -11,12 +11,15 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// and a viewer (this Mac controls others).
 @main
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private let hostService = HostService()
     private lazy var viewer = ViewerModel(hostService: hostService)
     private lazy var hostSettings = HostSettingsModel(service: hostService)
     private let keyForwarder = KeyForwarder()
     private let remoteMenuBar = RemoteMenuBar()
+    /// The Remote menu's connection line (host, latency, frame rate) and its separator.
+    private let connectionItem = NSMenuItem()
+    private let connectionSeparator = NSMenuItem.separator()
     private var hostsWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var diagnosticWindows: [NSWindow] = []
@@ -181,6 +184,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc private func toggleFitDesktop(_ sender: Any?) { DesktopPreferences.fitsWindow.toggle() }
     @objc private func toggleCaptureShortcuts(_ sender: Any?) { DesktopPreferences.capturesSystemShortcuts.toggle() }
 
+    /// The Remote menu shows how the key remote window's connection is doing.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu.items.contains(connectionItem) else { return }
+        let line: String?
+        if let mirror = keyMirror {
+            line = [mirror.connection.hostName, mirror.connectionStatus.summary].compactMap { $0 }.joined(separator: " · ")
+        } else if let desktop = keyDesktop {
+            line = [desktop.connection.hostName, desktop.connectionStatus.summary].compactMap { $0 }.joined(separator: " · ")
+        } else {
+            line = nil
+        }
+        connectionItem.title = line ?? ""
+        connectionItem.isHidden = line == nil
+        connectionSeparator.isHidden = line == nil
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(toggleFitDesktop(_:)):
@@ -233,6 +252,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // host, so these use ⌃⌥⌘.
         let remoteItem = NSMenuItem()
         let remoteMenu = NSMenu(title: RemoteMenuBar.ownMenuTitle)
+        remoteMenu.delegate = self
+        connectionItem.isEnabled = false
+        remoteMenu.addItem(connectionItem)
+        remoteMenu.addItem(connectionSeparator)
         func add(_ title: String, _ action: Selector, _ key: String) {
             let item = remoteMenu.addItem(withTitle: title, action: action, keyEquivalent: key)
             item.keyEquivalentModifierMask = local

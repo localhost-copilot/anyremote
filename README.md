@@ -103,6 +103,19 @@ and ⌥-green zooms. ⌘M and ⌃⌘F act on the mirror too. If the host window 
 minimized or goes full screen on the host, the host undoes it and the mirror
 does it instead.
 
+These are the mirror's own, native buttons, drawn where the host window has
+its buttons: macOS covers a shared window's buttons with a purple sharing
+indicator, also in the captured picture, so the host paints over the
+indicator before encoding and the viewer shows real buttons there (symbols
+on hover, the tiling menu on green, gray while inactive). In full screen
+they appear when the pointer reaches them.
+
+The connection stays out of sight while it's good. When frames arrive more
+than 80 ms after the host shows them, or keep getting lost, a small
+*Slow connection* / *Unstable connection* label fades in at the bottom of
+the window until it recovers. The Remote menu always shows the host,
+latency and frame rate of the key remote window.
+
 A window that appears on the host within 3 s of a click, key or menu command
 in a mirror opens as a new mirror: a new document, a Settings window, or
 another app's window such as Finder revealing a file. Windows that appear on
@@ -121,8 +134,10 @@ forward, its Dock menu lists them, and Quit closes them on this Mac only
 (`/Applications`, `/System/Applications`, their Utilities, `~/Applications`
 and anything running). Opening one launches it there, or brings it forward,
 and its front window opens here; an app with no window gets a new one, as if
-its Dock icon was clicked. *All | Running* narrows the list; a running app's
-context menu has *Quit* and *Force Quit* (on the host).
+its Dock icon was clicked. The list is grouped: *Recent* (opened from this
+Mac lately, newest first), then the others *Running*, then *Not Running*;
+the arrow keys move between groups by column. A running app's context menu
+has *Quit* and *Force Quit* (on the host).
 
 ### Full desktop
 
@@ -232,7 +247,8 @@ behind the host on loopback, close enough to the picture for lip sync.
   windows' rendering.
 - On the host, macOS covers each shared window's close/minimize/zoom buttons
   with a purple sharing indicator. It is a system privacy indicator with no
-  API to turn it off; the viewer sees the normal buttons.
+  API to turn it off. The viewer shows its own buttons in its place (see
+  above); a viewer older than 0.14 shows an empty spot there.
 - Input methods: text being composed is drawn by the viewer over the
   host's caret, in the host text's font and on its baseline, not inside the
   host's text field, so text after the caret is covered rather than pushed
@@ -422,7 +438,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 64 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 66 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -475,6 +491,9 @@ against this Mac's own host service unless `--connect` is given.
 - `--open <app> --text-test` — clicks into the window, sends composed text
   (CJK, more than 20 units, an emoji) and prints the carets the host reports.
   Use a throwaway text app: it types into the window.
+- `--open <app> --fullscreen` — makes the mirror full screen after a second
+  (prints whether it is). In loopback the host window, resized to this
+  screen, ends it again; use two Macs.
 - `--launch <app>` / `--quit <app>` — through the Apps list
 - `--desktop [--display <n>] [--fullscreen]` — the host's full desktop; checks
   that a pointer move lands on the matching display point.

@@ -301,6 +301,47 @@ private struct AppGroup: Identifiable {
     var windows: [WindowSummary]
 }
 
+/// One titled group of the Apps grid (Recent, Running, Not Running).
+struct AppShelf: Identifiable {
+    var title: String
+    var apps: [HostApplication]
+    var id: String { title }
+
+    /// The app an arrow key moves the selection to. `offset` is ±1 for
+    /// left/right and ±`columns` for up/down; up and down stay in the same
+    /// column and cross into the neighbouring shelf, whose rows start afresh.
+    static func move(from selected: String?, by offset: Int, columns: Int, in shelves: [AppShelf]) -> String? {
+        guard !shelves.isEmpty else { return nil }
+        let columns = max(1, columns)
+        guard let selected,
+              let s = shelves.firstIndex(where: { $0.apps.contains { $0.path == selected } }),
+              let i = shelves[s].apps.firstIndex(where: { $0.path == selected }) else {
+            return offset > 0 ? shelves.first?.apps.first?.path : shelves.last?.apps.last?.path
+        }
+        if abs(offset) < columns || columns == 1 {
+            let flat = shelves.flatMap(\.apps)
+            let position = flat.firstIndex { $0.path == selected } ?? 0
+            return flat[min(max(position + offset.signum(), 0), flat.count - 1)].path
+        }
+        let shelf = shelves[s].apps
+        let column = i % columns
+        if offset > 0 {
+            if i + columns < shelf.count { return shelf[i + columns].path }
+            // The last row may be short: land on its last tile before leaving the shelf.
+            if i / columns < (shelf.count - 1) / columns { return shelf[shelf.count - 1].path }
+            guard s + 1 < shelves.count else { return selected }
+            let next = shelves[s + 1].apps
+            return next[min(column, next.count - 1)].path
+        } else {
+            if i >= columns { return shelf[i - columns].path }
+            guard s > 0 else { return selected }
+            let previous = shelves[s - 1].apps
+            let lastRow = (previous.count - 1) / columns * columns
+            return previous[min(lastRow + column, previous.count - 1)].path
+        }
+    }
+}
+
 private enum PickerMode: String {
     case windows, apps
 }
@@ -310,7 +351,6 @@ private struct WindowPicker: View {
     let model: ViewerModel
     let target: HostTarget
     @AppStorage("pickerMode") private var mode = PickerMode.windows
-    @AppStorage("appsRunningOnly") private var runningOnly = false
     @State private var query = ""
     @State private var selection: UInt32?
     @State private var appSelection: String?
@@ -341,39 +381,37 @@ private struct WindowPicker: View {
         return groups
     }
 
-    /// Apps matching the search, by name.
-    private var apps: [HostApplication] {
+    /// Apps matching the search, in the order the user is likeliest to want
+    /// them: the ones opened from here lately (most recent first), then the
+    /// others running there, then the rest by name.
+    private var appShelves: [AppShelf] {
         let needle = query.trimmingCharacters(in: .whitespaces)
-        let all = connection.offeredApplications.filter { !runningOnly || $0.isRunning }
-        return needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
+        let all = connection.offeredApplications
+        let matching = needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
+        let recent = RecentApplications.applications(host: connection.welcome?.hostID ?? "", in: matching)
+        let recentPaths = Set(recent.map(\.path))
+        let rest = matching.filter { !recentPaths.contains($0.path) }
+        return [AppShelf(title: String(localized: "Recent"), apps: recent),
+                AppShelf(title: String(localized: "Running"), apps: rest.filter(\.isRunning)),
+                AppShelf(title: String(localized: "Not Running"), apps: rest.filter { !$0.isRunning })]
+            .filter { !$0.apps.isEmpty }
     }
 
     var body: some View {
         let groups = groups
         let flat = groups.flatMap(\.windows)
-        let apps = mode == .apps ? apps : []
+        let shelves = mode == .apps ? appShelves : []
+        let apps = shelves.flatMap(\.apps)
         VStack(spacing: 0) {
             banners
-            HStack(spacing: 12) {
-                Picker("Show", selection: $mode) {
-                    Text("Windows").tag(PickerMode.windows)
-                    Text("Apps").tag(PickerMode.apps)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .help("Windows open on that Mac, or apps to open there")
-                if mode == .apps {
-                    Picker("Apps", selection: $runningOnly) {
-                        Text("All").tag(false)
-                        Text("Running").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                    .help("All apps on that Mac, or only the ones running there")
-                }
+            Picker("Show", selection: $mode) {
+                Text("Windows").tag(PickerMode.windows)
+                Text("Apps").tag(PickerMode.apps)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Windows open on that Mac, or apps to open there")
             .padding(.top, 12)
             GeometryReader { proxy in
                 ScrollViewReader { scroller in
@@ -388,21 +426,16 @@ private struct WindowPicker: View {
                             }
                             .padding(20)
                         } else {
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.appTileWidth), spacing: 8)], spacing: 8) {
-                                ForEach(apps, id: \.path) { app in
-                                    AppTile(application: app, icon: connection.applications?.icons[app.path],
-                                            isSelected: appSelection == app.path, isLaunching: launching == app.path)
-                                        .id(app.path)
-                                        .onTapGesture(count: 2) { launch(app) }
-                                        .simultaneousGesture(TapGesture().onEnded { appSelection = app.path; gridFocused = true })
-                                        .contextMenu {
-                                            Button(app.isRunning ? "Show" : "Open") { launch(app) }
-                                            if app.isRunning {
-                                                Divider()
-                                                Button("Quit") { connection.quit(app, force: false) }
-                                                Button("Force Quit") { connection.quit(app, force: true) }
-                                            }
+                            // Not lazy: scrollTo can only reach tiles of shelves that have been laid out.
+                            VStack(alignment: .leading, spacing: 20) {
+                                ForEach(shelves) { shelf in
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(shelf.title).font(.headline)
+                                        LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.appTileWidth), spacing: 8)],
+                                                  alignment: .leading, spacing: 8) {
+                                            ForEach(shelf.apps, id: \.path) { app in appTile(app) }
                                         }
+                                    }
                                 }
                             }
                             .padding(20)
@@ -423,10 +456,10 @@ private struct WindowPicker: View {
             .focusEffectDisabled()
             .focused($gridFocused)
             .onKeyPress(.return) { openSelected(in: flat, apps: apps); return .handled }
-            .onKeyPress(.leftArrow) { move(-1, in: flat, apps: apps); return .handled }
-            .onKeyPress(.rightArrow) { move(1, in: flat, apps: apps); return .handled }
-            .onKeyPress(.upArrow) { move(-columns, in: flat, apps: apps); return .handled }
-            .onKeyPress(.downArrow) { move(columns, in: flat, apps: apps); return .handled }
+            .onKeyPress(.leftArrow) { move(-1, in: flat, shelves: shelves); return .handled }
+            .onKeyPress(.rightArrow) { move(1, in: flat, shelves: shelves); return .handled }
+            .onKeyPress(.upArrow) { move(-columns, in: flat, shelves: shelves); return .handled }
+            .onKeyPress(.downArrow) { move(columns, in: flat, shelves: shelves); return .handled }
             .overlay { mode == .windows ? AnyView(emptyState(isEmpty: flat.isEmpty)) : AnyView(appsEmptyState(isEmpty: apps.isEmpty)) }
             footer
         }
@@ -444,7 +477,6 @@ private struct WindowPicker: View {
         .task(id: mode) {
             if mode == .apps { await connection.loadApplications() }
         }
-        .onChange(of: runningOnly) { Task { await connection.loadApplications() } }
         .onChange(of: flat.map(\.windowID), initial: true) { _, ids in
             if !userSelected || selection.map({ !ids.contains($0) }) ?? true {
                 userSelected = false
@@ -513,9 +545,6 @@ private struct WindowPicker: View {
             ProgressView()
         } else if isEmpty, !query.isEmpty {
             ContentUnavailableView.search(text: query)
-        } else if isEmpty, runningOnly {
-            ContentUnavailableView("No Running Apps", systemImage: "app.dashed",
-                                   description: Text("No apps are running on “\(connection.hostName)”."))
         }
     }
 
@@ -533,11 +562,9 @@ private struct WindowPicker: View {
         .background(.bar)
     }
 
-    private func move(_ offset: Int, in flat: [WindowSummary], apps: [HostApplication]) {
+    private func move(_ offset: Int, in flat: [WindowSummary], shelves: [AppShelf]) {
         if mode == .apps {
-            guard !apps.isEmpty else { return }
-            let current = apps.firstIndex { $0.path == appSelection } ?? (offset > 0 ? -1 : apps.count)
-            appSelection = apps[min(max(current + offset, 0), apps.count - 1)].path
+            appSelection = AppShelf.move(from: appSelection, by: offset, columns: columns, in: shelves) ?? appSelection
             return
         }
         guard !flat.isEmpty else { return }
@@ -552,6 +579,22 @@ private struct WindowPicker: View {
             return
         }
         if let window = flat.first(where: { $0.windowID == selection }) ?? flat.first { open(window) }
+    }
+
+    private func appTile(_ app: HostApplication) -> some View {
+        AppTile(application: app, icon: connection.applications?.icons[app.path],
+                isSelected: appSelection == app.path, isLaunching: launching == app.path)
+            .id(app.path)
+            .onTapGesture(count: 2) { launch(app) }
+            .simultaneousGesture(TapGesture().onEnded { appSelection = app.path; gridFocused = true })
+            .contextMenu {
+                Button(app.isRunning ? "Show" : "Open") { launch(app) }
+                if app.isRunning {
+                    Divider()
+                    Button("Quit") { connection.quit(app, force: false) }
+                    Button("Force Quit") { connection.quit(app, force: true) }
+                }
+            }
     }
 
     private func open(_ window: WindowSummary) {

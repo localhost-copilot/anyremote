@@ -124,6 +124,12 @@ public final class WindowStreamSender: @unchecked Sendable {
         (capture as? WindowCaptureSession)?.windowFrameChanged(frame)
     }
 
+    /// Window streams: where macOS draws its sharing indicator (window points
+    /// from the top-left corner), painted over before encoding.
+    public func setConcealedRect(_ rect: CGRect?) {
+        (capture as? WindowCaptureSession)?.setConcealedRect(rect)
+    }
+
     /// The display's new size (points) and scale, for display streams.
     public func displayChanged(pointSize: CGSize, scale: CGFloat) {
         (capture as? DisplayCaptureSession)?.displayChanged(pointSize: pointSize, scale: scale)

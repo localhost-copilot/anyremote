@@ -26,13 +26,18 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     private var showsStatistics = ProcessInfo.processInfo.environment["ANYREMOTE_STATS"] == "1"
     private var noticeView: NSView?
     /// Host title bar buttons (relative to the host window's top-left).
-    var controls: WindowControls?
+    var controls: WindowControls? { didSet { layoutWindowButtons() } }
+    /// This window's own buttons, shown over the host's.
+    private let windowButtons = WindowButtonGroup()
+    /// In full screen the buttons only show while the pointer is at them.
+    private var revealsButtonsInFullScreen = false
     private var pressedControl: Control?
     private var adoptingRemoteSize = false
     private var inFullScreenTransition = false
 
     private enum Control { case close, minimize, zoom, fullScreen, letterbox }
     private var statisticsTimer: Timer?
+    let connectionStatus = ConnectionStatus()
     private var remotePointSize: CGSize
     private var remoteScale = 0
     private var lastResizeSent: CFTimeInterval = 0
@@ -87,6 +92,11 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         window.contentView = surface
         window.hideTitlebarChrome()
         window.makeFirstResponder(surface)
+        windowButtons.isHidden = true
+        surface.addSubview(windowButtons)
+        windowButtons.adoptButtons(of: window)
+        windowButtons.setAction(#selector(closeHostWindow(_:)), target: self, for: .closeButton)
+        windowButtons.onMouseExit = { [weak self] in self?.windowButtonsExited() }
 
         surface.frameLayer.onGeometryChange = { [weak self] width, height, scale in
             self?.remoteGeometryChanged(pixelWidth: width, pixelHeight: height, scale: scale)
@@ -256,6 +266,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     }
 
     func sendInput(_ event: InputEvent) {
+        if case let .mouseMove(point, _, _) = event, isFullScreen { revealButtonsInFullScreen(near: point) }
         connection.client.send(.input(streamID: streamID, event))
     }
 
@@ -312,6 +323,58 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     }
 
     // MARK: Title bar buttons
+
+    /// Puts this window's buttons on the host window's (host points → surface).
+    private func layoutWindowButtons() {
+        guard let window else { return }
+        // AppKit moves the buttons between title bars during full screen
+        // transitions; taking them then breaks the transition.
+        guard !inFullScreenTransition else {
+            windowButtons.isHidden = true
+            return
+        }
+        windowButtons.adoptButtons(of: window)
+        guard let controls, !isFullScreen || revealsButtonsInFullScreen else {
+            windowButtons.isHidden = true
+            return
+        }
+        let scale = currentScale
+        let origin = videoRect.origin
+        func center(_ rect: CGRect?) -> CGPoint? {
+            rect.map { CGPoint(x: origin.x + $0.midX / scale.width, y: origin.y + $0.midY / scale.height) }
+        }
+        windowButtons.isHidden = false
+        windowButtons.place(centers: [.closeButton: center(controls.close),
+                                      .miniaturizeButton: center(controls.minimize),
+                                      .zoomButton: center(controls.zoom ?? controls.fullScreen)].compactMapValues { $0 })
+    }
+
+    /// The area (host points) where the pointer reveals the buttons in full screen.
+    private var buttonRevealArea: CGRect? {
+        guard let controls else { return nil }
+        let rects = [controls.close, controls.minimize, controls.zoom, controls.fullScreen].compactMap { $0 }
+        guard let first = rects.first else { return nil }
+        return rects.dropFirst().reduce(first) { $0.union($1) }.insetBy(dx: -16, dy: -12)
+    }
+
+    /// Full screen hides the buttons like a full-screen app's title bar: any
+    /// view over the video there makes the window server composite every
+    /// frame (see docs/performance.md), so they only appear while needed.
+    private func revealButtonsInFullScreen(near point: CGPoint) {
+        let reveal = buttonRevealArea?.contains(point) ?? false
+        guard reveal != revealsButtonsInFullScreen else { return }
+        revealsButtonsInFullScreen = reveal
+        layoutWindowButtons()
+    }
+
+    private func windowButtonsExited() {
+        guard isFullScreen else { return }
+        revealButtonsInFullScreen(near: hostPoint(forScreenPoint: NSEvent.mouseLocation))
+    }
+
+    @objc private func closeHostWindow(_ sender: Any?) {
+        perform(.close, option: false)
+    }
 
     func beginLocalPress(at point: NSPoint) -> Bool {
         pressedControl = control(at: point)
@@ -412,6 +475,10 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         local \(Int(viewPixels.width))×\(Int(viewPixels.height))px @\(Int(backing))x · \
         \(native ? "1:1 native" : "scaled") · rtt \(rtt)
         """)
+        if let content = window?.contentView {
+            connectionStatus.update(viewer: summary, host: hostReport, roundTrip: connection.client.roundTripMilliseconds,
+                                    in: content)
+        }
         let text = lines.joined(separator: "\n")
         if showsStatistics { surface.frameLayer.overlayText = text }
         if ProcessInfo.processInfo.environment["ANYREMOTE_STATS_STDOUT"] == "1" {
@@ -428,6 +495,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         remotePointSize = size
         hasPresented = true
         updateVideoGravity()
+        layoutWindowButtons()
         guard let window, !window.inLiveResize, !awaitingResize, !isFullScreen, !inFullScreenTransition else { return }
         adoptRemoteSize(size)
     }
@@ -453,6 +521,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     func windowDidResize(_ notification: Notification) {
         guard let window else { return }
         updateVideoGravity()
+        layoutWindowButtons()
         // Zoom and other programmatic resizes: the host follows once.
         if !window.inLiveResize {
             if !adoptingRemoteSize, !inFullScreenTransition, !isFullScreen { requestHostResize(surface.bounds.size) }
@@ -470,23 +539,40 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     }
 
     // Full screen: the host window takes the screen's size, so it stays 1:1.
-    func windowWillEnterFullScreen(_ notification: Notification) { inFullScreenTransition = true }
-    func windowWillExitFullScreen(_ notification: Notification) { inFullScreenTransition = true }
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        inFullScreenTransition = true
+        layoutWindowButtons()
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        inFullScreenTransition = true
+        layoutWindowButtons()
+    }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
         inFullScreenTransition = false
+        revealsButtonsInFullScreen = false
         updateVideoGravity()
+        layoutWindowButtons()
         requestHostResize(surface.bounds.size)
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
         inFullScreenTransition = false
         updateVideoGravity()
+        layoutWindowButtons()
         requestHostResize(surface.bounds.size)
     }
 
-    func windowDidFailToEnterFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
-    func windowDidFailToExitFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        inFullScreenTransition = false
+        layoutWindowButtons()
+    }
+
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        inFullScreenTransition = false
+        layoutWindowButtons()
+    }
 
     func windowDidBecomeKey(_ notification: Notification) {
         connection.client.send(.focus(streamID: streamID))
@@ -505,6 +591,8 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
 
 /// A titled window whose title bar chrome is hidden and passes clicks
 /// through, so the host window's own title bar and toolbar receive them.
+/// Its close, minimize and zoom buttons live on in a `WindowButtonGroup`
+/// over the host window's buttons.
 final class MirrorWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }

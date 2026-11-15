@@ -165,7 +165,14 @@ final class RemoteSurfaceView: NSView {
     override func rightMouseUp(with event: NSEvent) { up(event, .right) }
     override func otherMouseDown(with event: NSEvent) { down(event, .other) }
     override func otherMouseUp(with event: NSEvent) { up(event, .other) }
-    override func mouseMoved(with event: NSEvent) { moved(event) }
+    override func mouseMoved(with event: NSEvent) {
+        // The tracking area reports moves over the window buttons too; those
+        // stay local (on the host they would hover its sharing indicator).
+        let point = convert(event.locationInWindow, from: nil)
+        if pressedButtons == 0,
+           subviews.contains(where: { $0 is WindowButtonGroup && !$0.isHidden && $0.frame.contains(point) }) { return }
+        moved(event)
+    }
     override func mouseDragged(with event: NSEvent) {
         if localPress || sink?.continueLocalDrag(at: screenPoint(event)) == true { return }
         moved(event)
