@@ -235,6 +235,9 @@ Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x7
 
 The Debug configuration builds **AnyRemote Dev** (`com.localhost-copilot.anyremote.dev`),
 so development builds never take over the installed app's privacy grants.
+Its icon is orange instead of blue, to tell the two apart in the Dock and in
+the privacy lists. `scripts/make-icon.sh` redraws both icons
+(`scripts/make-icon.swift`) into `App/Assets.xcassets`.
 
 Distribution zip, and optionally install it here and restart it:
 
