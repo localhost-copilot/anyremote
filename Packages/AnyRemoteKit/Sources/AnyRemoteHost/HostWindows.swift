@@ -122,6 +122,7 @@ struct WindowServerWindow: Sendable {
     var ownerName: String
     var title: String
     var alpha: Double
+    var isOnScreen = true
 
     /// Front-to-back on-screen windows.
     static func onScreen() -> [WindowServerWindow] {
@@ -147,6 +148,7 @@ struct WindowServerWindow: Sendable {
         return WindowServerWindow(id: id, pid: pid, layer: (info[kCGWindowLayer] as? Int) ?? 0, frame: bounds,
                                   ownerName: (info[kCGWindowOwnerName] as? String) ?? "",
                                   title: (info[kCGWindowName] as? String) ?? "",
-                                  alpha: (info[kCGWindowAlpha] as? Double) ?? 1)
+                                  alpha: (info[kCGWindowAlpha] as? Double) ?? 1,
+                                  isOnScreen: (info[kCGWindowIsOnscreen] as? Bool) ?? false)
     }
 }

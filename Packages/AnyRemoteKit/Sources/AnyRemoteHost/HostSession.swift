@@ -23,6 +23,8 @@ final class HostStream: @unchecked Sendable {
     var controls: WindowControls?
     /// The window frame when the current press began.
     var pressFrame: CGRect?
+    /// When the window left the screen (closed, hidden), while it stays off.
+    var offScreenSince: UInt64?
 
     init(description: StreamDescription, sender: WindowStreamSender, pid: pid_t, bitRate: Int) {
         self.description = description
@@ -509,7 +511,11 @@ final class HostSession: @unchecked Sendable {
         openNewWindows(onScreen)
 
         for main in mains {
-            guard let current = byID[main.windowID] else { continue }
+            guard let current = byID[main.windowID] else {
+                checkGone(main)
+                continue
+            }
+            main.offScreenSince = nil
             updateFrame(main, frame: current.frame, title: current.title)
             trackChildren(of: main, mainFrame: current.frame, onScreen: onScreen)
         }
@@ -517,6 +523,26 @@ final class HostSession: @unchecked Sendable {
             if let current = byID[stream.windowID] { updateFrame(stream, frame: current.frame, title: current.title) }
         }
     }
+
+    /// Many apps close a window by ordering it out and keep it for later, so
+    /// capture goes on (with its last image) and nothing reports the close.
+    /// A window that stays off screen is gone for the viewer: its mirror
+    /// closes, instead of showing a stale image whose clicks would land on
+    /// whatever is behind on the host. Minimizing is undone separately and
+    /// comes back within the grace period.
+    private func checkGone(_ stream: HostStream) {
+        let now = HostClock.nowNanos()
+        guard let since = stream.offScreenSince else {
+            stream.offScreenSince = now
+            return
+        }
+        guard now - since >= Self.offScreenGrace else { return }
+        if stream.axWindow?.isMinimized == true { return }
+        log.notice("window \(stream.windowID) left the screen; ending its stream")
+        endStream(stream.streamID, reason: "The window was closed.")
+    }
+
+    private static let offScreenGrace: UInt64 = 700_000_000
 
     private func updateFrame(_ stream: HostStream, frame: CGRect, title: String) {
         let title = title.isEmpty ? stream.description.title : title
@@ -677,6 +703,16 @@ final class HostSession: @unchecked Sendable {
 
     private func inject(_ event: InputEvent, streamID: UInt16) {
         guard let stream = streams[streamID], stream.description.role == .window else { return }
+        // The window is closing or closed: don't let the viewer's pointer and
+        // keys reach whatever is now at its place. A release still goes
+        // through, so no button stays held.
+        if stream.offScreenSince != nil {
+            switch event {
+            case .mouseUp: break
+            case .key(_, false, _, _), .flagsChanged: break
+            default: return
+            }
+        }
         var origin = stream.description.frame.origin
         switch event {
         case .mouseDown, .mouseUp, .key(_, true, _, _):
@@ -686,8 +722,13 @@ final class HostSession: @unchecked Sendable {
         }
         switch event {
         case .mouseDown:
+            let current = WindowServerWindow.describe(stream.windowID)
+            guard let current, current.isOnScreen else {
+                stream.offScreenSince = stream.offScreenSince ?? HostClock.nowNanos()
+                return
+            }
             focus(stream, force: false)
-            if let current = WindowServerWindow.describe(stream.windowID) { origin = current.frame.origin }
+            origin = current.frame.origin
             if !injector.isPressed { stream.pressFrame = stream.description.frame }
             setTrackerFast(true)
         case .key(_, true, _, _):
