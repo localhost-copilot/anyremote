@@ -1,0 +1,65 @@
+name: AnyRemote
+options:
+  bundleIdPrefix: com.localhost-copilot
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+packages:
+  AnyRemoteKit:
+    path: Packages/AnyRemoteKit
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    DEVELOPMENT_TEAM: 63WUCGRSN3
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+targets:
+  AnyRemote:
+    type: application
+    platform: macOS
+    sources:
+      - App
+    dependencies:
+      - package: AnyRemoteKit
+        product: AnyRemoteWire
+      - package: AnyRemoteKit
+        product: AnyRemoteMedia
+      - package: AnyRemoteKit
+        product: AnyRemoteWindowControl
+      - package: AnyRemoteKit
+        product: AnyRemoteDiagnostics
+      - package: AnyRemoteKit
+        product: AnyRemoteNetwork
+      - package: AnyRemoteKit
+        product: AnyRemoteHost
+      - package: AnyRemoteKit
+        product: AnyRemoteClient
+    entitlements:
+      path: App/AnyRemote.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: $(PRODUCT_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.utilities
+        NSPrincipalClass: NSApplication
+        LSMinimumSystemVersion: "15.0"
+        NSLocalNetworkUsageDescription: AnyRemote finds and connects to other Macs on your network.
+        NSBonjourServices:
+          - _anyremote._tcp
+        NSAppleEventsUsageDescription: AnyRemote opens Screen Sharing for full-desktop sessions.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.localhost-copilot.anyremote
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "1"
+      configs:
+        # A separate identity, so development builds don't take over the
+        # installed app's privacy permissions (TCC keys them by bundle ID).
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.localhost-copilot.anyremote.dev
+          PRODUCT_NAME: AnyRemote Dev
