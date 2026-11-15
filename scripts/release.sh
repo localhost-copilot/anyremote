@@ -21,8 +21,10 @@ IDENTITY=$(scripts/signing-identity.sh)
 sign() {
     codesign --force --options runtime --timestamp=none --keychain "$KEYCHAIN" --sign "$IDENTITY" "$@"
 }
-# Inside out: the Dock helper, then the app with its entitlements.
+# Inside out: the Dock helper and the microphone driver, then the app with
+# its entitlements. Core Audio loads the driver signed with this identity.
 sign "$APP/Contents/MacOS/AnyRemoteDockProxy"
+sign "$APP/Contents/Resources/AnyRemote Microphone.driver"
 sign --entitlements App/AnyRemote.entitlements "$APP"
 codesign --verify --strict --deep "$APP"
 echo "signed: $(codesign -dr - "$APP" 2>&1 | sed -n 's/^designated => //p')"

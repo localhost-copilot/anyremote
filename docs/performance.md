@@ -97,6 +97,29 @@ and the output device (3.7 ms).
   host sends nothing while the shared apps are silent; the viewer counts
   such gaps as pauses, not underruns, so they don't grow its buffer.
 
+## Microphone (M6, macOS 27, network loopback)
+
+`anyremote-bench --microphone`: the viewer client sends a test tone with a
+click at every whole second of the host clock; this process records the
+AnyRemote Microphone like any app (an I/O proc on the device). Host and
+viewer share the clock, so a click's arrival past its whole second is the
+delay from captured on the viewer to recorded on the host: encode, network,
+jitter buffer, the feed's I/O buffer (240 frames, 5 ms) and the
+microphone's. Steady to 0.1 ms within a run.
+
+| jitter buffer start | click delay |
+|---|---|
+| 30 ms (default, as for sound) | 43.3–43.6 ms |
+| 20 ms (`ANYREMOTE_AUDIO_BUFFER_MS=20`) | 34.4 ms |
+
+- The jitter buffer is most of it. It starts at 30 ms like the sound's and
+  shrinks toward 20 ms after 20 s without an underrun.
+- A real microphone adds its own input latency on the viewer, and AAC-ELD
+  has a few milliseconds of algorithmic delay either way.
+- The driver's two devices count samples from one anchor host time, so the
+  feed and the microphone never drift apart; the viewer's and host's clocks
+  do, and the jitter buffer absorbs that as it does for sound.
+
 ## Findings behind the settings
 
 - `RealTime` is off and `PrioritizeEncodingSpeedOverQuality` on. In

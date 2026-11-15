@@ -1,6 +1,7 @@
 import Foundation
 
-/// How a host's sound is encoded, sent when it starts (`ControlMessage.audioStream`).
+/// How a sound stream is encoded, sent when it starts (`ControlMessage.audioStream`,
+/// `.microphoneStream`).
 public struct AudioStreamFormat: Codable, Equatable, Sendable {
     /// "aac-eld": MPEG-4 AAC Enhanced Low Delay, one access unit per packet.
     public var codec: String
@@ -22,7 +23,7 @@ public struct AudioStreamFormat: Codable, Equatable, Sendable {
 
 /// One encoded audio packet as a datagram (plaintext, big-endian):
 /// ```
-/// u8  version (1)   u8 kind (DatagramKind.audio)
+/// u8  version (1)   u8 kind (DatagramKind.audio, or .microphone)
 /// u16 reserved (0)
 /// u32 sequence      packet index; each packet holds framesPerPacket frames
 /// u64 captureNanos  host clock: when its first sample was captured
@@ -32,13 +33,17 @@ public struct AudioStreamFormat: Codable, Equatable, Sendable {
 /// Repeating the previous packet lets the viewer fill a single lost packet
 /// without waiting; at about 160 bytes per packet that costs little.
 public struct AudioPacket: Equatable, Sendable {
+    /// `DatagramKind.audio` (the host's sound) or `.microphone` (the viewer's).
+    public var kind: UInt8
     public var sequence: UInt32
     public var captureNanos: UInt64
     public var accessUnit: Data
     /// The access unit of `sequence - 1`, if any.
     public var previousAccessUnit: Data?
 
-    public init(sequence: UInt32, captureNanos: UInt64, accessUnit: Data, previousAccessUnit: Data? = nil) {
+    public init(kind: UInt8 = DatagramKind.audio, sequence: UInt32, captureNanos: UInt64, accessUnit: Data,
+                previousAccessUnit: Data? = nil) {
+        self.kind = kind
         self.sequence = sequence
         self.captureNanos = captureNanos
         self.accessUnit = accessUnit
@@ -55,7 +60,7 @@ public struct AudioPacket: Equatable, Sendable {
         }
         var writer = ByteWriter(capacity: Self.headerSize + 4 + accessUnit.count + previous.count)
         writer.u8(Self.version)
-        writer.u8(DatagramKind.audio)
+        writer.u8(kind)
         writer.u16(0)
         writer.u32(sequence)
         writer.u64(captureNanos)
@@ -71,14 +76,14 @@ public struct AudioPacket: Equatable, Sendable {
         let version = try reader.u8()
         guard version == Self.version else { throw WireError.unsupportedVersion(version) }
         let kind = try reader.u8()
-        guard kind == DatagramKind.audio else { throw WireError.unknownKind(kind) }
+        guard kind == DatagramKind.audio || kind == DatagramKind.microphone else { throw WireError.unknownKind(kind) }
         _ = try reader.u16()
         let sequence = try reader.u32()
         let captureNanos = try reader.u64()
         let accessUnit = try reader.bytes(Int(try reader.u16()))
         guard !accessUnit.isEmpty else { throw WireError.invalidField("accessUnit") }
         let previous = try reader.bytes(Int(try reader.u16()))
-        return AudioPacket(sequence: sequence, captureNanos: captureNanos, accessUnit: accessUnit,
+        return AudioPacket(kind: kind, sequence: sequence, captureNanos: captureNanos, accessUnit: accessUnit,
                            previousAccessUnit: previous.isEmpty ? nil : previous)
     }
 }

@@ -18,6 +18,23 @@ import Testing
         #expect(try AudioPacket.parse(datagram).previousAccessUnit == nil)
     }
 
+    @Test func microphonePacketsKeepTheirKind() throws {
+        let packet = AudioPacket(kind: DatagramKind.microphone, sequence: 3, captureNanos: 42,
+                                 accessUnit: Data([5, 6]), previousAccessUnit: Data([4]))
+        let datagram = try packet.serialized()
+        #expect(datagram[1] == DatagramKind.microphone)
+        #expect(try AudioPacket.parse(datagram) == packet)
+    }
+
+    @Test func microphoneMessagesRoundTrip() throws {
+        let format = AudioStreamFormat(magicCookie: Data([1, 2, 3]))
+        for message in [ControlMessage.microphone(enabled: true), .microphoneWanted(true), .microphoneWanted(false),
+                        .microphoneStream(format), .microphoneStream(nil)] {
+            let data = try ControlCoding.encode(message)
+            #expect(try ControlCoding.decode(ControlMessage.self, from: data) == message)
+        }
+    }
+
     @Test func rejectsTruncatedAndForeignDatagrams() throws {
         let datagram = try AudioPacket(sequence: 1, captureNanos: 1, accessUnit: Data([1, 2])).serialized()
         #expect(throws: WireError.self) { try AudioPacket.parse(datagram.prefix(datagram.count - 3)) }

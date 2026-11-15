@@ -42,6 +42,16 @@ public final class RemoteHostClient: @unchecked Sendable {
         case windowStateRequest(streamID: UInt16, HostWindowStateRequest)
         case caret(streamID: UInt16, rect: CGRect?, font: CaretFont?)
         case pasteboard([PasteboardItem])
+        /// This Mac's microphone opened or closed for the host, or the host
+        /// wanted it and it isn't allowed here.
+        case microphone(MicrophoneState)
+    }
+
+    public enum MicrophoneState: Sendable, Equatable {
+        case off
+        case on
+        /// The host wanted the microphone, but this Mac doesn't allow AnyRemote to use it.
+        case denied
     }
 
     public let endpoint: NWEndpoint
@@ -75,6 +85,8 @@ public final class RemoteHostClient: @unchecked Sendable {
 
     // Queue-confined.
     private var wantsAudio = false
+    private var offersMicrophone = false
+    private var microphone: ViewerMicrophone?
 
     /// Delivered on the main queue.
     public var onEvent: (@MainActor @Sendable (Event) -> Void)?
@@ -169,6 +181,7 @@ public final class RemoteHostClient: @unchecked Sendable {
             queue.asyncAfter(deadline: .now() + .milliseconds(index * 40)) { [weak self] in self?.ping() }
         }
         if wantsAudio { control?.send(.audio(enabled: true)) }
+        if offersMicrophone { control?.send(.microphone(enabled: true)) }
         connectContinuation?.resume(returning: welcome)
         connectContinuation = nil
         emit(.connected(welcome))
@@ -233,6 +246,8 @@ public final class RemoteHostClient: @unchecked Sendable {
         receiverLock.unlock()
         current.values.forEach { $0.close() }
         replaceAudioReceiver(with: nil)
+        microphone?.stop()
+        microphone = nil
         emit(.disconnected(reason))
     }
 
@@ -281,6 +296,8 @@ public final class RemoteHostClient: @unchecked Sendable {
             emit(.pasteboard(items))
         case .audioStream(let format):
             startAudio(format)
+        case .microphoneWanted(let wanted):
+            microphoneWanted(wanted)
         default:
             log.debug("unexpected message from host")
         }
@@ -379,6 +396,36 @@ public final class RemoteHostClient: @unchecked Sendable {
         audioReceiver = receiver
         receiverLock.unlock()
         previous?.close()
+    }
+
+    // MARK: Microphone
+
+    /// Lets apps on the host record from this Mac's microphone (or stops it).
+    public func setMicrophone(enabled: Bool) {
+        queue.async { [self] in
+            offersMicrophone = enabled
+            if welcome != nil { control?.send(.microphone(enabled: enabled)) }
+            if !enabled {
+                microphone?.stop()
+                microphone = nil
+            }
+        }
+    }
+
+    private func microphoneWanted(_ wanted: Bool) {
+        guard offersMicrophone, !finished else { return }
+        if wanted, microphone == nil {
+            guard let socket, let hostAddress, let sealer else { return }
+            microphone = ViewerMicrophone(
+                queue: queue,
+                sendDatagram: { datagram in
+                    guard let sealed = try? sealer.seal(datagram) else { return }
+                    socket.send(sealed, to: hostAddress)
+                },
+                sendControl: { [weak self] message in self?.send(message) },
+                onState: { [weak self] state in self?.emit(.microphone(state)) })
+        }
+        microphone?.setWanted(wanted)
     }
 
     // MARK: Video

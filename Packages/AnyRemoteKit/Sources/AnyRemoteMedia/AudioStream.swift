@@ -5,9 +5,11 @@ import os
 
 private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category: "Audio")
 
-/// Host side of a sound stream: captured PCM → 48 kHz → AAC-ELD → packets.
+/// Sending side of a sound stream: captured PCM → 48 kHz → AAC-ELD →
+/// packets. The host sends its sound with it, the viewer its microphone.
 public final class AudioStreamSender: @unchecked Sendable {
     public let format: AudioStreamFormat
+    private let kind: UInt8
     private let queue = DispatchQueue(label: "anyremote.audio.encode", qos: .userInteractive)
     private let send: @Sendable (Data) -> Void
 
@@ -21,9 +23,11 @@ public final class AudioStreamSender: @unchecked Sendable {
     private var sequence: UInt32 = 0
     private var previous: Data?
 
-    public init(send: @escaping @Sendable (Data) -> Void) throws {
+    /// `kind`: the packets' `DatagramKind`.
+    public init(kind: UInt8 = DatagramKind.audio, send: @escaping @Sendable (Data) -> Void) throws {
         encoder = try AACELDEncoder()
         format = encoder.format
+        self.kind = kind
         self.send = send
         pending.reserveCapacity(8192)
     }
@@ -81,7 +85,7 @@ public final class AudioStreamSender: @unchecked Sendable {
             let captured = pendingStartNanos
             pendingStartNanos += UInt64(Double(AudioWireFormat.framesPerPacket) / AudioWireFormat.sampleRate * 1e9)
             guard let unit else { continue }
-            let packet = AudioPacket(sequence: sequence, captureNanos: captured, accessUnit: unit,
+            let packet = AudioPacket(kind: kind, sequence: sequence, captureNanos: captured, accessUnit: unit,
                                      previousAccessUnit: previous)
             sequence &+= 1
             previous = unit
@@ -117,8 +121,23 @@ final class SharedPlayout: @unchecked Sendable {
     }
 }
 
+/// Where a received sound stream plays.
+public enum AudioDestination: Sendable {
+    /// This Mac's speakers or headphones (the host's sound on the viewer).
+    case defaultOutput
+    /// The output device with this UID (the viewer's microphone on the
+    /// host, played into the AnyRemote Microphone's feed).
+    case device(uid: String)
+}
+
+protocol AudioSink: AnyObject, Sendable {
+    /// Seconds from rendering a frame to hearing it.
+    var outputLatency: Double { get }
+    func stop()
+}
+
 /// Plays the playout buffer on the default output device.
-final class AudioOutput: @unchecked Sendable {
+final class AudioOutput: AudioSink, @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var observer: NSObjectProtocol?
 
@@ -209,14 +228,14 @@ public final class AudioStreamReceiver: @unchecked Sendable {
 
     // Queue-confined.
     private let decoder: AACELDDecoder
-    private var output: AudioOutput?
+    private var output: AudioSink?
     private var lastSequence: UInt32?
     private var report = Report()
     private var transits: [Double] = []
     private var peak: Float = 0
     private var closed = false
 
-    public init(format: AudioStreamFormat) throws {
+    public init(format: AudioStreamFormat, destination: AudioDestination = .defaultOutput) throws {
         decoder = try AACELDDecoder(format: format)
         framesPerPacket = format.framesPerPacket
         var configuration = AudioPlayoutBuffer.Configuration()
@@ -229,7 +248,10 @@ public final class AudioStreamReceiver: @unchecked Sendable {
         queue.async { [self] in
             guard !closed else { return }
             do {
-                output = try AudioOutput(playout: playout)
+                output = switch destination {
+                case .defaultOutput: try AudioOutput(playout: playout)
+                case .device(let uid): try DeviceAudioOutput(uid: uid, playout: playout)
+                }
             } catch {
                 log.error("sound output failed: \(error.localizedDescription, privacy: .public)")
             }

@@ -34,6 +34,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>AnyRemote finds and connects to other Macs on your network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AnyRemote lets apps on the Mac you control hear you while they record.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

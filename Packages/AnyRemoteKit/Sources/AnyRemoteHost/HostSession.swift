@@ -143,6 +143,8 @@ final class HostSession: @unchecked Sendable {
     /// Layer-0 windows on screen at the last tracking pass; nil until the first stream.
     private var knownWindows: Set<CGWindowID>?
     private var lastInputTime: UInt64 = 0
+    /// When the viewer last clicked or typed. Queue-confined.
+    var lastInputNanos: UInt64 { lastInputTime }
     /// New windows that may still turn out to be standard windows, by first sighting.
     private var newWindowCandidates: [CGWindowID: UInt64] = [:]
     private var lastCandidateCheck: UInt64 = 0
@@ -265,6 +267,10 @@ final class HostSession: @unchecked Sendable {
             updateAudio()
         case let .textInput(settings):
             applyTextInput(settings)
+        case let .microphone(enabled):
+            service?.microphone.setOffered(enabled, by: self)
+        case let .microphoneStream(format):
+            service?.microphone.streamChanged(format, from: self)
         case .goodbye:
             end(reason: "Viewer disconnected.")
         default:
@@ -393,6 +399,10 @@ final class HostSession: @unchecked Sendable {
         let isNewPeer = peerAddress != address
         if plaintext == DatagramKind.keepaliveDatagram { peerAddress = address }
         datagramLock.unlock()
+        if plaintext.count >= 2, plaintext[plaintext.startIndex + 1] == DatagramKind.microphone {
+            service?.microphone.receive(plaintext, from: sessionID)
+            return
+        }
         if isNewPeer {
             log.notice("viewer datagrams from \(address.description, privacy: .public)")
             queue.async { [self] in streams.values.forEach { $0.sender.requestKeyframe() } }

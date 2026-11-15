@@ -27,6 +27,8 @@ final class HostSettingsModel {
     func refreshPermissions() {
         let current = HostService.permissions
         if current != permissions { permissions = current }
+        let driver = MicrophoneDriverInstaller.status
+        if driver != microphoneDriver { microphoneDriver = driver }
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -64,6 +66,32 @@ final class HostSettingsModel {
     private(set) var showsRemoteAppsInDock = DockProxies.isEnabled
     private(set) var sharesClipboard = ClipboardSharing.isEnabled
     private(set) var playsRemoteSound = SoundSharing.isEnabled
+    private(set) var sendsMicrophone = MicrophoneSharing.isEnabled
+    private(set) var microphoneDriver = MicrophoneDriverInstaller.status
+    private(set) var isChangingMicrophoneDriver = false
+
+    func setSendsMicrophone(_ value: Bool) {
+        sendsMicrophone = value
+        MicrophoneSharing.isEnabled = value
+    }
+
+    func installMicrophoneDriver() {
+        changeMicrophoneDriver { await MicrophoneDriverInstaller.install(service: $0) }
+    }
+
+    func removeMicrophoneDriver() {
+        changeMicrophoneDriver { await MicrophoneDriverInstaller.remove(service: $0) }
+    }
+
+    private func changeMicrophoneDriver(_ change: @escaping (HostService) async -> Bool) {
+        guard !isChangingMicrophoneDriver else { return }
+        isChangingMicrophoneDriver = true
+        Task {
+            _ = await change(service)
+            microphoneDriver = MicrophoneDriverInstaller.status
+            isChangingMicrophoneDriver = false
+        }
+    }
     private(set) var composesOnThisMac = TextInputPreferences.composesOnThisMac
 
     func setComposesOnThisMac(_ value: Bool) {
@@ -148,6 +176,7 @@ struct HostSettingsView: View {
                 Text("When another Mac controls this one, the apps it listens to go quiet here.")
                     .font(.callout).foregroundStyle(.secondary)
             }
+            microphoneSection
             Section("Typing") {
                 Picker("Input Method", selection: Binding(
                     get: { model.composesOnThisMac }, set: { model.setComposesOnThisMac($0) })) {
@@ -187,6 +216,33 @@ struct HostSettingsView: View {
     }
 
     // MARK: Sections
+
+    private var microphoneSection: some View {
+        Section("Microphone") {
+            Toggle("Use This Mac’s Microphone on Other Macs", isOn: Binding(
+                get: { model.sendsMicrophone }, set: { model.setSendsMicrophone($0) }))
+            Text("When an app on the Mac you control records — a call, a voice message, dictation — it hears this Mac’s microphone. The microphone is on only while that app records.")
+                .font(.callout).foregroundStyle(.secondary)
+            LabeledContent {
+                switch model.microphoneDriver {
+                case .notInstalled:
+                    Button("Install…") { model.installMicrophoneDriver() }
+                        .disabled(model.isChangingMicrophoneDriver)
+                case .outdated:
+                    Button("Update…") { model.installMicrophoneDriver() }
+                        .disabled(model.isChangingMicrophoneDriver)
+                case .installed:
+                    Button("Remove…") { model.removeMicrophoneDriver() }
+                        .disabled(model.isChangingMicrophoneDriver)
+                }
+            } label: {
+                Text("AnyRemote Microphone")
+                Text(model.microphoneDriver == .notInstalled ? "Not installed" : "Installed")
+            }
+            Text("So that apps on this Mac can hear the Mac that controls it, AnyRemote adds a microphone here and makes it the default input while that Mac is connected. Installing it needs an administrator password, and this Mac’s sound pauses for a moment.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+    }
 
     private var sharingSection: some View {
         Section {

@@ -80,6 +80,7 @@ final class HostConnection {
     @ObservationIgnored private var pasteboard: PasteboardBridge?
     @ObservationIgnored private var sharingObserver: NSObjectProtocol?
     @ObservationIgnored private var soundObserver: NSObjectProtocol?
+    @ObservationIgnored private var microphoneObserver: NSObjectProtocol?
     @ObservationIgnored private var audioReportTimer: Timer?
     /// Sound statistics of the last second, while the host's sound plays here.
     @ObservationIgnored private(set) var audioReport: AudioStreamReceiver.Report?
@@ -127,6 +128,7 @@ final class HostConnection {
         state = .connecting
         // Sent as soon as the host has let us in.
         client.setAudio(enabled: SoundSharing.isEnabled)
+        client.setMicrophone(enabled: MicrophoneSharing.isEnabled)
         do {
             welcome = try await client.connect(takeOver: takeOver)
             missingPermissions = welcome?.missingPermissions ?? []
@@ -141,6 +143,11 @@ final class HostConnection {
                 forName: SoundSharing.changed, object: nil, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.client.setAudio(enabled: SoundSharing.isEnabled) }
+            }
+            microphoneObserver = NotificationCenter.default.addObserver(
+                forName: MicrophoneSharing.changed, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.client.setMicrophone(enabled: MicrophoneSharing.isEnabled) }
             }
             sendTextInput()
             textInputObserver = NotificationCenter.default.addObserver(
@@ -190,6 +197,8 @@ final class HostConnection {
         sharingObserver = nil
         if let soundObserver { NotificationCenter.default.removeObserver(soundObserver) }
         soundObserver = nil
+        if let microphoneObserver { NotificationCenter.default.removeObserver(microphoneObserver) }
+        microphoneObserver = nil
         if let textInputObserver { NotificationCenter.default.removeObserver(textInputObserver) }
         textInputObserver = nil
         sentTextInput = nil
@@ -358,6 +367,8 @@ final class HostConnection {
             desktops[streamID]?.setCaret(rect, font: font)
         case let .pasteboard(items):
             pasteboard?.apply(items)
+        case .microphone(let state):
+            if state == .denied { MicrophoneSharing.explainDenial(hostName: hostName) }
         }
     }
 

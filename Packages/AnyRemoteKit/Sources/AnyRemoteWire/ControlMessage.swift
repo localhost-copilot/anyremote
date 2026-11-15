@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 11
+public let anyRemoteProtocolVersion: UInt16 = 12
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -327,8 +327,10 @@ public enum DatagramKind {
     /// Viewer → host: binds the viewer's UDP address to the session.
     public static let keepalive: UInt8 = 2
     public static let keepaliveDatagram = Data([1, keepalive])
-    /// Host → viewer: one `AudioPacket`.
+    /// Host → viewer: one `AudioPacket` of the host's sound.
     public static let audio: UInt8 = 3
+    /// Viewer → host: one `AudioPacket` of the viewer's microphone.
+    public static let microphone: UInt8 = 4
 }
 
 /// Messages on the sealed control channel. Video and sound travel separately as
@@ -410,6 +412,18 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case audio(enabled: Bool)
     /// Host → viewer: sound packets follow in this format; nil when they stop.
     case audioStream(AudioStreamFormat?)
+
+    // Microphone
+    /// Viewer → host: whether apps on the host may record from the viewer's
+    /// microphone. Sent once connected and on every change.
+    case microphone(enabled: Bool)
+    /// Host → viewer: whether an app on the host is recording from the
+    /// AnyRemote Microphone right now, so the viewer opens its microphone
+    /// only meanwhile.
+    case microphoneWanted(Bool)
+    /// Viewer → host: microphone packets follow in this format; nil when they
+    /// stop (the request ended, or this Mac's microphone is not allowed).
+    case microphoneStream(AudioStreamFormat?)
 }
 
 public enum ControlCoding {

@@ -99,6 +99,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         inputSourceShortcuts?.release()
         dockProxies?.quitAll()
         hostService.stop()
+        // The sessions end asynchronously, too late for a quitting app.
+        HostService.restoreDefaultInput()
     }
 
     var viewerModel: ViewerModel { viewer }

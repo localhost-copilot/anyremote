@@ -21,6 +21,8 @@ one click away too.
   everything; pairing works both ways.
 - **Sound** — with a window open you hear that app, and only that app; with
   the full desktop, the whole Mac.
+- **Microphone** — apps on the other Mac record from your microphone, as if
+  it were theirs: calls, voice messages, dictation.
 - **Shared clipboard**, English or Simplified Chinese interface.
 
 Latency and image quality target Apple's Screen Sharing high-performance
@@ -49,6 +51,10 @@ Requires macOS 15 or later, Apple silicon or Intel.
    another Mac listens, macOS asks to let AnyRemote record this Mac's
    audio (*System Audio Recording*); allow it for sound. Updates keep
    the grants, since every release is signed with the same certificate.
+4. For the microphone, install the *AnyRemote Microphone* on the Macs to be
+   controlled (Settings → Microphone → *Install…*, administrator password).
+   The controlling Mac asks for *Microphone* access the first time an app
+   on the other Mac records.
 
 ## Getting started
 
@@ -212,6 +218,20 @@ AnyRemote itself. *Mute This Mac While Its Sound Plays Elsewhere* (on the
 host) silences the shared apps there meanwhile. Sound is about 35–45 ms
 behind the host on loopback, close enough to the picture for lip sync.
 
+### Microphone
+
+Apps on the host can record from the viewer's microphone (Settings →
+Microphone → *Use This Mac's Microphone on Other Macs*, on by default). The
+host needs the *AnyRemote Microphone*, a small audio driver installed from
+its Settings (it needs an administrator password, and the Mac's sound
+pauses for a moment while Core Audio restarts). While a viewer is
+connected, the AnyRemote Microphone is the host's default input, so apps
+use it without being told; the previous input comes back afterwards. The
+viewer's microphone is open only while an app on the host actually records,
+so its recording indicator means what it says. With several viewers, the
+one that clicked or typed last is heard. The sound reaches the recording
+app about 45 ms after it was spoken (loopback).
+
 ### Clipboard, displays, language
 
 - The clipboard is shared both ways while connected (Settings → General →
@@ -259,6 +279,10 @@ behind the host on loopback, close enough to the picture for lip sync.
 - Full desktop: keys outside the window server's hot keys (Touch ID, the
   power key) still act on this Mac. Dynamic resolution rearranges the host's
   windows like any resolution change.
+- The microphone has no echo cancellation of its own: with speakers rather
+  than headphones, the host's sound playing here reaches the microphone,
+  and only the recording app's own echo cancellation (meeting apps have
+  one) removes it.
 - Sound is per app, not per window: two windows of one app (or two browser
   tabs) share their sound, and an open window plays its app's sound even
   from its other windows.
@@ -284,6 +308,7 @@ AX geometry / focus / menus  ←── TCP control (AES-GCM) ──  input, resi
 CGEvent injection                                          menu picks, reports
 cursor (CGSCurrentCursorSeed) ─────────────────────────→  local NSCursor
 Core Audio process taps → AAC-ELD ─────── UDP ────→  jitter buffer → AVAudioEngine
+AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ← microphone I/O proc
 ```
 
 - **Control** — TCP (Network.framework, no-delay, keepalive,
@@ -317,6 +342,23 @@ Core Audio process taps → AAC-ELD ─────── UDP ────→  j
   the previous packet, so a single loss is filled in. The viewer decodes
   into an adaptive jitter buffer (30 ms to start, 20–200 ms) played by an
   `AVAudioSourceNode`.
+- **Microphone** — the AnyRemote Microphone (`MicrophoneDriver/`, a Core
+  Audio server plug-in) publishes an input device and a hidden output device,
+  the feed, on one clock and one ring buffer: what the feed is given for
+  sample time T is what the microphone returns for T; frames the feed never
+  got read as silence. (A process tap exposed as an aggregate device would
+  need no driver, but coreaudiod then refuses every recording app without
+  *System Audio Recording*, which ordinary apps never ask for.) While a
+  viewer offers its microphone (`microphone(enabled:)`), the host makes it
+  the default input and watches `kAudioDevicePropertyDeviceIsRunningSomewhere`;
+  when an app starts recording it sends `microphoneWanted(true)` to the
+  offering viewer that sent input last. That viewer opens its default input
+  with an I/O proc (240 frames; AVAudioEngine taps deliver 100 ms at a time),
+  announces `microphoneStream(format)` and sends the same AAC-ELD packets as
+  sound, as datagram kind 4. The host decodes into a jitter buffer that its
+  own I/O proc plays into the feed. When the recording stops, the viewer
+  closes its microphone 1.5 s later (an app that starts again at once keeps
+  it).
 - **Clock sync** — ping/pong; the minimum-RTT sample gives the host↔viewer
   clock offset, so latency is measured across machines.
 - **Bitrate** — receiver reports every second; ×0.75 on loss, +10% after
@@ -375,7 +417,7 @@ The pairing code is 100 bits (20 Crockford base32 characters). Both sides
 derive a pre-shared key from it with HKDF-SHA256; each connection mixes in
 two fresh 32-byte nonces to derive four AES-256-GCM keys (control and
 datagram, each direction). Control frames use implicit counter nonces;
-datagrams (video and sound) carry an explicit counter (authenticated, 1024-entry replay
+datagrams (video, sound and microphone) carry an explicit counter (authenticated, 1024-entry replay
 window). A wrong code fails at the first sealed frame. Resetting the code in
 Settings disconnects every viewer. A code received through two-way pairing is
 stored like one typed in; a withdrawal only removes Macs added that way.
@@ -409,22 +451,25 @@ App/                        AppKit + SwiftUI app
   RemoteSurfaceView         Metal surface + mouse/scroll; KeyForwarder
   RemoteTextInput           this Mac's input method for the host: composer, composition panel, ⌃Space
   RemoteMenuBar             host menu bar as native NSMenus
-  HostSettingsView          sharing + viewers, permission checklist, pairing code, display, sound
+  HostSettingsView          sharing + viewers, permission checklist, pairing code, display, sound, microphone
   SoundSharing              the viewer's "Play Sound from Other Macs" setting
+  MicrophoneSharing         the viewer's microphone setting; notice when macOS denies it
+  MicrophoneDriverInstaller installs/updates/removes the AnyRemote Microphone (administrator prompt)
   DevelopmentLaunch         test/measurement launch modes
 DockProxy/                  stand-in app behind each remote app's Dock icon
+MicrophoneDriver/           AnyRemote Microphone: Core Audio server plug-in (C), bundled in the app
 Packages/AnyRemoteKit/
   AnyRemoteWire             messages, framing, pairing, AES-GCM channel, reassembly
   AnyRemoteNetwork          TCP control connection, UDP socket, Bonjour, storage
   AnyRemoteMedia            capture, encoder (whole/strips), decoder, Metal layer, stats, clocks;
-                            AAC-ELD codec, sound sender/receiver, jitter buffer
+                            AAC-ELD codec, sound sender/receiver, jitter buffer, microphone capture
   AnyRemoteWindowControl    AX window geometry/focus, menu bar reader, text caret
   AnyRemoteHost             host service + sessions, input, cursor, virtual display, process audio taps,
-                            keyboard layout while a viewer types
-  AnyRemoteClient           viewer-side connection, paired-host store
+                            keyboard layout while a viewer types, the viewers' microphone
+  AnyRemoteClient           viewer-side connection and microphone, paired-host store
   CGVirtualDisplayPrivate   private CGVirtualDisplay declarations
   AnyRemoteDiagnostics      synthetic workload window
-  anyremote-bench           headless benchmark (loopback, --network, --host, --connect, --tiles)
+  anyremote-bench           headless benchmark (loopback, --network, --host, --connect, --tiles, --microphone)
 docs/performance.md         measurements and encoder findings
 project.yml                 XcodeGen spec (AnyRemote.xcodeproj is generated, not committed)
 scripts/                    release, signing identity, icons
@@ -438,11 +483,19 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 66 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 69 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
+Packages/AnyRemoteKit/.build/release/anyremote-bench --microphone            # microphone delay (needs the driver)
 ```
+
+The driver is built by the `AnyRemoteMicrophone` target into the app's
+Resources. Settings offers to update an installed driver when its
+`CURRENT_PROJECT_VERSION` (in `project.yml`) differs, so bump that with
+every driver change. To try a driver build without Settings:
+`sudo ditto "<app>/Contents/Resources/AnyRemote Microphone.driver"
+"/Library/Audio/Plug-Ins/HAL/AnyRemote Microphone.driver" && sudo killall coreaudiod`.
 
 The Debug configuration builds **AnyRemote Dev**
 (`com.localhost-copilot.anyremote.dev`, orange icon), so development builds
@@ -506,6 +559,7 @@ against this Mac's own host service unless `--connect` is given.
   leaves `nihao` composing for a screenshot.
   `-DesktopFitsWindow NO` turns dynamic resolution off for one launch.
 - `--permission-guide` — Settings with the permission card
+- `--settings` — opens Settings
 - `--status-panel` — opens the menu bar panel and prints its frame for `screencapture -R`
 - `--discovery-test`, `--exit-after <seconds>`
 
@@ -528,6 +582,10 @@ Environment:
   capture device's I/O buffer (240 by default). The `audio …` statistics
   line shows packets, losses filled in or played as silence, underruns,
   pauses, buffer, transit (host capture → arrival), total and peak level.
+- `ANYREMOTE_MICROPHONE_TONE=1` on the viewer sends a 440 Hz tone with a
+  click at every whole second of its clock instead of the microphone (no
+  Microphone permission needed). On the host, `/usr/bin/log show --info`
+  shows the feed's `microphone audio …` statistics every 2 s.
 - `ANYREMOTE_TILES=1` on the host sends desktops as whole frames (2–8 sets the
   strip count).
 - `ANYREMOTE_DISPLAY_SYNC=1` restores vsync on the windowed layer.

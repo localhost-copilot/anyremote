@@ -167,6 +167,20 @@ private func sine(frames: Int, start: Int, frequency: Double, rate: Double = 48_
     }
 }
 
+@Suite struct MicrophoneSenderTests {
+    @Test func microphonePacketsCarryTheirKind() throws {
+        let kinds = Locked<[UInt8]>([])
+        let sender = try AudioStreamSender(kind: DatagramKind.microphone) { datagram in
+            if let packet = try? AudioPacket.parse(datagram) { kinds.mutate { $0.append(packet.kind) } }
+        }
+        let frames = sine(frames: 4800, start: 0, frequency: 440)
+        frames.withUnsafeBufferPointer { sender.submit($0, sampleRate: 48_000, hostNanos: 1) }
+        sender.flushForTesting()
+        #expect(!kinds.value.isEmpty)
+        #expect(kinds.value.allSatisfy { $0 == DatagramKind.microphone })
+    }
+}
+
 final class Locked<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Value

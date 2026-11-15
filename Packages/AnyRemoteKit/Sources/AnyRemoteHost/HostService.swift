@@ -46,7 +46,7 @@ public final class HostService: @unchecked Sendable {
 
     public let settingsStore: HostSettingsStore
     private let options: Options
-    private let queue = DispatchQueue(label: "anyremote.host", qos: .userInteractive)
+    private let queue: DispatchQueue
     private let socketQueue = DispatchQueue(label: "anyremote.host.udp", qos: .userInteractive)
     private let lock = NSLock()
 
@@ -60,6 +60,8 @@ public final class HostService: @unchecked Sendable {
     private var virtualDisplay: VirtualDisplay?
     private var ownWindowIDs: Set<CGWindowID> = []
     private var status = Status()
+    /// Confined to `queue`, which the sessions share.
+    let microphone: HostMicrophone
 
     /// Called on the main queue.
     public var onStatusChange: (@MainActor @Sendable (Status) -> Void)?
@@ -70,6 +72,9 @@ public final class HostService: @unchecked Sendable {
     public init(settings: HostSettingsStore = HostSettingsStore(), options: Options = Options()) {
         self.settingsStore = settings
         self.options = options
+        let queue = DispatchQueue(label: "anyremote.host", qos: .userInteractive)
+        self.queue = queue
+        microphone = HostMicrophone(queue: queue)
     }
 
     var settings: HostSettings { settingsStore.settings }
@@ -84,6 +89,8 @@ public final class HostService: @unchecked Sendable {
 
     public func start() throws {
         stop()
+        // After a crash, the AnyRemote Microphone may still be the default input.
+        queue.async { HostMicrophone.restoreDefault() }
         let settings = settingsStore.settings
         let socket = try DatagramSocket(bindingPort: 0, queue: socketQueue)
         socket.onReceive = { [weak self] batch in self?.route(batch) }
@@ -141,6 +148,21 @@ public final class HostService: @unchecked Sendable {
     }
 
     /// Applies changed settings to the sessions under way (the sound's muting).
+    /// Whether the AnyRemote Microphone driver is installed, so apps here
+    /// can record from a viewer's microphone.
+    public static var microphoneInstalled: Bool { HostMicrophone.isInstalled }
+
+    /// Gives back the default input the AnyRemote Microphone replaced, if it
+    /// still is the default. For quitting, when sessions can't end in time.
+    public static func restoreDefaultInput() {
+        HostMicrophone.restoreDefault()
+    }
+
+    /// The AnyRemote Microphone was installed or removed.
+    public func microphoneDriverChanged() {
+        queue.async { [self] in microphone.driverChanged() }
+    }
+
     public func settingsChanged() {
         queue.async { [self] in
             for session in sessions() { session.updateAudio() }
@@ -225,6 +247,7 @@ public final class HostService: @unchecked Sendable {
 
     func sessionEnded(_ session: HostSession) {
         forget(session)
+        microphone.sessionEnded(session)
     }
 
     private func forget(_ session: HostSession) {

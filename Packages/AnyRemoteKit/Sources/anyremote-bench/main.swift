@@ -9,6 +9,10 @@
 // Headless viewer against a running host:
 //   anyremote-bench --connect <host>:<port> --code <pairing code> [--app <name>] [--seconds N]
 //
+// The viewer's microphone into this Mac's AnyRemote Microphone, over
+// 127.0.0.1 (needs the driver; see MicrophoneBench.swift):
+//   anyremote-bench --microphone [--seconds N]
+//
 // Full frame vs strips (see TileBench.swift):
 //   anyremote-bench --tiles [--seconds N] [--strips 4]
 //
@@ -39,6 +43,7 @@ struct Options: Sendable {
     var code: String?
     var tiles = false
     var strips = 4
+    var microphone = false
 }
 
 func parseOptions() -> Options {
@@ -62,6 +67,7 @@ func parseOptions() -> Options {
         case "--connect": options.connect = arguments.next()
         case "--code": options.code = arguments.next()
         case "--tiles": options.tiles = true
+        case "--microphone": options.microphone = true
         case "--strips": options.strips = Int(arguments.next() ?? "") ?? options.strips
         default:
             print("unknown argument \(argument)")
@@ -251,7 +257,9 @@ Task.detached {
     // Let the synthetic window reach the window server before enumerating.
     if syntheticWindowID != nil { try? await Task.sleep(for: .milliseconds(500)) }
     do {
-        if options.tiles {
+        if options.microphone {
+            try await runMicrophoneBench(seconds: options.seconds)
+        } else if options.tiles {
             try await runTileBench(seconds: options.seconds, strips: options.strips, realTime: options.realTime)
         } else if options.network || options.hostOnly || options.connect != nil {
             try await runNetwork(options, syntheticWindowID: syntheticWindowID)

@@ -27,6 +27,11 @@ targets:
         embed: true
         copy:
           destination: executables
+      # Installed into /Library/Audio/Plug-Ins/HAL from Settings (MicrophoneDriverInstaller.swift).
+      - target: AnyRemoteMicrophone
+        embed: true
+        copy:
+          destination: resources
       - package: AnyRemoteKit
         product: AnyRemoteWire
       - package: AnyRemoteKit
@@ -45,6 +50,7 @@ targets:
       path: App/AnyRemote.entitlements
       properties:
         com.apple.security.app-sandbox: false
+        com.apple.security.device.audio-input: true
     info:
       path: App/Info.plist
       properties:
@@ -59,10 +65,11 @@ targets:
           - _anyremote._tcp
         NSAppleEventsUsageDescription: AnyRemote opens Screen Sharing for full-desktop sessions.
         NSAudioCaptureUsageDescription: AnyRemote sends the sound of the apps another Mac shows to that Mac.
+        NSMicrophoneUsageDescription: AnyRemote lets apps on the Mac you control hear you while they record.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.localhost-copilot.anyremote
-        MARKETING_VERSION: "0.14.0"
+        MARKETING_VERSION: "0.15.0"
         CURRENT_PROJECT_VERSION: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
@@ -82,3 +89,24 @@ targets:
       base:
         PRODUCT_NAME: AnyRemoteDockProxy
         SKIP_INSTALL: YES
+  AnyRemoteMicrophone:
+    # The AnyRemote Microphone, a Core Audio server plug-in (MicrophoneDriver/).
+    type: bundle
+    platform: macOS
+    sources:
+      - path: MicrophoneDriver
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_NAME: AnyRemote Microphone
+        EXECUTABLE_NAME: AnyRemoteMicrophone
+        PRODUCT_BUNDLE_IDENTIFIER: com.localhost-copilot.anyremote.microphone
+        WRAPPER_EXTENSION: driver
+        INFOPLIST_FILE: MicrophoneDriver/Info.plist
+        # The driver's own version: Settings offers to update an installed
+        # driver only when this changes, not with every app release.
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SKIP_INSTALL: YES
+        OTHER_LDFLAGS: -framework CoreAudio -framework CoreFoundation

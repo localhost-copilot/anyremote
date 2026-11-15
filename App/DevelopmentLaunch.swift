@@ -47,6 +47,10 @@ enum DevelopmentLaunch {
             PermissionGuide.shared.start(.accessibility)
             return true
         }
+        if arguments.contains("--settings") {
+            app.showSettings()
+            return true
+        }
         if arguments.contains("--status-panel") {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(1))
