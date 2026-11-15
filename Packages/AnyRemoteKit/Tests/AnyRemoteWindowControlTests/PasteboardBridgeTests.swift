@@ -26,6 +26,7 @@ import Testing
         local.poll()
         #expect(outbox.sent.count == 1)
         remote.apply(outbox.sent[0])
+        remote.waitUntilIdle()
         #expect(there.string(forType: .string) == "hello from here")
     }
 
@@ -40,6 +41,7 @@ import Testing
         // Two bridges on one pasteboard (a viewer mirroring this Mac) don't ping-pong either.
         let other = PasteboardBridge(pasteboard: board) { outbox.sent.append($0) }
         other.apply([PasteboardItem(types: [NSPasteboard.PasteboardType.string.rawValue: Data("y".utf8)])])
+        other.waitUntilIdle()
         bridge.poll()
         #expect(outbox.sent.count == 1)
         other.poll()
@@ -75,5 +77,23 @@ import Testing
         let types = try #require(outbox.sent.first?.first?.types)
         #expect(types[NSPasteboard.PasteboardType.png.rawValue] != nil)
         #expect(types[NSPasteboard.PasteboardType.tiff.rawValue] == nil)
+    }
+
+    /// AppKit uses the NSPasteboard object on the main thread while a bridge
+    /// reads on its queue; sharing that object between threads crashed.
+    @Test func readsWhileTheMainThreadUsesThePasteboard() async throws {
+        let board = pasteboard()
+        let reference = try #require(ClipboardReference(name: board.name))
+        let reader = Task.detached {
+            var reads = 0
+            for _ in 0..<2000 where PasteboardBridge.read(reference) != nil { reads += 1 }
+            return reads
+        }
+        for index in 0..<2000 {
+            board.clearContents()
+            board.setString("copy \(index)", forType: .string)
+            _ = board.pasteboardItems?.first?.string(forType: .string)
+        }
+        #expect(await reader.value >= 0)
     }
 }
