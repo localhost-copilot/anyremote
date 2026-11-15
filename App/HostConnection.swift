@@ -125,13 +125,13 @@ final class HostConnection {
     /// Why input won't reach the host, if it can't: shown on mirrors and in the picker.
     var inputBlockedReason: String? {
         if missingPermissions.contains("accessibility") || missingPermissions.contains("post-events") {
-            return "\(hostName) 没有给 AnyRemote「辅助功能」权限，点击和键盘不会生效。"
+            return String(localized: "\(hostName) hasn’t given AnyRemote Accessibility permission, so clicks and typing won’t work.")
         }
         return nil
     }
 
     var captureBlockedReason: String? {
-        missingPermissions.contains("screen-recording") ? "\(hostName) 没有给 AnyRemote「屏幕录制」权限，看不到窗口内容。" : nil
+        missingPermissions.contains("screen-recording") ? String(localized: "\(hostName) hasn’t given AnyRemote Screen Recording permission, so window contents can’t be shown.") : nil
     }
 
     var hostAddressForURL: String? {
@@ -158,7 +158,7 @@ final class HostConnection {
             openWindowIDs.removeAll()
             if hadMirrors, state != .disconnected {
                 let alert = NSAlert()
-                alert.messageText = "与「\(hostName)」的连接已断开"
+                alert.messageText = String(localized: "Disconnected from “\(hostName)”")
                 alert.informativeText = FriendlyText.message(reason ?? "Disconnected.")
                 DispatchQueue.main.async { alert.runModal() }
             }
@@ -192,6 +192,10 @@ final class HostConnection {
             mirrors[streamID]?.menuBarArrived(applicationName: applicationName, menus: menus)
         case let .hostReport(streamID, report):
             mirrors[streamID]?.hostReport = report
+        case let .windowControls(streamID, controls):
+            mirrors[streamID]?.controls = controls
+        case let .windowStateRequest(streamID, request):
+            mirrors[streamID]?.applyHostStateRequest(request)
         }
     }
 

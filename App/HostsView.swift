@@ -45,29 +45,28 @@ private struct Sidebar: View {
 
     var body: some View {
         List(selection: $model.selection) {
-            Section("我的 Mac") {
+            Section("My Macs") {
                 if model.myMacs.isEmpty {
-                    Text("还没有配对的 Mac").foregroundStyle(.secondary).font(.callout)
+                    Text("No paired Macs yet").foregroundStyle(.secondary).font(.callout)
                 }
                 ForEach(model.myMacs) { target in
                     HostRow(target: target, model: model).tag(target.id)
                         .contextMenu {
                             if model.connection(for: target)?.state == .connected {
-                                Button("断开连接") { model.disconnect(target) }
+                                Button("Disconnect") { model.disconnect(target) }
                             }
                             if target.kind != .thisMac {
-                                Button("重命名…") { renaming = target }
+                                Button("Rename…") { renaming = target }
                                 Divider()
-                                Button("忘记这台 Mac", role: .destructive) { model.forget(target) }
+                                Button("Forget This Mac", role: .destructive) { model.forget(target) }
                             }
                         }
                 }
             }
-            Section("附近") {
+            Section("Nearby") {
                 if model.newNearby.isEmpty {
-                    Text("没有发现其他 Mac").foregroundStyle(.secondary).font(.callout)
-                        .help("其他 Mac 需要运行 AnyRemote 并在同一网络。没出现的话，检查 系统设置 › 隐私与安全性 › 本地网络 "
-                              + "里是否允许了 AnyRemote，或者用下方「按地址添加」。")
+                    Text("No other Macs found").foregroundStyle(.secondary).font(.callout)
+                        .help("Other Macs need to run AnyRemote on the same network. If one doesn’t appear, check that AnyRemote is allowed in System Settings › Privacy & Security › Local Network, or use “Add by Address” below.")
                 }
                 ForEach(model.newNearby) { target in
                     HostRow(target: target, model: model).tag(target.id)
@@ -76,7 +75,7 @@ private struct Sidebar: View {
         }
         .safeAreaInset(edge: .bottom) {
             Button { addingHost = true } label: {
-                Label("按地址添加…", systemImage: "plus")
+                Label("Add by Address…", systemImage: "plus")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.borderless)
@@ -115,21 +114,22 @@ private struct HostRow: View {
         switch connection?.state {
         case .connected?:
             let count = connection?.listing?.windows.count
-            return (count.map { "已连接 · \($0) 个窗口" } ?? "已连接", .green)
+            let text = count.map { $0 == 1 ? String(localized: "Connected · 1 window") : String(localized: "Connected · \($0) windows") }
+            return (text ?? String(localized: "Connected"), .green)
         case .connecting?:
-            return ("正在连接…", .orange)
+            return (String(localized: "Connecting…"), .orange)
         case .failed(let message)?:
-            if FriendlyText.isBusy(message) { return ("正被他人控制", .orange) }
-            if FriendlyText.isPairingFailure(message) { return ("配对码错误", .red) }
-            return ("连接失败", .red)
+            if FriendlyText.isBusy(message) { return (String(localized: "In use by someone else"), .orange) }
+            if FriendlyText.isPairingFailure(message) { return (String(localized: "Wrong pairing code"), .red) }
+            return (String(localized: "Couldn’t connect"), .red)
         case .disconnected?, nil:
             break
         }
-        if model.code(for: target) == nil { return ("需要配对", .gray) }
+        if model.code(for: target) == nil { return (String(localized: "Needs pairing"), .gray) }
         switch target.kind {
-        case .offline: return ("不在线", .gray.opacity(0.5))
-        case .saved: return (model.pairedHost(for: target)?.address ?? "按地址连接", .gray)
-        case .discovered, .thisMac: return ("在线", .blue)
+        case .offline: return (String(localized: "Offline"), .gray.opacity(0.5))
+        case .saved: return (model.pairedHost(for: target)?.address ?? String(localized: "Connect by address"), .gray)
+        case .discovered, .thisMac: return (String(localized: "Online"), .blue)
         }
     }
 }
@@ -140,11 +140,11 @@ private struct EmptyHostsView: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label("连接另一台 Mac", systemImage: "macmini")
+            Label("Connect Another Mac", systemImage: "macmini")
         } description: {
-            Text("在另一台 Mac 上安装并打开 AnyRemote，它会出现在左侧「附近」里。\n不在同一网络时，可以按 IP 地址添加。")
+            Text("Install and open AnyRemote on the other Mac and it appears under “Nearby” on the left.\nIf it isn’t on the same network, add it by IP address.")
         } actions: {
-            Button("按地址添加…") { addingHost = true }
+            Button("Add by Address…") { addingHost = true }
         }
     }
 }
@@ -173,29 +173,29 @@ struct HostDetailView: View {
         } else if working || connection?.state == .connecting {
             VStack(spacing: 12) {
                 ProgressView()
-                Text("正在连接「\(target.name)」…").foregroundStyle(.secondary)
+                Text("Connecting to “\(target.name)”…").foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.code(for: target) == nil || isFailure(FriendlyText.isPairingFailure) {
             PairingPane(target: target, model: model, error: failureMessage.map(FriendlyText.message))
         } else if isFailure(FriendlyText.isBusy) {
             StatusPane(symbol: "person.2.fill", title: FriendlyText.message(failureMessage ?? ""),
-                       detail: "同一时间只能有一台 Mac 控制它。接管后，对方会被断开。") {
-                Button("接管控制") { Task { await connect(takeOver: true) } }.keyboardShortcut(.defaultAction)
+                       detail: String(localized: "Only one Mac can control it at a time. Taking over disconnects the other one.")) {
+                Button("Take Over") { Task { await connect(takeOver: true) } }.keyboardShortcut(.defaultAction)
             }
         } else if let failureMessage {
-            StatusPane(symbol: "exclamationmark.triangle", title: "连不上「\(target.name)」",
+            StatusPane(symbol: "exclamationmark.triangle", title: String(localized: "Can’t connect to “\(target.name)”"),
                        detail: FriendlyText.message(failureMessage)) {
-                Button("重试") { Task { await connect() } }.keyboardShortcut(.defaultAction)
+                Button("Try Again") { Task { await connect() } }.keyboardShortcut(.defaultAction)
             }
         } else if target.kind == .offline {
-            StatusPane(symbol: "moon.zzz", title: "「\(target.name)」现在不在线",
-                       detail: "它开机并运行 AnyRemote 后会自动出现。") {
-                Button("仍然尝试连接") { Task { await connect() } }
+            StatusPane(symbol: "moon.zzz", title: String(localized: "“\(target.name)” is offline"),
+                       detail: String(localized: "It appears automatically once it’s on and running AnyRemote.")) {
+                Button("Try Anyway") { Task { await connect() } }
             }
         } else {
-            StatusPane(symbol: "macmini", title: target.name, detail: "已断开连接。") {
-                Button("连接") { Task { await connect() } }.keyboardShortcut(.defaultAction)
+            StatusPane(symbol: "macmini", title: target.name, detail: String(localized: "Disconnected.")) {
+                Button("Connect") { Task { await connect() } }.keyboardShortcut(.defaultAction)
             }
         }
     }
@@ -224,7 +224,7 @@ private struct StatusPane<Actions: View>: View {
         ContentUnavailableView {
             Label(title, systemImage: symbol)
         } description: {
-            Text(detail)
+            Text(verbatim: detail)
         } actions: {
             actions
         }
@@ -242,10 +242,10 @@ private struct PairingPane: View {
     var body: some View {
         VStack(spacing: 18) {
             Image(systemName: "lock.shield").font(.system(size: 40)).foregroundStyle(.tint)
-            Text("与「\(target.name)」配对").font(.title2.weight(.semibold))
+            Text("Pair with “\(target.name)”").font(.title2.weight(.semibold))
             VStack(alignment: .leading, spacing: 6) {
-                Label("在「\(target.name)」上点菜单栏的 AnyRemote 图标，选「显示配对码」。", systemImage: "1.circle")
-                Label("把那 20 位配对码输入到下面。每台 Mac 只需配对一次。", systemImage: "2.circle")
+                Label("On “\(target.name)”, click the AnyRemote icon in the menu bar and choose “Show Pairing Code”.", systemImage: "1.circle")
+                Label("Enter the 20-character code below. Each Mac only needs to be paired once.", systemImage: "2.circle")
             }
             .foregroundStyle(.secondary)
             TextField("XXXXX-XXXXX-XXXXX-XXXXX", text: $codeText)
@@ -261,7 +261,7 @@ private struct PairingPane: View {
             if working {
                 ProgressView().controlSize(.small)
             } else {
-                Button("配对并连接", action: pair)
+                Button("Pair and Connect", action: pair)
                     .keyboardShortcut(.defaultAction)
                     .controlSize(.large)
                     .disabled(PairingCode(codeText) == nil)
@@ -298,6 +298,8 @@ private struct WindowPicker: View {
     let target: HostTarget
     @State private var query = ""
     @State private var selection: UInt32?
+    /// Until the user picks a window, the selection follows the first match.
+    @State private var userSelected = false
     @State private var columns = 3
     @FocusState private var searchFocused: Bool
     @FocusState private var gridFocused: Bool
@@ -333,7 +335,7 @@ private struct WindowPicker: View {
                         LazyVStack(alignment: .leading, spacing: 20, pinnedViews: []) {
                             ForEach(groups) { group in
                                 AppSection(group: group, connection: connection, selection: selection,
-                                           select: { selection = $0; gridFocused = true },
+                                           select: { selection = $0; userSelected = true; gridFocused = true },
                                            open: open)
                             }
                         }
@@ -357,12 +359,15 @@ private struct WindowPicker: View {
             .overlay { emptyState(isEmpty: flat.isEmpty) }
             footer
         }
-        .searchable(text: $query, placement: .toolbar, prompt: "搜索窗口或 App")
+        .searchable(text: $query, placement: .toolbar, prompt: "Search windows or apps")
         .searchFocused($searchFocused)
         .onSubmit(of: .search) { openSelected(in: flat) }
-        .onChange(of: query) { selection = flat.first?.windowID }
-        .onChange(of: flat.map(\.windowID)) { _, ids in
-            if selection.map({ !ids.contains($0) }) ?? true { selection = ids.first }
+        .onChange(of: query) { userSelected = false; selection = flat.first?.windowID }
+        .onChange(of: flat.map(\.windowID), initial: true) { _, ids in
+            if !userSelected || selection.map({ !ids.contains($0) }) ?? true {
+                userSelected = false
+                selection = ids.first
+            }
         }
         .toolbar { toolbar }
         .onAppear { searchFocused = true }
@@ -383,19 +388,19 @@ private struct WindowPicker: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
-            Button { Task { await connection.refresh() } } label: { Label("刷新", systemImage: "arrow.clockwise") }
-                .help("刷新窗口列表")
-            Button { FullDesktop.open(connection) } label: { Label("完整桌面", systemImage: "display") }
-                .help("用屏幕共享打开整个桌面（装了 iScreenSharing 时用它）")
-            Button { model.disconnect(target) } label: { Label("断开", systemImage: "xmark.circle") }
-                .help("断开与这台 Mac 的连接，并关闭它的所有窗口")
+            Button { Task { await connection.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                .help("Refresh the window list")
+            Button { FullDesktop.open(connection) } label: { Label("Full Desktop", systemImage: "display") }
+                .help("Open the whole desktop in Screen Sharing (or iScreenSharing, if installed)")
+            Button { model.disconnect(target) } label: { Label("Disconnect", systemImage: "xmark.circle") }
+                .help("Disconnect from this Mac and close all of its windows")
         }
     }
 
     @ViewBuilder
     private var banners: some View {
         if let reason = connection.captureBlockedReason ?? connection.inputBlockedReason {
-            Label(reason + " 在那台 Mac 上打开 AnyRemote › 设置 授权后，这里会自动恢复。",
+            Label(reason + " " + String(localized: "This recovers on its own once it’s granted in AnyRemote › Settings on that Mac."),
                   systemImage: "exclamationmark.triangle.fill")
                 .font(.callout)
                 .padding(.horizontal, 14).padding(.vertical, 8)
@@ -410,8 +415,8 @@ private struct WindowPicker: View {
             if !query.isEmpty {
                 ContentUnavailableView.search(text: query)
             } else {
-                ContentUnavailableView("没有可共享的窗口", systemImage: "macwindow",
-                                       description: Text("「\(connection.hostName)」上没有打开的窗口。"))
+                ContentUnavailableView("No Windows to Share", systemImage: "macwindow",
+                                       description: Text("“\(connection.hostName)” has no open windows."))
             }
         } else if connection.listing == nil {
             ProgressView()
@@ -420,9 +425,9 @@ private struct WindowPicker: View {
 
     private var footer: some View {
         HStack(spacing: 16) {
-            Text("双击或按 ↩ 打开 · 方向键选择 · 按住 ⌥ 打开时保留此窗口")
+            Text("Double-click or press ↩ to open · Arrow keys to select · Hold ⌥ to keep this window open")
             Spacer()
-            Text("随时按 ⌃⌥⌘0 回到这里")
+            Text("Press ⌃⌥⌘0 anytime to come back here")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -435,6 +440,7 @@ private struct WindowPicker: View {
         guard !flat.isEmpty else { return }
         let current = flat.firstIndex { $0.windowID == selection } ?? (offset > 0 ? -1 : flat.count)
         selection = flat[min(max(current + offset, 0), flat.count - 1)].windowID
+        userSelected = true
     }
 
     private func openSelected(in flat: [WindowSummary]) {
@@ -473,7 +479,7 @@ private struct AppSection: View {
                         .id(window.windowID)
                         .onTapGesture(count: 2) { open(window) }
                         .simultaneousGesture(TapGesture().onEnded { select(window.windowID) })
-                        .contextMenu { Button(connection.openWindowIDs.contains(window.windowID) ? "切换到这个窗口" : "打开") { open(window) } }
+                        .contextMenu { Button(connection.openWindowIDs.contains(window.windowID) ? LocalizedStringKey("Switch to This Window") : LocalizedStringKey("Open")) { open(window) } }
                 }
             }
         }
@@ -497,7 +503,7 @@ private struct WindowCard: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 if isOpen {
-                    Text("已打开")
+                    Text("Opened")
                         .font(.caption2.weight(.semibold))
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(.tint, in: Capsule())
@@ -512,7 +518,7 @@ private struct WindowCard: View {
                 Text(window.title.isEmpty ? window.applicationName : window.title)
                     .lineLimit(1)
                     .fontWeight(isSelected ? .medium : .regular)
-                Text("\(Int(window.frame.width)) × \(Int(window.frame.height))")
+                Text(verbatim: "\(Int(window.frame.width)) × \(Int(window.frame.height))")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 2)
@@ -534,22 +540,22 @@ private struct AddHostSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("按地址添加 Mac").font(.title3.weight(.semibold))
-            Text("不在同一局域网、或者「附近」里找不到时使用。配对码在那台 Mac 的菜单栏 AnyRemote 图标 › 显示配对码。")
+            Text("Add a Mac by Address").font(.title3.weight(.semibold))
+            Text("Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Find the pairing code on that Mac under the AnyRemote menu bar icon › Show Pairing Code.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Form {
-                TextField("地址", text: $address, prompt: Text("192.168.1.20 或 mac-mini.local"))
-                TextField("配对码", text: $code, prompt: Text("XXXXX-XXXXX-XXXXX-XXXXX"))
+                TextField("Address", text: $address, prompt: Text("192.168.1.20 or mac-mini.local"))
+                TextField("Pairing Code", text: $code, prompt: Text("XXXXX-XXXXX-XXXXX-XXXXX"))
                     .font(.system(.body, design: .monospaced))
-                TextField("名称", text: $name, prompt: Text("可选，默认用那台 Mac 的名字"))
+                TextField("Name", text: $name, prompt: Text("Optional; defaults to the Mac’s name"))
             }
             if let error = model.lastError {
                 Text(FriendlyText.message(error)).foregroundStyle(.red).font(.callout)
             }
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("连接") {
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Connect") {
                     guard let pairing = PairingCode(code) else { return }
                     Task {
                         working = true
@@ -576,12 +582,12 @@ private struct RenameSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("重命名「\(target.name)」").font(.headline)
-            TextField("名称", text: $name).frame(width: 300).onSubmit(save)
+            Text("Rename “\(target.name)”").font(.headline)
+            TextField("Name", text: $name).frame(width: 300).onSubmit(save)
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("好", action: save).keyboardShortcut(.defaultAction).disabled(name.isEmpty)
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("OK", action: save).keyboardShortcut(.defaultAction).disabled(name.isEmpty)
             }
         }
         .padding(20)

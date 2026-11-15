@@ -32,6 +32,8 @@ public final class RemoteHostClient: @unchecked Sendable {
         case cursor(CursorImage)
         case menuBar(streamID: UInt16, applicationName: String, menus: [MenuNode])
         case hostReport(streamID: UInt16, HostStreamReport)
+        case windowControls(streamID: UInt16, WindowControls)
+        case windowStateRequest(streamID: UInt16, HostWindowStateRequest)
     }
 
     public let endpoint: NWEndpoint
@@ -245,6 +247,10 @@ public final class RemoteHostClient: @unchecked Sendable {
             emit(.menuBar(streamID: streamID, applicationName: applicationName, menus: menus))
         case let .hostReport(streamID, report):
             emit(.hostReport(streamID: streamID, report))
+        case let .windowControls(streamID, controls):
+            emit(.windowControls(streamID: streamID, controls))
+        case let .windowStateRequest(streamID, request):
+            emit(.windowStateRequest(streamID: streamID, request))
         default:
             log.debug("unexpected message from host")
         }

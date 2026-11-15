@@ -10,7 +10,7 @@ final class RemoteMenuBar: NSObject, NSMenuDelegate {
     private var installedItems: [NSMenuItem] = []
     private var hiddenItems: [NSMenuItem] = []
     private weak var mirror: MirrorWindowController?
-    static let ownMenuTitle = "远程"
+    static let ownMenuTitle = String(localized: "Remote")
 
     /// Replaces the remote menus in `mainMenu` (inserted after the app menu).
     func install(for mirror: MirrorWindowController?, in mainMenu: NSMenu) {

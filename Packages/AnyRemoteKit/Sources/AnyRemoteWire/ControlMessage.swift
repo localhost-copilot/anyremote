@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 1
+public let anyRemoteProtocolVersion: UInt16 = 2
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -143,6 +143,37 @@ public struct CursorImage: Codable, Equatable, Sendable {
     }
 }
 
+/// Where a host window's title bar buttons are, in points relative to the
+/// window's top-left corner (the captured frame's origin).
+public struct WindowControls: Codable, Equatable, Sendable {
+    public var close: CGRect?
+    public var minimize: CGRect?
+    public var zoom: CGRect?
+    public var fullScreen: CGRect?
+
+    public init(close: CGRect? = nil, minimize: CGRect? = nil, zoom: CGRect? = nil, fullScreen: CGRect? = nil) {
+        self.close = close
+        self.minimize = minimize
+        self.zoom = zoom
+        self.fullScreen = fullScreen
+    }
+}
+
+/// Window commands the viewer asks the host to perform.
+public enum WindowAction: String, Codable, Sendable {
+    /// Presses the window's close button (the app may ask to save first).
+    case close
+}
+
+/// Window state changes the host app attempted (menu item, shortcut, title
+/// bar double-click). The host undoes them on its side, because a minimized
+/// or full-screen host window can't be streamed into a local window, and the
+/// viewer applies them to the local window instead.
+public enum HostWindowStateRequest: String, Codable, Sendable {
+    case minimize
+    case enterFullScreen
+}
+
 /// A node of the host application's menu bar, read through Accessibility.
 public struct MenuNode: Codable, Equatable, Sendable {
     public var title: String
@@ -231,6 +262,9 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case focus(streamID: UInt16)
     case input(streamID: UInt16, InputEvent)
     case cursor(CursorImage)
+    case windowControls(streamID: UInt16, WindowControls)
+    case windowAction(streamID: UInt16, action: WindowAction)
+    case windowStateRequest(streamID: UInt16, HostWindowStateRequest)
 
     // Menu bar
     case requestMenuBar(streamID: UInt16)

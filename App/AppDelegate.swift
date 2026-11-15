@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static func main() {
         setvbuf(stdout, nil, _IOLBF, 0)
+        AppLanguage.applyAtLaunch()
         let application = NSApplication.shared
         let delegate = AppDelegate()
         application.delegate = delegate
@@ -126,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 640),
                                   styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            window.title = "AnyRemote 设置"
+            window.title = String(localized: "AnyRemote Settings")
             window.contentView = NSHostingView(rootView: HostSettingsView(model: hostSettings))
             window.isReleasedWhenClosed = false
             window.center()
@@ -153,28 +154,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "关于 AnyRemote", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+        appMenu.addItem(withTitle: String(localized: "About AnyRemote"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "设置…", action: #selector(showSettings), keyEquivalent: ",")
+        appMenu.addItem(withTitle: String(localized: "Settings…"), action: #selector(showSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "隐藏 AnyRemote", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "退出 AnyRemote", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: String(localized: "Hide AnyRemote"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: String(localized: "Quit AnyRemote"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
 
         // Text fields (pairing code, search) need the standard edit commands.
         // While a mirror is key, the key forwarder sends these keys to the host.
         let editItem = NSMenuItem()
-        let editMenu = NSMenu(title: "编辑")
-        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "z")
+        let editMenu = NSMenu(title: String(localized: "Edit"))
+        editMenu.addItem(withTitle: String(localized: "Undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: String(localized: "Redo"), action: Selector(("redo:")), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: String(localized: "Cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: String(localized: "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: String(localized: "Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: String(localized: "Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         main.addItem(editItem)
 
@@ -186,18 +187,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let item = remoteMenu.addItem(withTitle: title, action: action, keyEquivalent: key)
             item.keyEquivalentModifierMask = local
         }
-        add("打开远程窗口…", #selector(showHosts), "0")
-        add("显示统计信息", #selector(toggleStatistics(_:)), "i")
-        add("打开完整桌面", #selector(openFullDesktop(_:)), "d")
+        add(String(localized: "Open Remote Window…"), #selector(showHosts), "0")
+        add(String(localized: "Show Statistics"), #selector(toggleStatistics(_:)), "i")
+        add(String(localized: "Open Full Desktop"), #selector(openFullDesktop(_:)), "d")
         remoteMenu.addItem(.separator())
-        add("关闭这个远程窗口", #selector(closeMirror(_:)), "w")
+        add(String(localized: "Close This Remote Window"), #selector(closeMirror(_:)), "w")
         remoteItem.submenu = remoteMenu
         main.addItem(remoteItem)
 
         let windowItem = NSMenuItem()
-        let windowMenu = NSMenu(title: "窗口")
-        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let windowMenu = NSMenu(title: String(localized: "Window"))
+        windowMenu.addItem(withTitle: String(localized: "Minimize"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: String(localized: "Close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         windowItem.submenu = windowMenu
         main.addItem(windowItem)
         NSApp.windowsMenu = windowMenu

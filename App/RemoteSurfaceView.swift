@@ -11,6 +11,15 @@ protocol RemoteInputSink: AnyObject {
     func pressBegan()
     func pressEnded()
     var remoteCursor: NSCursor? { get }
+    /// True when a left press at `point` is handled locally (title bar
+    /// buttons, letterbox area) and must not reach the host.
+    func beginLocalPress(at point: NSPoint) -> Bool
+    func endLocalPress(at point: NSPoint)
+}
+
+extension RemoteInputSink {
+    func beginLocalPress(at point: NSPoint) -> Bool { false }
+    func endLocalPress(at point: NSPoint) {}
 }
 
 /// A view showing one host surface and forwarding the mouse to the host.
@@ -21,6 +30,7 @@ final class RemoteSurfaceView: NSView {
     let frameLayer = VideoFrameLayer()
     weak var sink: (any RemoteInputSink)?
     private var pressedButtons: UInt32 = 0
+    private var localPress = false
     private var tracking: NSTrackingArea?
 
     override init(frame: NSRect) {
@@ -95,17 +105,32 @@ final class RemoteSurfaceView: NSView {
                                    modifiers: Self.modifiers(event)))
     }
 
+    private func screenPoint(_ event: NSEvent) -> NSPoint {
+        event.window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        if pressedButtons == 0, sink?.beginLocalPress(at: screenPoint(event)) == true {
+            localPress = true
+            return
+        }
         down(event, .left)
     }
-    override func mouseUp(with event: NSEvent) { up(event, .left) }
+    override func mouseUp(with event: NSEvent) {
+        if localPress {
+            localPress = false
+            sink?.endLocalPress(at: screenPoint(event))
+            return
+        }
+        up(event, .left)
+    }
     override func rightMouseDown(with event: NSEvent) { down(event, .right) }
     override func rightMouseUp(with event: NSEvent) { up(event, .right) }
     override func otherMouseDown(with event: NSEvent) { down(event, .other) }
     override func otherMouseUp(with event: NSEvent) { up(event, .other) }
     override func mouseMoved(with event: NSEvent) { moved(event) }
-    override func mouseDragged(with event: NSEvent) { moved(event) }
+    override func mouseDragged(with event: NSEvent) { if !localPress { moved(event) } }
     override func rightMouseDragged(with event: NSEvent) { moved(event) }
     override func otherMouseDragged(with event: NSEvent) { moved(event) }
     // Keep context menus and gestures from being handled locally.
@@ -134,6 +159,9 @@ final class KeyForwarder {
             guard let mirror = target() else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if event.type != .flagsChanged, flags.isSuperset(of: Self.localModifiers) { return event }
+            // Window management shortcuts act on the local window: a minimized
+            // or full-screen host window can't be shown here.
+            if event.type == .keyDown, mirror.handleWindowShortcut(keyCode: event.keyCode, flags: flags) { return nil }
             let modifiers = event.cgEvent?.flags.rawValue ?? UInt64(event.modifierFlags.rawValue)
             switch event.type {
             case .keyDown:

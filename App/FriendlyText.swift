@@ -5,27 +5,27 @@ import Foundation
 enum FriendlyText {
     static func message(_ raw: String) -> String {
         let table: [(String, String)] = [
-            ("pairing code is not valid", "配对码不对。请核对那台 Mac 上 AnyRemote › 设置 里显示的配对码。"),
-            ("authentication failed", "配对码不对。请核对那台 Mac 上 AnyRemote › 设置 里显示的配对码。"),
-            ("being controlled by", "那台 Mac 正被其他人控制。"),
-            ("Remote control is turned off", "那台 Mac 关闭了「允许其他 Mac 控制」。"),
-            ("Remote control was turned off", "那台 Mac 关闭了「允许其他 Mac 控制」。"),
-            ("incompatible AnyRemote version", "两台 Mac 上的 AnyRemote 版本不一致，请装同一个版本。"),
-            ("took over this Mac", "另一台 Mac 接管了控制。"),
-            ("The host ended the session", "对方在那台 Mac 上断开了连接。"),
-            ("did not respond", "那台 Mac 没有响应。确认它已开机、AnyRemote 在运行，并且在同一网络。"),
-            ("Connection refused", "连不上：那台 Mac 上 AnyRemote 没在运行，或者端口被防火墙挡住了。"),
-            ("connection was closed", "连接被关闭了。"),
-            ("window is no longer available", "这个窗口已经关闭了。"),
+            ("pairing code is not valid", String(localized: "The pairing code is wrong. Check the code shown in AnyRemote › Settings on that Mac.")),
+            ("authentication failed", String(localized: "The pairing code is wrong. Check the code shown in AnyRemote › Settings on that Mac.")),
+            ("being controlled by", String(localized: "That Mac is being controlled by someone else.")),
+            ("Remote control is turned off", String(localized: "That Mac has turned off “Allow Other Macs to Control This Mac”.")),
+            ("Remote control was turned off", String(localized: "That Mac has turned off “Allow Other Macs to Control This Mac”.")),
+            ("incompatible AnyRemote version", String(localized: "The two Macs run different versions of AnyRemote. Install the same version on both.")),
+            ("took over this Mac", String(localized: "Another Mac took over control.")),
+            ("The host ended the session", String(localized: "The connection was ended on that Mac.")),
+            ("did not respond", String(localized: "That Mac didn’t respond. Make sure it’s on, AnyRemote is running, and it’s on the same network.")),
+            ("Connection refused", String(localized: "Can’t connect: AnyRemote isn’t running on that Mac, or a firewall is blocking the port.")),
+            ("connection was closed", String(localized: "The connection was closed.")),
+            ("window is no longer available", String(localized: "This window has been closed.")),
         ]
         for (needle, text) in table where raw.localizedCaseInsensitiveContains(needle) {
             if needle == "being controlled by", let range = raw.range(of: "controlled by ") {
                 let holder = raw[range.upperBound...].prefix { $0 != "." }
-                return "那台 Mac 正被「\(holder)」控制。"
+                return String(localized: "That Mac is being controlled by “\(String(holder))”.")
             }
             if needle == "took over this Mac" {
                 let holder = raw.components(separatedBy: " took over").first ?? ""
-                return "「\(holder)」接管了这台 Mac 的控制。"
+                return String(localized: "“\(holder)” took over control of this Mac.")
             }
             return text
         }

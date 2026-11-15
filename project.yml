@@ -1,6 +1,7 @@
 name: AnyRemote
 options:
   bundleIdPrefix: com.localhost-copilot
+  developmentLanguage: en
   deploymentTarget:
     macOS: "15.0"
   createIntermediateGroups: true
@@ -55,7 +56,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.localhost-copilot.anyremote
-        MARKETING_VERSION: "0.2.0"
+        MARKETING_VERSION: "0.3.0"
         CURRENT_PROJECT_VERSION: "1"
       configs:
         # A separate identity, so development builds don't take over the

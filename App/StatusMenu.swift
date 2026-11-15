@@ -37,7 +37,7 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         image?.isTemplate = true
         item.button?.image = image
         item.button?.appearsDisabled = !enabled
-        item.button?.toolTip = controlled ? "AnyRemote：「\(settings.status.viewerName ?? "")」正在控制这台 Mac" : "AnyRemote"
+        item.button?.toolTip = controlled ? String(localized: "AnyRemote: “\(settings.status.viewerName ?? "")” is controlling this Mac") : "AnyRemote"
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -48,44 +48,44 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
         header.isEnabled = false
         menu.addItem(header)
         if let viewer = status.viewerName {
-            menu.addItem(action("断开「\(viewer)」", #selector(disconnectViewer)))
+            menu.addItem(action(String(localized: "Disconnect “\(viewer)”"), #selector(disconnectViewer)))
         }
         if settings.settings.isEnabled {
             let code = settings.settings.code?.description ?? ""
-            let show = action("显示配对码…", #selector(showSettings))
+            let show = action(String(localized: "Show Pairing Code…"), #selector(showSettings))
             show.toolTip = code
             menu.addItem(show)
-            menu.addItem(action("拷贝配对码", #selector(copyCode)))
+            menu.addItem(action(String(localized: "Copy Pairing Code"), #selector(copyCode)))
         } else {
-            menu.addItem(action("允许其他 Mac 控制这台 Mac", #selector(enableSharing)))
+            menu.addItem(action(String(localized: "Allow Other Macs to Control This Mac"), #selector(enableSharing)))
         }
 
         menu.addItem(.separator())
-        let open = action("打开远程窗口…", #selector(showPicker))
+        let open = action(String(localized: "Open Remote Window…"), #selector(showPicker))
         open.keyEquivalent = "0"
         open.keyEquivalentModifierMask = [.control, .option, .command]
         menu.addItem(open)
         let mirrors = viewer().allMirrors.sorted { ($0.window?.title ?? "") < ($1.window?.title ?? "") }
         for mirror in mirrors {
-            let entry = action(mirror.window?.title ?? "窗口", #selector(focusMirror(_:)))
+            let entry = action(mirror.window?.title ?? String(localized: "Window"), #selector(focusMirror(_:)))
             entry.representedObject = mirror
             entry.indentationLevel = 1
             menu.addItem(entry)
         }
 
         menu.addItem(.separator())
-        let settingsItem = action("设置…", #selector(showSettings))
+        let settingsItem = action(String(localized: "Settings…"), #selector(showSettings))
         settingsItem.keyEquivalent = ","
         menu.addItem(settingsItem)
-        menu.addItem(NSMenuItem(title: "退出 AnyRemote", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: String(localized: "Quit AnyRemote"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
     }
 
     private var statusLine: String {
-        if !settings.settings.isEnabled { return "共享本机：已关闭" }
-        if let viewer = settings.status.viewerName { return "「\(viewer)」正在控制这台 Mac" }
-        if !settings.permissions.allGranted { return "共享本机：缺少权限" }
-        if settings.status.isListening { return "共享本机：等待连接" }
-        return "共享本机：正在启动…"
+        if !settings.settings.isEnabled { return String(localized: "Sharing: Off") }
+        if let viewer = settings.status.viewerName { return String(localized: "“\(viewer)” is controlling this Mac") }
+        if !settings.permissions.allGranted { return String(localized: "Sharing: Permissions Missing") }
+        if settings.status.isListening { return String(localized: "Sharing: Waiting for Connection") }
+        return String(localized: "Sharing: Starting…")
     }
 
     private func action(_ title: String, _ selector: Selector) -> NSMenuItem {

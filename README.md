@@ -40,6 +40,23 @@ work; the picker shows the same, live, until it is granted.
 clicks back into the mirror. `ANYREMOTE_LOOPBACK=1` lists it for
 development.
 
+A mirror behaves like a local window. Its title bar buttons act on it:
+close closes the host window (and with it the mirror; a save sheet appears
+as usual), minimize minimizes the mirror only, green enters full screen on
+this Mac (the host window is resized to this screen) and ⌥-green zooms. ⌘M
+and ⌃⌘F act on the mirror too. If the host window gets minimized or goes
+full screen on the host (Window menu, a title bar double-click), the host
+undoes it and the mirror does it instead.
+
+A window that appears on the host within 3 s of a click, key or menu
+command in a mirror opens as a new mirror: a new document, a Settings
+window, or another app's window such as Finder revealing a file. Windows
+that appear on their own stay on the host and can be opened from the
+picker.
+
+The interface is in English; Settings → General → Language switches to
+Simplified Chinese (or the system language) after a restart.
+
 While a mirror is key, every key goes to the host (⌘Q quits the *remote*
 app). AnyRemote's own commands use ⌃⌥⌘: Hosts ⌃⌥⌘0, Statistics ⌃⌥⌘I,
 Full Desktop ⌃⌥⌘D, Close Mirror ⌃⌥⌘W.
@@ -87,6 +104,13 @@ cursor (CGSCurrentCursorSeed) ────────────────�
   layer-0 windows near the main window (sheets, popovers), plus the
   Open/Save panel service. Each streams as HEVC with alpha and is shown as a
   borderless, non-activating local child window at the matching offset.
+- **New windows** — the host remembers which layer-0 windows were on
+  screen. One that appears within 3 s of viewer input, is at least 160×100
+  pt and is a standard window to Accessibility (checked again for 1.5 s,
+  since new windows reach AX late) is opened like a picked window.
+- **Window state** — the host sends the title bar button rects; the viewer
+  handles them locally, and a host-side minimize/full screen is reverted
+  and forwarded as `windowStateRequest`.
 - **Menu bar** — read through AX (`AXUIElementCopyMultipleAttributeValues`)
   as a `MenuNode` tree, rebuilt as native `NSMenu`s while the mirror is key
   and refreshed on every open; choosing an item presses it on the host.
@@ -148,6 +172,8 @@ App/                        AppKit + SwiftUI app
   HostsView / ViewerModel   window picker: My Macs / Nearby, grouped searchable grid, pairing
   StatusMenu                menu bar icon (sharing state, controller, pairing code), ⌃⌥⌘0 hot key
   FriendlyText              user-facing wording for wire/system errors
+  AppLanguage               interface language (English default; Simplified Chinese in Settings › General)
+  Resources/*.lproj         string tables; keys are the English source strings
   HostConnection            one connection: mirrors, child windows, cursor
   MirrorWindowController    mirror window: geometry, input mapping, resize, stats
   ChildWindowController     menus/popovers/sheets as local child windows

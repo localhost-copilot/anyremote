@@ -145,6 +145,69 @@ extension AXWindow {
         }
     }
 
+    /// Title bar button frames, in points relative to the window's top-left corner.
+    public var controlFrames: (close: CGRect?, minimize: CGRect?, zoom: CGRect?, fullScreen: CGRect?) {
+        OwnProcessAX.perform(for: pid) {
+            guard let origin = Self.point(of: element) else { return (nil, nil, nil, nil) }
+            func frame(_ attribute: String) -> CGRect? {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+                      let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+                let button = value as! AXUIElement
+                guard let position = Self.point(of: button), let size = Self.size(of: button),
+                      size.width > 0, size.height > 0 else { return nil }
+                return CGRect(x: position.x - origin.x, y: position.y - origin.y, width: size.width, height: size.height)
+            }
+            return (frame(kAXCloseButtonAttribute), frame(kAXMinimizeButtonAttribute), frame(kAXZoomButtonAttribute),
+                    frame("AXFullScreenButton"))
+        }
+    }
+
+    public var isMinimized: Bool { boolAttribute(kAXMinimizedAttribute) }
+    public var isFullScreen: Bool { boolAttribute("AXFullScreen") }
+
+    public func setMinimized(_ minimized: Bool) { setBoolAttribute(kAXMinimizedAttribute, minimized) }
+    public func setFullScreen(_ fullScreen: Bool) { setBoolAttribute("AXFullScreen", fullScreen) }
+
+    /// Presses the close button, as a click on it would.
+    @discardableResult
+    public func pressCloseButton() -> Bool {
+        OwnProcessAX.perform(for: pid) {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &value) == .success,
+                  let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+            return AXUIElementPerformAction(value as! AXUIElement, kAXPressAction as CFString) == .success
+        }
+    }
+
+    private func boolAttribute(_ name: String) -> Bool {
+        var value: CFTypeRef?
+        let status = OwnProcessAX.perform(for: pid) { AXUIElementCopyAttributeValue(element, name as CFString, &value) }
+        return status == .success && (value as? Bool) == true
+    }
+
+    private func setBoolAttribute(_ name: String, _ flag: Bool) {
+        OwnProcessAX.perform(for: pid) {
+            _ = AXUIElementSetAttributeValue(element, name as CFString, (flag ? kCFBooleanTrue : kCFBooleanFalse) as CFTypeRef)
+        }
+    }
+
+    private static func point(of element: AXUIElement) -> CGPoint? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var point = CGPoint.zero
+        return AXValueGetValue(value as! AXValue, .cgPoint, &point) ? point : nil
+    }
+
+    private static func size(of element: AXUIElement) -> CGSize? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var size = CGSize.zero
+        return AXValueGetValue(value as! AXValue, .cgSize, &size) ? size : nil
+    }
+
     /// The application's standard (top-level document) window IDs.
     public static func standardWindowIDs(pid: pid_t) -> Set<CGWindowID> {
         OwnProcessAX.perform(for: pid) { standardWindowIDsDirect(pid: pid) }

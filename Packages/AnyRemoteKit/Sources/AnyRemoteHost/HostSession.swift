@@ -20,6 +20,7 @@ final class HostStream: @unchecked Sendable {
     var originalOrigin: CGPoint?
     var bitRate: Int
     var cleanReports = 0
+    var controls: WindowControls?
 
     init(description: StreamDescription, sender: WindowStreamSender, pid: pid_t, bitRate: Int) {
         self.description = description
@@ -67,6 +68,13 @@ final class HostSession: @unchecked Sendable {
     private var pendingResizes: [UInt16: CGSize] = [:]
     private var standardWindowCache: [pid_t: (ids: Set<CGWindowID>, time: UInt64)] = [:]
     private var lastFocusCheck: UInt64 = 0
+    private var lastStateCheck: UInt64 = 0
+    /// Layer-0 windows on screen at the last tracking pass; nil until the first stream.
+    private var knownWindows: Set<CGWindowID>?
+    private var lastInputTime: UInt64 = 0
+    /// New windows that may still turn out to be standard windows, by first sighting.
+    private var newWindowCandidates: [CGWindowID: UInt64] = [:]
+    private var lastCandidateCheck: UInt64 = 0
     private var ended = false
     private let menuQueue = DispatchQueue(label: "anyremote.menu", qos: .userInitiated)
 
@@ -130,6 +138,8 @@ final class HostSession: @unchecked Sendable {
             readMenuBar(streamID: streamID)
         case let .performMenuItem(streamID, path):
             performMenuItem(streamID: streamID, path: path)
+        case let .windowAction(streamID, action):
+            perform(action, streamID: streamID)
         case .goodbye:
             end(reason: "Viewer disconnected.")
         default:
@@ -315,6 +325,7 @@ final class HostSession: @unchecked Sendable {
         }
         if role == .window { prepareForStreaming(stream) }
         connection.send(.streamStarted(stream.description))
+        if role == .window { sendControls(stream) }
         if cursor == nil {
             let connection = connection
             let monitor = CursorMonitor { image in connection.send(.cursor(image)) }
@@ -399,9 +410,11 @@ final class HostSession: @unchecked Sendable {
     private func track() {
         let mains = streams.values.filter { $0.description.role == .window }
         guard !mains.isEmpty else { return }
+        checkWindowStates(mains)
         let onScreen = WindowServerWindow.onScreen()
         var byID: [CGWindowID: WindowServerWindow] = [:]
         for window in onScreen { byID[window.id] = window }
+        openNewWindows(onScreen)
 
         for main in mains {
             guard let current = byID[main.windowID] else { continue }
@@ -417,10 +430,90 @@ final class HostSession: @unchecked Sendable {
         let title = title.isEmpty ? stream.description.title : title
         guard frame.origin != stream.description.frame.origin || frame.size != stream.description.frame.size
             || title != stream.description.title else { return }
+        let resized = frame.size != stream.description.frame.size
         stream.description.frame = frame
+        if resized, stream.description.role == .window { sendControls(stream) }
         stream.description.title = title
         connection.send(.streamMoved(streamID: stream.streamID, frame: frame, title: title))
     }
+
+    // MARK: Title bar buttons and window state
+
+    /// Tells the viewer where the title bar buttons are, so it can handle
+    /// minimize and full screen on its own window.
+    private func sendControls(_ stream: HostStream) {
+        if stream.axWindow == nil { stream.axWindow = try? AXWindow(pid: stream.pid, windowID: stream.windowID) }
+        guard let frames = stream.axWindow?.controlFrames else { return }
+        let controls = WindowControls(close: frames.close, minimize: frames.minimize, zoom: frames.zoom,
+                                      fullScreen: frames.fullScreen)
+        guard controls != stream.controls else { return }
+        stream.controls = controls
+        connection.send(.windowControls(streamID: stream.streamID, controls))
+    }
+
+    private func perform(_ action: WindowAction, streamID: UInt16) {
+        guard let stream = streams[streamID], stream.description.role == .window else { return }
+        if stream.axWindow == nil { stream.axWindow = try? AXWindow(pid: stream.pid, windowID: stream.windowID) }
+        switch action {
+        case .close:
+            if stream.axWindow?.pressCloseButton() != true { log.notice("close button press failed") }
+        }
+    }
+
+    /// A streamed window that got minimized or went full screen on the host
+    /// (Window › Minimize, ⌘M, ⌃⌘F, a title bar double-click) is put back and
+    /// the viewer does it to its local window instead.
+    private func checkWindowStates(_ mains: [HostStream]) {
+        let now = HostClock.nowNanos()
+        guard now - lastStateCheck >= 150_000_000 else { return }
+        lastStateCheck = now
+        for stream in mains {
+            guard let window = stream.axWindow else { continue }
+            if window.isMinimized {
+                window.setMinimized(false)
+                connection.send(.windowStateRequest(streamID: stream.streamID, .minimize))
+            } else if window.isFullScreen {
+                window.setFullScreen(false)
+                connection.send(.windowStateRequest(streamID: stream.streamID, .enterFullScreen))
+            }
+        }
+    }
+
+    /// A window that appears right after the viewer clicked or typed is one
+    /// the viewer caused: a new document, a preferences window, or another
+    /// app's window such as Finder revealing a file. It opens on the viewer
+    /// like a window picked from the list. Windows that show up on their own
+    /// stay on the host.
+    private func openNewWindows(_ onScreen: [WindowServerWindow]) {
+        let ownPID = getpid()
+        let now = HostClock.nowNanos()
+        let current = Set(onScreen.lazy.filter { $0.layer == 0 && $0.pid != ownPID }.map(\.id))
+        if let known = knownWindows, now - lastInputTime < Self.causedWindowInterval {
+            for id in current.subtracting(known) { newWindowCandidates[id] = now }
+        }
+        knownWindows = current
+        guard !newWindowCandidates.isEmpty, now - lastCandidateCheck >= 100_000_000 else { return }
+        lastCandidateCheck = now
+        let streamed = Set(streams.values.map(\.windowID))
+        // A new window is often listed before it has its final size and
+        // before Accessibility knows it, so look again for a moment.
+        for window in onScreen {
+            guard let seen = newWindowCandidates[window.id] else { continue }
+            if streamed.contains(window.id) || now - seen > 1_500_000_000 {
+                newWindowCandidates[window.id] = nil
+                continue
+            }
+            guard window.frame.width >= 160, window.frame.height >= 100, window.alpha > 0.01,
+                  !Self.panelServiceNames.contains(where: { window.ownerName.contains($0) }),
+                  AXWindow.standardWindowIDs(pid: window.pid).contains(window.id) else { continue }
+            newWindowCandidates[window.id] = nil
+            log.notice("opening new window \(window.id) of \(window.ownerName, privacy: .public)")
+            openWindow(window.id)
+        }
+        newWindowCandidates = newWindowCandidates.filter { current.contains($0.key) }
+    }
+
+    private static let causedWindowInterval: UInt64 = 3_000_000_000
 
     private static let panelServiceNames = ["OpenAndSavePanelService", "Open and Save Panel Service"]
 
@@ -487,6 +580,12 @@ final class HostSession: @unchecked Sendable {
     private func inject(_ event: InputEvent, streamID: UInt16) {
         guard let stream = streams[streamID], stream.description.role == .window else { return }
         var origin = stream.description.frame.origin
+        switch event {
+        case .mouseDown, .mouseUp, .key(_, true, _, _):
+            lastInputTime = HostClock.nowNanos()
+        default:
+            break
+        }
         switch event {
         case .mouseDown:
             focus(stream, force: false)
@@ -566,6 +665,7 @@ final class HostSession: @unchecked Sendable {
 
     private func performMenuItem(streamID: UInt16, path: [Int]) {
         guard let stream = streams[streamID] else { return }
+        lastInputTime = HostClock.nowNanos()
         focus(stream, force: true)
         let pid = stream.pid
         menuQueue.async {

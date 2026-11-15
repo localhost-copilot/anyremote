@@ -24,6 +24,13 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     let stats = PipelineStats()
     private let statisticsLabel = NSTextField(labelWithString: "")
     private var noticeView: NSView?
+    /// Host title bar buttons (relative to the host window's top-left).
+    var controls: WindowControls?
+    private var pressedControl: Control?
+    private var adoptingRemoteSize = false
+    private var inFullScreenTransition = false
+
+    private enum Control { case close, minimize, zoom, fullScreen, letterbox }
     private var statisticsTimer: Timer?
     private var remotePointSize: CGSize
     private var remoteScale = 0
@@ -62,7 +69,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         window.backgroundColor = .black
         window.contentMinSize = NSSize(width: 120, height: 80)
         window.tabbingMode = .disallowed
-        window.collectionBehavior.insert(.fullScreenNone)
+        window.collectionBehavior.insert(.fullScreenPrimary)
         super.init(window: window)
         window.delegate = self
         updateTitle()
@@ -103,7 +110,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         noticeView?.removeFromSuperview()
         noticeView = nil
         guard let text, let content = window?.contentView else { return }
-        let label = NSTextField(wrappingLabelWithString: "⚠︎ " + text + " 在那台 Mac 上打开 AnyRemote › 设置 授权。")
+        let label = NSTextField(wrappingLabelWithString: "⚠︎ " + text + " " + String(localized: "Grant it in AnyRemote › Settings on that Mac."))
         label.font = .systemFont(ofSize: 12, weight: .medium)
         label.textColor = .white
         label.alignment = .center
@@ -168,7 +175,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
 
     func hostResizeApplied(_ size: CGSize) {
         awaitingResize = false
-        guard let window, !window.inLiveResize else { return }
+        guard let window, !window.inLiveResize, !isFullScreen, !inFullScreenTransition else { return }
         adoptRemoteSize(size)
     }
 
@@ -229,15 +236,99 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
 
     private var surfaceScreenTopLeft: NSPoint {
         guard let window else { return .zero }
-        let rect = window.convertToScreen(surface.convert(surface.bounds, to: nil))
+        let rect = window.convertToScreen(surface.convert(videoRect, to: nil))
         return NSPoint(x: rect.minX, y: rect.maxY)
+    }
+
+    private var isFullScreen: Bool { window?.styleMask.contains(.fullScreen) ?? false }
+
+    /// Where the video is drawn in the surface (flipped coordinates). It fills
+    /// the window, except in full screen when the host window couldn't take
+    /// the screen's size: then it is centered 1:1, or scaled down to fit.
+    private var videoRect: CGRect {
+        let bounds = surface.bounds
+        guard isFullScreen, remotePointSize.width > 0, remotePointSize.height > 0 else { return bounds }
+        var size = remotePointSize
+        if size.width > bounds.width || size.height > bounds.height {
+            let scale = min(bounds.width / size.width, bounds.height / size.height)
+            size = CGSize(width: size.width * scale, height: size.height * scale)
+        }
+        return CGRect(x: ((bounds.width - size.width) / 2).rounded(), y: ((bounds.height - size.height) / 2).rounded(),
+                      width: size.width, height: size.height)
+    }
+
+    private func updateVideoGravity() {
+        let bounds = surface.bounds
+        let fits = remotePointSize.width <= bounds.width && remotePointSize.height <= bounds.height
+        surface.frameLayer.contentsGravity = !isFullScreen ? .resize : (fits ? .center : .resizeAspect)
     }
 
     /// Host points per local point (1 except while sizes disagree mid-resize).
     private var currentScale: CGSize {
-        let local = surface.bounds.size
+        let local = videoRect.size
         guard local.width > 0, local.height > 0 else { return CGSize(width: 1, height: 1) }
         return CGSize(width: remotePointSize.width / local.width, height: remotePointSize.height / local.height)
+    }
+
+    // MARK: Title bar buttons
+
+    func beginLocalPress(at point: NSPoint) -> Bool {
+        pressedControl = control(at: point)
+        log.debug("local press \(String(describing: self.pressedControl), privacy: .public) at \(String(describing: self.hostPoint(forScreenPoint: point)), privacy: .public) controls \(String(describing: self.controls), privacy: .public)")
+        return pressedControl != nil
+    }
+
+    func endLocalPress(at point: NSPoint) {
+        guard let pressed = pressedControl else { return }
+        pressedControl = nil
+        // Like a real button: only a release over the same button counts.
+        guard control(at: point) == pressed else { return }
+        perform(pressed, option: NSEvent.modifierFlags.contains(.option))
+    }
+
+    private func control(at screenPoint: NSPoint) -> Control? {
+        guard let window else { return nil }
+        let local = surface.convert(window.convertPoint(fromScreen: screenPoint), from: nil)
+        if !videoRect.contains(local) { return .letterbox }
+        guard let controls else { return nil }
+        let point = hostPoint(forScreenPoint: screenPoint)
+        let candidates: [(CGRect?, Control)] = [(controls.close, .close), (controls.minimize, .minimize),
+                                                (controls.zoom, .zoom), (controls.fullScreen, .fullScreen)]
+        return candidates.first { $0.0?.insetBy(dx: -1, dy: -1).contains(point) ?? false }?.1
+    }
+
+    private func perform(_ control: Control, option: Bool) {
+        switch control {
+        case .close:
+            connection.client.send(.windowAction(streamID: streamID, action: .close))
+        case .minimize:
+            window?.miniaturize(nil)
+        case .zoom, .fullScreen:
+            // As on a real window: click for full screen, ⌥-click to zoom.
+            if option, !isFullScreen { window?.zoom(nil) } else { window?.toggleFullScreen(nil) }
+        case .letterbox:
+            break
+        }
+    }
+
+    /// ⌘M and ⌃⌘F act on this window rather than the host's.
+    func handleWindowShortcut(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
+        let relevant = flags.intersection([.command, .control, .option, .shift])
+        if keyCode == 46, relevant == .command { window?.miniaturize(nil); return true }           // ⌘M
+        if keyCode == 3, relevant == [.command, .control] { window?.toggleFullScreen(nil); return true } // ⌃⌘F
+        return false
+    }
+
+    /// The host app minimized or went full screen by itself (menu, title bar
+    /// double-click); the host has already undone it on its side.
+    func applyHostStateRequest(_ request: HostWindowStateRequest) {
+        guard let window else { return }
+        switch request {
+        case .minimize:
+            if !window.isMiniaturized { window.miniaturize(nil) }
+        case .enterFullScreen:
+            if !isFullScreen { window.toggleFullScreen(nil) }
+        }
     }
 
     /// Screen frame (Cocoa coordinates) of a host rect given in host global points.
@@ -306,7 +397,8 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         let size = CGSize(width: CGFloat(pixelWidth) / CGFloat(scale), height: CGFloat(pixelHeight) / CGFloat(scale))
         remotePointSize = size
         hasPresented = true
-        guard let window, !window.inLiveResize, !awaitingResize else { return }
+        updateVideoGravity()
+        guard let window, !window.inLiveResize, !awaitingResize, !isFullScreen, !inFullScreenTransition else { return }
         adoptRemoteSize(size)
     }
 
@@ -317,7 +409,9 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         guard abs(current.width - size.width) >= 1 || abs(current.height - size.height) >= 1 else { return }
         var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
         frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+        adoptingRemoteSize = true
         window.setFrame(frame, display: true)
+        adoptingRemoteSize = false
     }
 
     /// Asks the host window to take `size` (points), as a finished live resize would.
@@ -327,7 +421,13 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     }
 
     func windowDidResize(_ notification: Notification) {
-        guard let window, window.inLiveResize else { return }
+        guard let window else { return }
+        updateVideoGravity()
+        // Zoom and other programmatic resizes: the host follows once.
+        if !window.inLiveResize {
+            if !adoptingRemoteSize, !inFullScreenTransition, !isFullScreen { requestHostResize(surface.bounds.size) }
+            return
+        }
         // ~60 Hz is plenty; the host coalesces anyway.
         let now = CACurrentMediaTime()
         guard now - lastResizeSent >= 1.0 / 60 else { return }
@@ -338,6 +438,25 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     func windowDidEndLiveResize(_ notification: Notification) {
         requestHostResize(surface.bounds.size)
     }
+
+    // Full screen: the host window takes the screen's size, so it stays 1:1.
+    func windowWillEnterFullScreen(_ notification: Notification) { inFullScreenTransition = true }
+    func windowWillExitFullScreen(_ notification: Notification) { inFullScreenTransition = true }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        inFullScreenTransition = false
+        updateVideoGravity()
+        requestHostResize(surface.bounds.size)
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        inFullScreenTransition = false
+        updateVideoGravity()
+        requestHostResize(surface.bounds.size)
+    }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
+    func windowDidFailToExitFullScreen(_ window: NSWindow) { inFullScreenTransition = false }
 
     func windowDidBecomeKey(_ notification: Notification) {
         connection.client.send(.focus(streamID: streamID))

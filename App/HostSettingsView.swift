@@ -59,6 +59,20 @@ final class HostSettingsModel {
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
+    private(set) var language = AppLanguage.current
+
+    func setLanguage(_ language: AppLanguage) {
+        guard language != self.language else { return }
+        AppLanguage.choose(language)
+        self.language = language
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Restart AnyRemote to change the language?")
+        alert.informativeText = String(localized: "The new language is used the next time AnyRemote opens. Open remote windows will close.")
+        alert.addButton(withTitle: String(localized: "Restart Now"))
+        alert.addButton(withTitle: String(localized: "Later"))
+        if alert.runModal() == .alertFirstButtonReturn { Self.relaunch() }
+    }
+
     func copyCode() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(settings.code?.description ?? "", forType: .string)
@@ -83,21 +97,25 @@ struct HostSettingsView: View {
             sharingSection
             if model.settings.isEnabled { permissionsSection }
             if model.settings.isEnabled { pairingSection }
-            Section("显示") {
-                Picker("HiDPI 虚拟显示器", selection: Binding(
+            Section("Display") {
+                Picker("HiDPI Virtual Display", selection: Binding(
                     get: { model.settings.virtualDisplay }, set: { model.setVirtualDisplay($0) })) {
-                    Text("没有 Retina 显示器时").tag(HostSettings.VirtualDisplayMode.automatic)
-                    Text("始终").tag(HostSettings.VirtualDisplayMode.always)
-                    Text("从不").tag(HostSettings.VirtualDisplayMode.never)
+                    Text("When No Retina Display Is Connected").tag(HostSettings.VirtualDisplayMode.automatic)
+                    Text("Always").tag(HostSettings.VirtualDisplayMode.always)
+                    Text("Never").tag(HostSettings.VirtualDisplayMode.never)
                 }
-                Text("被控制时，窗口移到一块 \(model.settings.virtualDisplayWidth)×\(model.settings.virtualDisplayHeight) pt、"
-                     + "2 倍渲染的虚拟显示器上，所以没接显示器的 Mac mini 也能显示清晰的窗口。关闭后窗口移回原处。")
+                Text("While being controlled, windows move to a \(String(model.settings.virtualDisplayWidth))×\(String(model.settings.virtualDisplayHeight)) pt virtual display rendered at 2×, so even a Mac mini without a display shows sharp windows. They move back afterwards.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            Section("通用") {
-                Toggle("登录时打开 AnyRemote", isOn: Binding(
+            Section("General") {
+                Picker("Language", selection: Binding(get: { model.language }, set: { model.setLanguage($0) })) {
+                    Text(verbatim: "English").tag(AppLanguage.english)
+                    Text(verbatim: "简体中文").tag(AppLanguage.simplifiedChinese)
+                    Text("Follow System").tag(AppLanguage.system)
+                }
+                Toggle("Open AnyRemote at Login", isOn: Binding(
                     get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-                Text("作为被控端的 Mac mini 建议打开，重启后不用手动启动。")
+                Text("Recommended on a Mac mini that is controlled remotely, so it’s ready after a restart.")
                     .font(.callout).foregroundStyle(.secondary)
             }
         }
@@ -114,16 +132,16 @@ struct HostSettingsView: View {
         Section {
             Toggle(isOn: Binding(get: { model.settings.isEnabled }, set: { model.setEnabled($0) })) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("允许其他 Mac 控制这台 Mac").font(.headline)
+                    Text("Allow Other Macs to Control This Mac").font(.headline)
                     Text(statusText).font(.callout).foregroundStyle(statusColor)
                 }
             }
             .toggleStyle(.switch)
             if let viewer = model.status.viewerName {
                 HStack {
-                    Label("「\(viewer)」正在控制这台 Mac", systemImage: "person.crop.circle.badge.checkmark")
+                    Label("“\(viewer)” is controlling this Mac", systemImage: "person.crop.circle.badge.checkmark")
                     Spacer()
-                    Button("断开") { model.service.disconnectViewer() }
+                    Button("Disconnect") { model.service.disconnectViewer() }
                 }
             }
         }
@@ -131,57 +149,56 @@ struct HostSettingsView: View {
 
     private var permissionsSection: some View {
         Section {
-            permissionRow("屏幕录制", detail: "让对方看到窗口内容", granted: model.permissions.screenRecording,
+            permissionRow("Screen Recording", detail: "Lets the other Mac see window contents", granted: model.permissions.screenRecording,
                           pane: "Privacy_ScreenCapture")
-            permissionRow("辅助功能", detail: "让对方点击、打字、调整窗口大小、使用菜单",
+            permissionRow("Accessibility", detail: "Lets the other Mac click, type, resize windows and use menus",
                           granted: model.permissions.accessibility && model.permissions.postEvents,
                           pane: "Privacy_Accessibility")
             if !model.permissions.allGranted {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("在系统设置里打开 AnyRemote 的开关。如果列表里已经有 AnyRemote 但开着也不生效，"
-                         + "先用「−」删掉它再重新授权，然后重新启动 AnyRemote。")
+                    Text("Turn on AnyRemote in System Settings. If AnyRemote is already listed and on but has no effect, remove it with “−”, grant it again, then restart AnyRemote.")
                         .font(.callout).foregroundStyle(.secondary)
-                    Text("需要授权的是这一份：\(Bundle.main.bundlePath)")
+                    Text("The copy that needs permission: \(Bundle.main.bundlePath)")
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack {
-                        Button("请求权限") {
+                        Button("Request Permissions") {
                             HostService.requestPermissions()
                             model.refreshPermissions()
                         }
-                        Button("重新启动 AnyRemote") { HostSettingsModel.relaunch() }
+                        Button("Restart AnyRemote") { HostSettingsModel.relaunch() }
                     }
                 }
             }
         } header: {
             HStack {
-                Text("权限")
+                Text("Permissions")
                 Spacer()
                 if model.permissions.allGranted {
-                    Label("已就绪", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+                    Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
                 }
             }
         }
     }
 
     private var pairingSection: some View {
-        Section("配对码") {
+        Section("Pairing Code") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text(model.settings.code?.description ?? "–")
                         .font(.system(size: 20, weight: .medium, design: .monospaced))
                         .textSelection(.enabled)
                     Spacer()
-                    Button("拷贝") { model.copyCode() }
+                    Button("Copy") { model.copyCode() }
                 }
-                Text("在要控制这台 Mac 的那台 Mac 上输入一次即可。拿到配对码的人都能控制这台 Mac，不要外传。")
+                Text("Enter it once on the Mac that will control this one. Anyone with this code can control this Mac, so keep it private.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            Button("重置配对码…") {
+            Button("Reset Pairing Code…") {
                 let alert = NSAlert()
-                alert.messageText = "重置配对码？"
-                alert.informativeText = "已经配对的 Mac 都需要重新输入新的配对码，当前的控制会被断开。"
-                alert.addButton(withTitle: "重置")
-                alert.addButton(withTitle: "取消")
+                alert.messageText = String(localized: "Reset the pairing code?")
+                alert.informativeText = String(localized: "Paired Macs will need to enter the new code, and the current session will be disconnected.")
+                alert.addButton(withTitle: String(localized: "Reset"))
+                alert.addButton(withTitle: String(localized: "Cancel"))
                 if alert.runModal() == .alertFirstButtonReturn { model.resetCode() }
             }
         }
@@ -190,12 +207,12 @@ struct HostSettingsView: View {
     // MARK: Helpers
 
     private var statusText: String {
-        if !model.settings.isEnabled { return "已关闭：其他 Mac 连不上这台 Mac" }
-        if let error = model.status.error { return "出错：\(error)" }
-        if model.status.viewerName != nil { return "正在被控制" }
-        if !model.permissions.allGranted { return "缺少权限，对方连上后无法正常使用" }
-        if model.status.isListening { return "已就绪，等待连接（端口 \(model.status.port ?? 0)）" }
-        return "正在启动…"
+        if !model.settings.isEnabled { return String(localized: "Off: other Macs can’t connect to this Mac") }
+        if let error = model.status.error { return String(localized: "Error: \(error)") }
+        if model.status.viewerName != nil { return String(localized: "Being controlled") }
+        if !model.permissions.allGranted { return String(localized: "Permissions missing; the other Mac won’t work properly when it connects") }
+        if model.status.isListening { return String(localized: "Ready, waiting for a connection (port \(String(model.status.port ?? 0)))") }
+        return String(localized: "Starting…")
     }
 
     private var statusColor: Color {
@@ -204,7 +221,7 @@ struct HostSettingsView: View {
         return .green
     }
 
-    private func permissionRow(_ title: String, detail: String, granted: Bool, pane: String) -> some View {
+    private func permissionRow(_ title: LocalizedStringKey, detail: LocalizedStringKey, granted: Bool, pane: String) -> some View {
         HStack {
             Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .foregroundStyle(granted ? .green : .orange)
@@ -215,7 +232,7 @@ struct HostSettingsView: View {
             }
             Spacer()
             if !granted {
-                Button("打开系统设置") {
+                Button("Open System Settings") {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
                 }
             }
