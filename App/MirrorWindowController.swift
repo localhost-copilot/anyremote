@@ -372,6 +372,9 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
                                 report.chip ?? "?", report.captureP50, report.waitP50, report.encodeP50,
                                 report.encodeP95, Double(report.bitRate) / 1_000_000))
         }
+        let udp = connection.client.datagramCounts
+        lines.append("udp in \(udp.received) · unreadable \(udp.unreadable) · keepalive failures \(udp.keepaliveFailures)"
+                     + (hostReport?.videoDestination.map { " · host sends video to \($0)" } ?? ""))
         let rtt = connection.client.roundTripMilliseconds.map { String(format: "%.2f ms", $0) } ?? "–"
         let pacing = surface.frameLayer.pacingDescription
         if !pacing.isEmpty { lines.append(pacing) }

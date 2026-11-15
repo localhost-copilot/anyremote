@@ -179,7 +179,11 @@ public final class RemoteHostClient: @unchecked Sendable {
     private func sendKeepalive() {
         guard let socket, let hostAddress, let sealer,
               let datagram = try? sealer.seal(DatagramKind.keepaliveDatagram) else { return }
-        socket.send(datagram, to: hostAddress)
+        if !socket.send(datagram, to: hostAddress) {
+            receiverLock.lock()
+            keepaliveFailures += 1
+            receiverLock.unlock()
+        }
     }
 
     private func ping() {
@@ -347,14 +351,36 @@ public final class RemoteHostClient: @unchecked Sendable {
         if closeOnHost { send(.closeStream(streamID: streamID)) }
     }
 
+    private static let simulatedLoss = Double(ProcessInfo.processInfo.environment["ANYREMOTE_DROP"] ?? "") ?? 0
+
+    /// UDP from the host so far: datagrams received, those that didn't open
+    /// (wrong session or key), and keepalives that failed to send.
+    public var datagramCounts: (received: Int, unreadable: Int, keepaliveFailures: Int) {
+        receiverLock.lock()
+        defer { receiverLock.unlock() }
+        return (datagramsReceived, datagramsUnreadable, keepaliveFailures)
+    }
+    private var datagramsReceived = 0 // under receiverLock
+    private var datagramsUnreadable = 0
+    private var keepaliveFailures = 0
+
     private func route(_ batch: [(Data, SocketAddress)]) {
         receiverLock.lock()
         defer { receiverLock.unlock() }
-        guard var opener else { return }
+        datagramsReceived += batch.count
+        guard var opener else {
+            datagramsUnreadable += batch.count
+            return
+        }
         var grouped: [UInt16: [Data]] = [:]
         for (datagram, _) in batch {
-            guard let plaintext = try? opener.open(datagram), plaintext.count >= 4,
-                  plaintext[plaintext.startIndex + 1] == DatagramKind.video else { continue }
+            // Development: simulated packet loss (`ANYREMOTE_DROP=0.02`).
+            if Self.simulatedLoss > 0, Double.random(in: 0..<1) < Self.simulatedLoss { continue }
+            guard let plaintext = try? opener.open(datagram) else {
+                datagramsUnreadable += 1
+                continue
+            }
+            guard plaintext.count >= 4, plaintext[plaintext.startIndex + 1] == DatagramKind.video else { continue }
             let start = plaintext.startIndex
             let streamID = UInt16(plaintext[start + 2]) << 8 | UInt16(plaintext[start + 3])
             grouped[streamID, default: []].append(plaintext)

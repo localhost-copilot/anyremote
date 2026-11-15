@@ -420,7 +420,9 @@ the real network path against this Mac's own host service:
   (`lead`: how far ahead of its display time SCK delivered a frame; `hold`:
   frame pacing; `capgap`/`pregap`: host and local frame intervals; `hitch`:
   frames shown a refresh late although sent on time; the host's chip),
-  `ANYREMOTE_HOME=<dir>` uses a separate settings directory
+  `ANYREMOTE_HOME=<dir>` uses a separate settings directory,
+  `ANYREMOTE_DROP=0.02` drops that share of the video datagrams arriving
+  at the viewer (simulated loss)
 
 Keep workloads visible when measuring: macOS throttles occluded windows, and
 an occluded mirror is never presented.

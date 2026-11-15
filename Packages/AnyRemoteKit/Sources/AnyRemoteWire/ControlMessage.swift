@@ -272,10 +272,16 @@ public struct HostStreamReport: Codable, Equatable, Sendable {
     public var bitRate: Int
     /// The host's processor, e.g. "Apple M4 Pro" (older hosts: nil).
     public var chip: String?
+    /// Where the host sends this viewer's video (the address its UDP
+    /// keepalives come from), or "none" when none arrived: video is then
+    /// encoded but not sent. Older hosts: nil.
+    public var videoDestination: String?
 
     public init(captureP50: Double, waitP50: Double, encodeP50: Double, encodeP95: Double,
-                framesPerSecond: Double, megabitsPerSecond: Double, bitRate: Int, chip: String? = nil) {
+                framesPerSecond: Double, megabitsPerSecond: Double, bitRate: Int, chip: String? = nil,
+                videoDestination: String? = nil) {
         self.chip = chip
+        self.videoDestination = videoDestination
         self.captureP50 = captureP50
         self.waitP50 = waitP50
         self.encodeP50 = encodeP50

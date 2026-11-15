@@ -64,18 +64,27 @@ final class TiledEncoder: @unchecked Sendable {
     func encode(_ frame: CapturedFrame) {
         queue.async { [self] in
             lastFrame = frame
-            split(frame, everything: false)
+            split(frame)
         }
     }
 
-    /// Every strip is sent again, as a keyframe, right away (the picture may not change for a while).
-    func requestKeyframe() {
+    /// The strip sent under `streamID` (every strip when nil) is sent again,
+    /// as a keyframe, right away (the picture may not change for a while).
+    /// Each strip's receiver asks for its own: refreshing all four on every
+    /// request multiplied keyframes by four under loss (2% loss: ~40 a second).
+    func requestKeyframe(streamID: UInt16? = nil) {
         queue.async { [self] in
-            for index in strips.indices {
+            var any = false
+            for index in strips.indices where streamID == nil || strips[index].streamID == streamID {
                 strips[index].needsRefresh = true
                 strips[index].encoder.requestKeyframe()
+                any = true
             }
-            if let lastFrame { split(lastFrame, everything: true) }
+            // Only the strips that need it: no dirty rects.
+            if any, var lastFrame {
+                lastFrame.dirtyRects = []
+                split(lastFrame)
+            }
         }
     }
 
@@ -94,7 +103,7 @@ final class TiledEncoder: @unchecked Sendable {
     }
 
     /// Queue-confined.
-    private func split(_ frame: CapturedFrame, everything: Bool) {
+    private func split(_ frame: CapturedFrame) {
         let source = frame.pixelBuffer
         let frameWidth = CVPixelBufferGetWidth(source)
         let frameHeight = CVPixelBufferGetHeight(source)
@@ -115,7 +124,7 @@ final class TiledEncoder: @unchecked Sendable {
         }
         var selected: [Int] = []
         for (index, strip) in strips.enumerated() where strip.height > 0 {
-            let changed = everything || strip.needsRefresh || (frame.dirtyRects.map { rects in
+            let changed = strip.needsRefresh || (frame.dirtyRects.map { rects in
                 rects.contains { $0.maxY > CGFloat(strip.y) && $0.minY < CGFloat(strip.y + strip.height) && !$0.isEmpty }
             } ?? true)
             if changed { selected.append(index) }

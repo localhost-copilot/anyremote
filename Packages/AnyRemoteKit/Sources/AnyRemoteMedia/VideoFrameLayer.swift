@@ -356,7 +356,65 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         lock.lock()
         let picture = lastPicture
         lock.unlock()
-        if let picture { add(picture, due: 0, paced: false) }
+        if let picture {
+            add(picture, due: 0, paced: false)
+        } else {
+            // Nothing received yet: the statistics still show (on black).
+            renderQueue.async { self.renderOverlayOnly() }
+        }
+    }
+
+    /// Render queue. Black with the overlay, before any frame arrives.
+    private func renderOverlayOnly() {
+        guard let context = NV24MetalContext.shared else { return }
+        lock.lock()
+        let busy = inFlight || lastPicture != nil
+        if !busy { inFlight = true }
+        let target = targetSize
+        lock.unlock()
+        guard !busy else { return }
+        let size = target ?? CGSize(width: bounds.width * contentsScale, height: bounds.height * contentsScale)
+        guard size.width >= 2, size.height >= 2 else { return finish() }
+        let pixels = CGSize(width: size.width.rounded(), height: size.height.rounded())
+        if drawableSize != pixels { drawableSize = pixels }
+        guard let drawable = nextDrawable(), let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            return finish()
+        }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = drawable.texture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return finish() }
+        drawOverlay(encoder, context: context, target: drawable.texture)
+        encoder.endEncoding()
+        let release = OnceFlag()
+        drawable.addPresentedHandler { [weak self] _ in if release.claim() { self?.finish() } }
+        commandBuffer.addCompletedHandler { [weak self] buffer in
+            guard buffer.status != .completed else { return }
+            if release.claim() { self?.finish() }
+        }
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+
+    /// The statistics overlay, bottom left, 8 points in (clipped to the drawable).
+    private func drawOverlay(_ encoder: MTLRenderCommandEncoder, context: NV24MetalContext, target: MTLTexture) {
+        lock.lock()
+        let overlayTexture = overlay?.texture
+        lock.unlock()
+        guard let overlayTexture else { return }
+        let margin = Double((8 * max(1, contentsScale)).rounded())
+        let x = margin, y = Double(target.height) - margin - Double(overlayTexture.height)
+        let visibleWidth = min(Double(overlayTexture.width), Double(target.width) - margin - x)
+        guard visibleWidth > 0, y >= 0 else { return }
+        encoder.setRenderPipelineState(context.overlayPipeline)
+        encoder.setViewport(MTLViewport(originX: x, originY: y, width: Double(overlayTexture.width),
+                                        height: Double(overlayTexture.height), znear: 0, zfar: 1))
+        encoder.setScissorRect(MTLScissorRect(x: Int(x), y: Int(y), width: Int(visibleWidth),
+                                              height: overlayTexture.height))
+        encoder.setFragmentTexture(overlayTexture, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
 
     private func add(_ picture: Picture, due: UInt64, paced: Bool) {
@@ -579,25 +637,7 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
             }
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
-        lock.lock()
-        let overlayTexture = overlay?.texture
-        lock.unlock()
-        if let overlayTexture {
-            // Bottom left, 8 points in, at the window's scale (clipped to the drawable).
-            let margin = Double((8 * max(1, contentsScale)).rounded())
-            let target = drawable.texture
-            let x = margin, y = Double(target.height) - margin - Double(overlayTexture.height)
-            let visibleWidth = min(Double(overlayTexture.width), Double(target.width) - margin - x)
-            if visibleWidth > 0, y >= 0 {
-                encoder.setRenderPipelineState(context.overlayPipeline)
-                encoder.setViewport(MTLViewport(originX: x, originY: y, width: Double(overlayTexture.width),
-                                                height: Double(overlayTexture.height), znear: 0, zfar: 1))
-                encoder.setScissorRect(MTLScissorRect(x: Int(x), y: Int(y), width: Int(visibleWidth),
-                                                      height: overlayTexture.height))
-                encoder.setFragmentTexture(overlayTexture, index: 0)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-            }
-        }
+        drawOverlay(encoder, context: context, target: drawable.texture)
         encoder.endEncoding()
 
         // Admit the next frame only once this one is on glass. Releasing on

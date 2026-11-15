@@ -111,11 +111,11 @@ public final class WindowStreamSender: @unchecked Sendable {
         }
     }
 
-    /// Strips: all of them, sent again right away.
-    public func requestKeyframe() {
+    /// Strips: the one sent under `streamID` (all of them when nil), sent again right away.
+    public func requestKeyframe(streamID: UInt16? = nil) {
         switch encoding {
         case let .whole(encoder): encoder.requestKeyframe()
-        case let .strips(tiled): tiled.requestKeyframe()
+        case let .strips(tiled): tiled.requestKeyframe(streamID: streamID)
         }
     }
 

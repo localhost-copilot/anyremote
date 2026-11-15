@@ -71,6 +71,7 @@ final class HostSession: @unchecked Sendable {
     private var datagramOpener: DatagramOpener?
     private var datagramSealer: DatagramSealer?
     private var peerAddress: SocketAddress?
+    private var noDatagramsReports = 0
 
     // Queue-confined.
     private var streams: [UInt16: HostStream] = [:]
@@ -165,7 +166,8 @@ final class HostSession: @unchecked Sendable {
         case let .closeStream(streamID):
             endStream(streamID, reason: "Closed by viewer.", notify: false)
         case let .requestKeyframe(streamID):
-            streams[tileOwners[streamID] ?? streamID]?.sender.requestKeyframe()
+            // A strip's receiver asks for that strip only.
+            streams[tileOwners[streamID] ?? streamID]?.sender.requestKeyframe(streamID: streamID)
         case let .receiverReport(streamID, received, dropped):
             if let owner = tileOwners[streamID] {
                 // Strips: the first one's reports pace the stream; loss in any backs it off.
@@ -285,7 +287,7 @@ final class HostSession: @unchecked Sendable {
         if plaintext == DatagramKind.keepaliveDatagram { peerAddress = address }
         datagramLock.unlock()
         if isNewPeer {
-            log.info("viewer datagrams from \(address.description, privacy: .public)")
+            log.notice("viewer datagrams from \(address.description, privacy: .public)")
             queue.async { [self] in streams.values.forEach { $0.sender.requestKeyframe() } }
         }
     }
@@ -743,6 +745,16 @@ final class HostSession: @unchecked Sendable {
     }()
 
     private func sendReports() {
+        datagramLock.lock()
+        let destination = peerAddress?.description ?? "none"
+        datagramLock.unlock()
+        if destination == "none", !streams.isEmpty {
+            noDatagramsReports += 1
+            // Once, after a few seconds: video is encoded but has nowhere to go.
+            if noDatagramsReports == 3 {
+                log.error("no UDP keepalives from \(self.viewerName, privacy: .public): video is not sent")
+            }
+        }
         for stream in streams.values {
             let summary = stream.sender.stats.drain()
             guard summary.framesPerSecond > 0 else { continue }
@@ -750,7 +762,7 @@ final class HostSession: @unchecked Sendable {
                 captureP50: summary.p50[.capture] ?? 0, waitP50: summary.p50[.encodeWait] ?? 0,
                 encodeP50: summary.p50[.encode] ?? 0, encodeP95: summary.p95[.encode] ?? 0,
                 framesPerSecond: summary.framesPerSecond, megabitsPerSecond: summary.megabitsPerSecond,
-                bitRate: stream.bitRate, chip: Self.chip)))
+                bitRate: stream.bitRate, chip: Self.chip, videoDestination: destination)))
         }
     }
 
