@@ -292,6 +292,10 @@ that app, so the mirror stops being key; that only affects this loopback.
 - Windows hidden behind others still stream (ScreenCaptureKit captures them),
   but macOS throttles occluded windows' rendering.
 - Drag and drop between Macs is not implemented.
+- On the host, macOS covers each shared window's close/minimize/zoom buttons
+  with a purple sharing indicator while it is captured. It is a system
+  privacy indicator with no API to turn it off; it isn't in the captured
+  image, so the viewer sees the normal buttons.
 - Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
   there is no FEC.
 - The virtual display sits right of the main display; on a Mac with a real
