@@ -164,6 +164,9 @@ final class HostSession: @unchecked Sendable {
     var lastInputNanos: UInt64 { lastInputTime }
     /// New windows that may still turn out to be standard windows, by first sighting.
     private var newWindowCandidates: [CGWindowID: UInt64] = [:]
+    /// Layer-0 windows that came on screen in the last moment, by first
+    /// sighting: one of them may be the tab taking a streamed window's place.
+    private var recentArrivals: [CGWindowID: UInt64] = [:]
     private var lastCandidateCheck: UInt64 = 0
     /// When a streamed window last went in or out of full screen on the host.
     /// Its move to a Space of its own takes every other window off the
@@ -1196,6 +1199,7 @@ final class HostSession: @unchecked Sendable {
         let onScreen = WindowServerWindow.onScreen()
         var byID: [CGWindowID: WindowServerWindow] = [:]
         for window in onScreen { byID[window.id] = window }
+        followTabs(mains, onScreen: onScreen, byID: byID)
         openNewWindows(onScreen)
 
         for main in mains {
@@ -1244,6 +1248,97 @@ final class HostSession: @unchecked Sendable {
     }
 
     private static let offScreenGrace: UInt64 = 700_000_000
+
+    // MARK: Tabs
+
+    /// Each tab of an app using macOS's native tabs (Ghostty, Terminal,
+    /// Safari, Finder…) is a window of its own: choosing another tab orders
+    /// the shown one out and the chosen one in, in the same place. Closing
+    /// the streamed window and opening the other as a new one made the
+    /// viewer's window flash on every tab switch, so the stream moves to the
+    /// window that took the streamed one's place: another window of the
+    /// same app, arriving with the same frame as it leaves. The viewer's
+    /// window stays and shows the other tab. An app that replaces a window
+    /// with another in the same place is followed the same way.
+    private func followTabs(_ mains: [HostStream], onScreen: [WindowServerWindow],
+                            byID: [CGWindowID: WindowServerWindow]) {
+        let now = HostClock.nowNanos()
+        if let known = knownWindows {
+            for id in Self.trackedWindowIDs(onScreen) where !known.contains(id) && recentArrivals[id] == nil {
+                recentArrivals[id] = now
+            }
+        }
+        recentArrivals = recentArrivals.filter { byID[$0.key] != nil && now - $0.value < Self.tabArrivalInterval }
+        guard !recentArrivals.isEmpty else { return }
+        var taken = Set(streams.values.map(\.windowID))
+        for main in mains where byID[main.windowID] == nil && !main.minimizedOnHost {
+            guard let tab = onScreen.first(where: {
+                recentArrivals[$0.id] != nil && !taken.contains($0.id) && Self.isTab($0, of: main)
+            }) else { continue }
+            taken.insert(tab.id)
+            handOff(main, to: tab)
+        }
+    }
+
+    /// The arrival may come a moment before the streamed window leaves, or after.
+    private static let tabArrivalInterval: UInt64 = 1_000_000_000
+
+    /// Tabs of a window share its frame.
+    private static func isTab(_ window: WindowServerWindow, of main: HostStream) -> Bool {
+        let frame = main.description.frame
+        return window.pid == main.pid && window.layer == 0 && window.alpha > 0.01
+            && abs(window.frame.minX - frame.minX) <= 2 && abs(window.frame.minY - frame.minY) <= 2
+            && abs(window.frame.width - frame.width) <= 2 && abs(window.frame.height - frame.height) <= 2
+    }
+
+    /// A window that just arrived where a streamed window of its app is: not
+    /// a new window to open while it may turn out to be a tab taking that
+    /// one's place.
+    private func mayBeTab(_ window: WindowServerWindow) -> Bool {
+        recentArrivals[window.id] != nil && streams.values.contains {
+            $0.description.role == .window && Self.isTab(window, of: $0)
+        }
+    }
+
+    private func handOff(_ stream: HostStream, to window: WindowServerWindow) {
+        let streamID = stream.streamID
+        log.notice("window \(window.id) takes the place of window \(stream.windowID) (a tab); its stream follows")
+        // Children (menus, popovers, sheets) belonged to the other tab.
+        for childID in Array(stream.children.values) where childID != 0 {
+            endStream(childID, reason: "Child window closed.")
+        }
+        stream.children = [:]
+        stream.sender.ignoreCaptureStop()
+        stream.description.windowID = window.id
+        stream.description.frame = window.frame
+        if !window.title.isEmpty { stream.description.title = window.title }
+        stream.axWindow = try? AXWindow(pid: stream.pid, windowID: window.id)
+        stream.offScreenSince = nil
+        stream.controls = nil
+        stream.concealedRect = nil
+        recentArrivals[window.id] = nil
+        newWindowCandidates[window.id] = nil
+        if awaitingSuccessor?.pid == stream.pid { awaitingSuccessor = nil }
+        connection.send(.streamMoved(streamID: streamID, frame: window.frame, title: stream.description.title,
+                                     windowID: window.id))
+        sendControls(stream)
+        Task { [self] in
+            let captured = try? await HostWindows.scWindow(id: window.id)
+            queue.async { [self] in
+                // Another tab may have been chosen meanwhile.
+                guard let stream = streams[streamID], stream.windowID == window.id else { return }
+                guard let captured else {
+                    endStream(streamID, reason: "The window was closed.")
+                    return
+                }
+                stream.sender.switchWindow(to: captured) { [self] error in
+                    guard let error else { return }
+                    log.error("capture of tab \(window.id) failed: \(error.localizedDescription, privacy: .public)")
+                    queue.async { self.endStream(streamID, reason: "Capture failed: \(error.localizedDescription)") }
+                }
+            }
+        }
+    }
 
     /// How long a window closed by the viewer's input waits for its app's next window.
     private static let successorInterval: UInt64 = 15_000_000_000
@@ -1412,7 +1507,7 @@ final class HostSession: @unchecked Sendable {
                 newWindowCandidates[window.id] = nil
                 continue
             }
-            guard window.frame.width >= 160, window.frame.height >= 100, window.alpha > 0.01,
+            guard window.frame.width >= 160, window.frame.height >= 100, window.alpha > 0.01, !mayBeTab(window),
                   !Self.panelServiceNames.contains(where: { window.ownerName.contains($0) }),
                   standardWindowIDs(pid: window.pid, after: seen)?.contains(window.id) == true else { continue }
             newWindowCandidates[window.id] = nil

@@ -400,8 +400,10 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     /// with nil, gives the display its own resolution back.
     case desktopSize(streamID: UInt16, size: CGSize?)
     case streamStarted(StreamDescription)
-    /// The surface moved or changed title on the host.
-    case streamMoved(streamID: UInt16, frame: CGRect, title: String)
+    /// The surface moved or changed title on the host. `windowID`: the
+    /// window it shows from now on, when another took its place (a tab;
+    /// older hosts: nil).
+    case streamMoved(streamID: UInt16, frame: CGRect, title: String, windowID: UInt32? = nil)
     case streamEnded(streamID: UInt16, reason: String)
     case closeStream(streamID: UInt16)
     case requestKeyframe(streamID: UInt16)

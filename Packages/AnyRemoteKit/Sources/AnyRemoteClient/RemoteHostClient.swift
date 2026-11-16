@@ -32,7 +32,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         case connected(HostWelcome)
         case disconnected(String?)
         case streamStarted(StreamDescription)
-        case streamMoved(streamID: UInt16, frame: CGRect, title: String)
+        case streamMoved(streamID: UInt16, frame: CGRect, title: String, windowID: UInt32?)
         case streamEnded(streamID: UInt16, reason: String)
         case resizeApplied(streamID: UInt16, size: CGSize)
         case cursor(CursorImage)
@@ -304,8 +304,8 @@ public final class RemoteHostClient: @unchecked Sendable {
             emit(.statusItemMenu(id: id, menus))
         case .streamStarted(let description):
             emit(.streamStarted(description))
-        case let .streamMoved(streamID, frame, title):
-            emit(.streamMoved(streamID: streamID, frame: frame, title: title))
+        case let .streamMoved(streamID, frame, title, windowID):
+            emit(.streamMoved(streamID: streamID, frame: frame, title: title, windowID: windowID))
         case let .streamEnded(streamID, reason):
             emit(.streamEnded(streamID: streamID, reason: reason))
         case let .resizeApplied(streamID, size):

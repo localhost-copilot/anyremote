@@ -372,8 +372,13 @@ final class HostConnection {
             onClosed?()
         case .streamStarted(let description):
             streamStarted(description)
-        case let .streamMoved(streamID, frame, title):
+        case let .streamMoved(streamID, frame, title, windowID):
             if let mirror = mirrors[streamID] {
+                if let windowID, windowID != mirror.windowID {
+                    openWindowIDs.remove(mirror.windowID)
+                    openWindowIDs.insert(windowID)
+                    mirror.hostWindowChanged(windowID)
+                }
                 mirror.hostFrameChanged(frame, title: title)
                 for child in children.values where child.parentStreamID == streamID { child.reposition() }
             } else if let child = children[streamID] {
@@ -443,10 +448,10 @@ final class HostConnection {
                 onLaunchedWindow?()
             }
             let mirror = MirrorWindowController(connection: self, description: description)
-            mirror.onClose = { [weak self] in
+            mirror.onClose = { [weak self, unowned mirror] in
                 guard let self else { return }
                 self.mirrors[description.streamID] = nil
-                self.openWindowIDs.remove(description.windowID)
+                self.openWindowIDs.remove(mirror.windowID)
                 for (id, child) in self.children where child.parentStreamID == description.streamID {
                     child.close()
                     self.children[id] = nil

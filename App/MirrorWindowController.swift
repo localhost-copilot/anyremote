@@ -165,6 +165,13 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
 
     // MARK: Host events
 
+    /// Another window took the host window's place (one of its tabs); the
+    /// stream goes on with it.
+    func hostWindowChanged(_ windowID: UInt32) {
+        stream.windowID = windowID
+        NotificationCenter.default.post(name: .mirrorsChanged, object: nil)
+    }
+
     func hostFrameChanged(_ frame: CGRect, title: String) {
         let oldTitle = stream.title
         stream.frame = frame

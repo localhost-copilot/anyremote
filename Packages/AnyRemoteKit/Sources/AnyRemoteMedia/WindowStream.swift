@@ -16,12 +16,15 @@ public final class WindowStreamSender: @unchecked Sendable {
         case strips(TiledEncoder)
     }
     private let encoding: Encoding
+    /// What captured frames go to: the encoder, which outlives a switch of window.
+    private var encodeFrame: (@Sendable (CapturedFrame) -> Void)!
+    /// Window streams: makes the capture of another window (see `switchWindow`).
+    private var makeWindowCapture: ((SCWindow) -> WindowCaptureSession)?
 
     /// Called on the capture queue when SCK stops the stream on its own
     /// (window closed, display gone, permission revoked).
     public var onStop: (@Sendable (Error?) -> Void)? {
-        get { capture.onStop }
-        set { capture.onStop = newValue }
+        didSet { capture.onStop = onStop }
     }
 
     public convenience init(
@@ -35,6 +38,11 @@ public final class WindowStreamSender: @unchecked Sendable {
     ) {
         self.init(streamID: streamID, configuration: configuration, maximumDatagramSize: maximumDatagramSize,
                   stats: stats, send: send) { encode in
+            WindowCaptureSession(window: window, frameRate: configuration.expectedFrameRate,
+                                 alpha: configuration.alpha, backdrop: backdrop, handler: encode)
+        }
+        let encode = encodeFrame!
+        makeWindowCapture = { window in
             WindowCaptureSession(window: window, frameRate: configuration.expectedFrameRate,
                                  alpha: configuration.alpha, backdrop: backdrop, handler: encode)
         }
@@ -94,12 +102,13 @@ public final class WindowStreamSender: @unchecked Sendable {
         if let tileStreamIDs, tileStreamIDs.count > 1,
            let tiled = TiledEncoder(streamIDs: tileStreamIDs, configuration: configuration, output: emit) {
             encoding = .strips(tiled)
-            capture = makeCapture { frame in tiled.encode(frame) }
+            encodeFrame = { frame in tiled.encode(frame) }
         } else {
             let encoder = HEVCEncoder(configuration: configuration) { emit(streamID, $0) }
             encoding = .whole(encoder)
-            capture = makeCapture { frame in encoder.encode(frame) }
+            encodeFrame = { frame in encoder.encode(frame) }
         }
+        capture = makeCapture(encodeFrame)
     }
 
     public func start() async throws { try await capture.start() }
@@ -129,6 +138,36 @@ public final class WindowStreamSender: @unchecked Sendable {
     /// from the top-left corner), painted over before encoding.
     public func setConcealedRect(_ rect: CGRect?) {
         (capture as? WindowCaptureSession)?.setConcealedRect(rect)
+    }
+
+    /// Window streams: captures `window` from now on, into the same encoder,
+    /// so the viewer's picture goes on under the same stream (the tab that
+    /// took the place of the window captured so far). The old capture stops
+    /// first. Called on the owner's queue, like the other setters; `done`
+    /// gets the new capture's start error, if any.
+    public func switchWindow(to window: SCWindow, done: @escaping @Sendable (Error?) -> Void) {
+        guard let makeWindowCapture else { return done(nil) }
+        let old = capture!
+        old.onStop = nil
+        let new = makeWindowCapture(window)
+        new.onStop = onStop
+        capture = new
+        Task {
+            await old.stop()
+            do {
+                try await new.start()
+                requestKeyframe()
+                done(nil)
+            } catch {
+                done(error)
+            }
+        }
+    }
+
+    /// The captured window is going away for another (see `switchWindow`):
+    /// its capture stopping (a closed tab) no longer ends the stream.
+    public func ignoreCaptureStop() {
+        capture.onStop = nil
     }
 
     /// The display's new size (points) and scale, for display streams.
