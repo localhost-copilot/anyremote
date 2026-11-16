@@ -18,7 +18,8 @@ import AppKit
 /// NSPasteboard can't move off the main thread: there is one object per
 /// pasteboard, AppKit uses it on the main thread (validating Paste, for one),
 /// and concurrent use crashed. So each bridge talks to the clipboard through
-/// a Pasteboard Manager reference of its own, used only on its queue.
+/// a Pasteboard Manager reference of its own, used only on
+/// `ClipboardReference.queue`, which every reference shares.
 @MainActor
 public final class PasteboardBridge {
     public nonisolated static let maximumBytes = 16 << 20
@@ -51,7 +52,7 @@ public final class PasteboardBridge {
     func waitUntilIdle() { worker.queue.sync {} }
 
     private final class Worker: @unchecked Sendable {
-        let queue = DispatchQueue(label: "com.localhost-copilot.anyremote.pasteboard", qos: .utility)
+        var queue: DispatchQueue { ClipboardReference.queue }
         private let send: @Sendable ([PasteboardItem]) -> Void
         // Queue-confined.
         private let board: ClipboardReference?
@@ -135,9 +136,18 @@ public final class PasteboardBridge {
 }
 
 /// A Pasteboard Manager reference to a pasteboard: independent of AppKit's
-/// NSPasteboard object, so it can be used off the main thread. Not
-/// thread-safe itself; each bridge confines its own to its queue.
+/// NSPasteboard object, so it can be used off the main thread.
+///
+/// Every reference must be used only on `queue`. Separate references are not
+/// independent: the Pasteboard Manager keeps per-pasteboard lookup caches
+/// shared by all of a process's references, unguarded, and a host session's
+/// bridge reading the clipboard while the viewer's bridge did crashed
+/// AnyRemote in `GetPerPasteboardLookupCollections`.
 public final class ClipboardReference: @unchecked Sendable {
+    /// The one queue for all Pasteboard Manager use in this process. Drags
+    /// are read here too, so it runs at their priority.
+    public static let queue = DispatchQueue(label: "com.localhost-copilot.anyremote.pasteboard", qos: .userInitiated)
+
     public struct Item {
         let id: PasteboardItemID
         public let flavors: [String]

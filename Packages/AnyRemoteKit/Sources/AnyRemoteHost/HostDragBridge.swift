@@ -73,7 +73,9 @@ final class HostDragBridge: @unchecked Sendable {
     private var catchDone: Set<UInt32> = []
     private var nextDragID = UInt32.random(in: 1...0x7fff_ffff)
 
-    private let readQueue = DispatchQueue(label: "anyremote.drag.read", qos: .userInitiated)
+    /// Shared with the clipboard bridges: the Pasteboard Manager isn't safe
+    /// to use from two queues at once, even through separate references.
+    private var readQueue: DispatchQueue { ClipboardReference.queue }
     /// Read only on `readQueue`.
     private let board = ClipboardReference(name: .drag)
 
