@@ -98,6 +98,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         windowButtons.adoptButtons(of: window)
         windowButtons.setAction(#selector(closeHostWindow(_:)), target: self, for: .closeButton)
         windowButtons.onMouseExit = { [weak self] in self?.windowButtonsExited() }
+        windowButtons.onButtonsTaken = { [weak self] in self?.layoutWindowButtons() }
 
         surface.frameLayer.onGeometryChange = { [weak self] width, height, scale in
             self?.remoteGeometryChanged(pixelWidth: width, pixelHeight: height, scale: scale)

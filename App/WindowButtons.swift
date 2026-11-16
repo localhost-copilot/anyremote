@@ -17,6 +17,9 @@ final class WindowButtonGroup: NSView {
     private(set) var isMouseInside = false
     /// Called when the pointer leaves the buttons.
     var onMouseExit: (() -> Void)?
+    /// Called after AppKit took a button back into the hidden title bar.
+    var onButtonsTaken: (() -> Void)?
+    private var reclaimScheduled = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -37,6 +40,24 @@ final class WindowButtonGroup: NSView {
                 button.removeFromSuperview()
                 addSubview(button)
             }
+        }
+    }
+
+    /// AppKit lays the title bar out again on some changes, the window's
+    /// title among them (a terminal running htop retitles its window), and
+    /// puts the buttons back into the hidden title bar, where nobody sees
+    /// them. They are taken back once AppKit is done.
+    override func willRemoveSubview(_ subview: NSView) {
+        super.willRemoveSubview(subview)
+        // A group that is being deallocated removes its subviews too, and a
+        // weak reference to it then aborts the app. It is out of its window
+        // by then; while in one, its superview keeps it alive.
+        guard window != nil, let button = subview as? NSButton, buttons.values.contains(button), !reclaimScheduled else { return }
+        reclaimScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            reclaimScheduled = false
+            onButtonsTaken?()
         }
     }
 
@@ -118,7 +139,20 @@ final class WindowButtonGroup: NSView {
 
     // Clicks between the buttons stay here: on the host they would land on
     // the sharing indicator, which opens the system's sharing controls there.
-    override func mouseDown(with event: NSEvent) {}
+    // Like the title bar around a window's buttons, they move the window and
+    // a double-click does what Desktop & Dock settings say.
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        if event.clickCount == 2 {
+            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+            case "None": break
+            case "Minimize": window.performMiniaturize(nil)
+            default: window.performZoom(nil)
+            }
+            return
+        }
+        window.performDrag(with: event)
+    }
     override func mouseUp(with event: NSEvent) {}
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
