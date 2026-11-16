@@ -138,8 +138,12 @@ import Testing
         #expect(version() == "1.0.0")
         for _ in 0..<50 where version() != "2.0.0" { try await Task.sleep(for: .milliseconds(100)) }
         #expect(version() == "2.0.0")
-        let leftovers = try FileManager.default.contentsOfDirectory(atPath: installed.deletingLastPathComponent().path)
-        #expect(leftovers == ["AnyRemote.app"])
+        // The old copy is deleted only after the new one is in place, so wait for that too.
+        func leftovers() -> [String] {
+            (try? FileManager.default.contentsOfDirectory(atPath: installed.deletingLastPathComponent().path)) ?? []
+        }
+        for _ in 0..<50 where leftovers() != ["AnyRemote.app"] { try await Task.sleep(for: .milliseconds(100)) }
+        #expect(leftovers() == ["AnyRemote.app"])
     }
 }
 
