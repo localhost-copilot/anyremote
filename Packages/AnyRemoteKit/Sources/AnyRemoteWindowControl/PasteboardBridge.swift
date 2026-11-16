@@ -137,15 +137,15 @@ public final class PasteboardBridge {
 /// A Pasteboard Manager reference to a pasteboard: independent of AppKit's
 /// NSPasteboard object, so it can be used off the main thread. Not
 /// thread-safe itself; each bridge confines its own to its queue.
-final class ClipboardReference: @unchecked Sendable {
-    struct Item {
+public final class ClipboardReference: @unchecked Sendable {
+    public struct Item {
         let id: PasteboardItemID
-        let flavors: [String]
+        public let flavors: [String]
     }
 
     private let reference: Pasteboard
 
-    init?(name: NSPasteboard.Name) {
+    public init?(name: NSPasteboard.Name) {
         let cfName = (name == .general ? kPasteboardClipboard : name.rawValue) as CFString
         var reference: Pasteboard?
         guard PasteboardCreate(cfName, &reference) == noErr, let reference else { return nil }
@@ -153,11 +153,11 @@ final class ClipboardReference: @unchecked Sendable {
     }
 
     /// Catches up with the pasteboard; true when it changed since last time.
-    func synchronize() -> Bool {
+    public func synchronize() -> Bool {
         PasteboardSynchronize(reference).contains(.modified)
     }
 
-    func items() -> [Item] {
+    public func items() -> [Item] {
         var count = 0
         guard PasteboardGetItemCount(reference, &count) == noErr, count > 0 else { return [] }
         return (1...count).compactMap { index in
@@ -169,7 +169,7 @@ final class ClipboardReference: @unchecked Sendable {
         }
     }
 
-    func data(_ item: Item, _ flavor: String) -> Data? {
+    public func data(_ item: Item, _ flavor: String) -> Data? {
         var data: CFData?
         guard PasteboardCopyItemFlavorData(reference, item.id, flavor as CFString, &data) == noErr else { return nil }
         return data as Data?

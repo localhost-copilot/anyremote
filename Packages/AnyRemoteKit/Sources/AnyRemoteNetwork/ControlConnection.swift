@@ -61,6 +61,8 @@ public final class ControlConnection: @unchecked Sendable {
     /// serverHello. Host: after the first sealed frame opened.
     public var onSecured: (@Sendable (SecureSessionInfo) -> Void)?
     public var onMessage: (@Sendable (ControlMessage) -> Void)?
+    /// Raw sealed data (transfer chunks), on `queue`.
+    public var onData: (@Sendable (Data) -> Void)?
     public var onClose: (@Sendable (Error?) -> Void)?
 
     public var remoteEndpoint: NWEndpoint? { connection.currentPath?.remoteEndpoint }
@@ -71,7 +73,8 @@ public final class ControlConnection: @unchecked Sendable {
         self.queue = queue
     }
 
-    public static func parameters() -> NWParameters {
+    /// `bulk`: the transfer connection, which moves files rather than input.
+    public static func parameters(bulk: Bool = false) -> NWParameters {
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
         tcp.enableKeepalive = true
@@ -80,7 +83,7 @@ public final class ControlConnection: @unchecked Sendable {
         tcp.keepaliveCount = 3
         tcp.connectionTimeout = 8
         let parameters = NWParameters(tls: nil, tcp: tcp)
-        parameters.serviceClass = .interactiveVideo
+        parameters.serviceClass = bulk ? .bestEffort : .interactiveVideo
         parameters.includePeerToPeer = true
         return parameters
     }
@@ -122,6 +125,23 @@ public final class ControlConnection: @unchecked Sendable {
                                 completion: .contentProcessed { _ in })
             } catch {
                 log.error("send failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// Thread-safe. Seals raw data (a transfer chunk); `completion` runs on
+    /// `queue` once the bytes are handed to the network, for flow control.
+    public func send(data: Data, completion: (@Sendable () -> Void)? = nil) {
+        queue.async { [self] in
+            guard !closed, var sealer else { completion?(); return }
+            do {
+                let body = try sealer.seal(data)
+                self.sealer = sealer
+                connection.send(content: ControlFrame.encode(kind: .sealedData, body: body),
+                                completion: .contentProcessed { _ in completion?() })
+            } catch {
+                log.error("send failed: \(String(describing: error), privacy: .public)")
+                completion?()
             }
         }
     }
@@ -176,6 +196,15 @@ public final class ControlConnection: @unchecked Sendable {
         switch kind {
         case .handshake:
             try handleHandshake(try ControlCoding.decode(HandshakeMessage.self, from: body))
+        case .sealedData:
+            guard var opener else { throw ConnectionError.handshake("data before key exchange") }
+            // The host takes data only once a message proved the viewer; on
+            // the viewer, any frame that opens proves the host.
+            if case .host = role, !authenticatedPeer { throw ConnectionError.handshake("data before authentication") }
+            let plaintext = try opener.open(body)
+            self.opener = opener
+            authenticatedPeer = true
+            onData?(plaintext)
         case .sealed:
             guard var opener else { throw ConnectionError.handshake("sealed frame before key exchange") }
             let plaintext: Data

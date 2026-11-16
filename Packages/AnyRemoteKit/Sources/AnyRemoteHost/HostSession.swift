@@ -176,6 +176,19 @@ final class HostSession: @unchecked Sendable {
     /// belong with the window being typed into).
     private var inputMethodProcesses: [pid_t: InputMethodProcess] = [:]
 
+    /// The viewer's transfer connection presents this to join the session.
+    private var transferToken: Data?
+    private var transfer: FileTransferChannel?
+    private lazy var dragBridge: HostDragBridge = {
+        let connection = connection
+        let bridge = HostDragBridge(queue: queue, injector: injector) { connection.send($0) }
+        bridge.streamOrigin = { [unowned self] streamID in surfaceOrigin(streamID) }
+        bridge.raiseStream = { [unowned self] streamID in
+            if let stream = streams[streamID], stream.description.role == .window { focus(stream, force: true) }
+        }
+        return bridge
+    }()
+
     init(sessionID: UInt32, connection: ControlConnection, queue: DispatchQueue, service: HostService) {
         self.sessionID = sessionID
         self.connection = connection
@@ -196,6 +209,12 @@ final class HostSession: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         guard !ended else { return }
         if !authenticated {
+            if case let .transfer(.attach(sessionID, token)) = message {
+                // Not a viewer: another session's transfer connection.
+                ended = true
+                service?.attachTransfer(connection, from: self, toSession: sessionID, token: token)
+                return
+            }
             guard case let .authenticate(viewerName, takeOver) = message else {
                 connection.close(after: .rejected(reason: "Expected authentication."))
                 return
@@ -271,6 +290,10 @@ final class HostSession: @unchecked Sendable {
             service?.microphone.setOffered(enabled, by: self)
         case let .microphoneStream(format):
             service?.microphone.streamChanged(format, from: self)
+        case .transferToken(let token):
+            transferToken = token
+        case .drag(let event):
+            dragBridge.handle(event)
         case .goodbye:
             end(reason: "Viewer disconnected.")
         default:
@@ -333,6 +356,9 @@ final class HostSession: @unchecked Sendable {
             setPasteboardSharing(false)
             restoreKeyboardLayout()
             cursor?.stop()
+            dragBridge.cancel()
+            transfer?.close()
+            transfer = nil
             if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             for id in Array(streams.keys) { endStream(id, reason: reason, notify: false) }
             stopAudio()
@@ -893,6 +919,9 @@ final class HostSession: @unchecked Sendable {
     private func streamsMayHaveEnded() {
         updateAudio()
         if !streams.values.contains(where: { $0.description.role != .child }) {
+            dragBridge.cancel()
+            transfer?.close()
+            transfer = nil
             if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             cursor?.stop()
             cursor = nil
@@ -1285,7 +1314,9 @@ final class HostSession: @unchecked Sendable {
         prepareKeyboard(for: event)
         if stream.description.role == .display {
             if stream.offScreenSince != nil, case .mouseDown = event { return }
+            let wasPressed = injector.isPressed
             injector.post(event, windowOrigin: stream.description.frame.origin)
+            trackPress(event, streamID: streamID, wasPressed: wasPressed)
             scheduleCaretLookup(after: event, streamID: streamID)
             return
         }
@@ -1322,7 +1353,9 @@ final class HostSession: @unchecked Sendable {
         default:
             break
         }
+        let wasPressed = injector.isPressed
         injector.post(event, windowOrigin: origin)
+        trackPress(event, streamID: streamID, wasPressed: wasPressed)
         scheduleCaretLookup(after: event, streamID: streamID)
         if case .mouseUp = event, !injector.isPressed {
             setTrackerFast(false)
@@ -1334,6 +1367,48 @@ final class HostSession: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// A left press may start a drag here, which the viewer then takes over.
+    private func trackPress(_ event: InputEvent, streamID: UInt16, wasPressed: Bool) {
+        switch event {
+        case let .mouseDown(_, button, _, _, _) where button == .left && !wasPressed:
+            dragBridge.pressBegan(streamID: streamID)
+        case .mouseUp where wasPressed && !injector.isPressed:
+            dragBridge.pressEnded()
+        default:
+            break
+        }
+    }
+
+    /// Where a stream's surface is now (global top-left points), for drags.
+    private func surfaceOrigin(_ streamID: UInt16) -> CGPoint? {
+        guard let stream = streams[streamID] else { return nil }
+        switch stream.description.role {
+        case .display:
+            return stream.description.frame.origin
+        case .window:
+            return WindowServerWindow.describe(stream.windowID)?.frame.origin ?? stream.description.frame.origin
+        case .child:
+            return nil
+        }
+    }
+
+    /// This session's transfer connection arrived (see `HostService.attachTransfer`).
+    func adoptTransfer(_ connection: ControlConnection, token: Data) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !ended, let transferToken, token == transferToken else {
+            log.error("transfer connection with an unknown token")
+            connection.close()
+            return
+        }
+        transfer?.close()
+        let channel = FileTransferChannel(connection: connection)
+        let bridge = dragBridge
+        channel.resolve = { dragID, itemID, reply in bridge.resolve(dragID: dragID, itemID: itemID, reply: reply) }
+        transfer = channel
+        bridge.transfer = channel
+        log.notice("transfer connection joined")
     }
 
     /// With the viewer's input method, typing needs a plain keyboard layout here (see `HostKeyboardLayout`).

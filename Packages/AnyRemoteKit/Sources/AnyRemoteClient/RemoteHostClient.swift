@@ -45,6 +45,8 @@ public final class RemoteHostClient: @unchecked Sendable {
         /// This Mac's microphone opened or closed for the host, or the host
         /// wanted it and it isn't allowed here.
         case microphone(MicrophoneState)
+        /// A drag began on the host under this viewer's press.
+        case hostDragBegan(streamID: UInt16, DragManifest)
     }
 
     public enum MicrophoneState: Sendable, Equatable {
@@ -87,6 +89,13 @@ public final class RemoteHostClient: @unchecked Sendable {
     private var wantsAudio = false
     private var offersMicrophone = false
     private var microphone: ViewerMicrophone?
+
+    // Queue-confined.
+    private var transfer: FileTransferChannel?
+    private let transferLock = NSLock()
+    /// Serves the host's fetches of items this viewer offered in a drag.
+    /// Called on a queue of the client's.
+    nonisolated(unsafe) public var dragResolver: FileTransferChannel.Resolver?
 
     /// Delivered on the main queue.
     public var onEvent: (@MainActor @Sendable (Event) -> Void)?
@@ -182,6 +191,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         }
         if wantsAudio { control?.send(.audio(enabled: true)) }
         if offersMicrophone { control?.send(.microphone(enabled: true)) }
+        openTransfer()
         connectContinuation?.resume(returning: welcome)
         connectContinuation = nil
         emit(.connected(welcome))
@@ -229,6 +239,8 @@ public final class RemoteHostClient: @unchecked Sendable {
     private func finish(_ reason: String?) {
         guard !finished else { return }
         finished = true
+        transfer?.close()
+        transfer = nil
         timers.forEach { $0.cancel() }
         timers.removeAll()
         socket?.cancel()
@@ -298,6 +310,8 @@ public final class RemoteHostClient: @unchecked Sendable {
             startAudio(format)
         case .microphoneWanted(let wanted):
             microphoneWanted(wanted)
+        case let .hostDragBegan(streamID, manifest):
+            emit(.hostDragBegan(streamID: streamID, manifest))
         default:
             log.debug("unexpected message from host")
         }
@@ -352,6 +366,62 @@ public final class RemoteHostClient: @unchecked Sendable {
     public func launchApplication(path: String) { send(.launchApplication(path: path)) }
 
     public func quitApplication(path: String, force: Bool) { send(.quitApplication(path: path, force: force)) }
+
+    // MARK: Drag and drop
+
+    /// A second sealed connection for dragged files, so a large copy never
+    /// waits in line with input. Reopened if it drops while connected.
+    private func openTransfer() {
+        guard !finished, let session = control?.session else { return }
+        let token = SessionKeys.randomNonce()
+        control?.send(.transferToken(token))
+        let transferQueue = DispatchQueue(label: "anyremote.client.transfer", qos: .userInitiated)
+        let connection = ControlConnection(connection: NWConnection(to: endpoint, using: ControlConnection.parameters(bulk: true)),
+                                           role: .viewer(code: code, viewerName: viewerName), queue: transferQueue)
+        let channel = FileTransferChannel(connection: connection)
+        connection.onSecured = { [weak connection] _ in
+            connection?.send(.transfer(.attach(sessionID: session.sessionID, token: token)))
+        }
+        channel.resolve = { [weak self] dragID, itemID, reply in
+            guard let resolver = self?.dragResolver else { return reply(nil) }
+            resolver(dragID, itemID, reply)
+        }
+        channel.onClose = { [weak self, weak channel] in
+            guard let self else { return }
+            self.queue.asyncAfter(deadline: .now() + 2) {
+                guard !self.finished, self.transfer === channel else { return }
+                log.notice("transfer connection closed; reopening")
+                self.openTransfer()
+            }
+        }
+        transfer = channel
+        transferLock.lock()
+        currentTransfer = channel
+        transferLock.unlock()
+        connection.start()
+    }
+
+    private var currentTransfer: FileTransferChannel? // under transferLock
+
+    /// Fetches an item of the host's drag. Thread-safe; callbacks run on a
+    /// queue of the channel's.
+    @discardableResult
+    public func fetchDragItem(dragID: UInt32, itemID: UInt32, to destination: URL,
+                              progress: @escaping @Sendable (Int64) -> Void = { _ in },
+                              completion: @escaping @Sendable (Result<URL, Error>) -> Void) -> FileTransferChannel.Fetch? {
+        transferLock.lock()
+        let channel = currentTransfer
+        transferLock.unlock()
+        guard let channel else {
+            completion(.failure(FileTransferChannel.TransferError.closed))
+            return nil
+        }
+        return channel.fetch(dragID: dragID, itemID: itemID, to: destination, progress: progress,
+                             completion: completion)
+    }
+
+    /// The viewer's drag over the host's surfaces.
+    public func sendDrag(_ event: DragEvent) { send(.drag(event)) }
 
     // MARK: Sound
 

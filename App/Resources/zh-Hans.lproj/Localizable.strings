@@ -241,3 +241,6 @@
 "This copy of AnyRemote doesn’t include the AnyRemote Microphone." = "这个 AnyRemote 副本不包含 AnyRemote 麦克风。";
 "The installation failed." = "安装失败。";
 "The AnyRemote Microphone Couldn’t Be Changed" = "无法更改 AnyRemote 麦克风";
+
+/* Drag and drop */
+"Untitled" = "未命名";

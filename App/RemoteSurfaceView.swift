@@ -19,6 +19,8 @@ protocol RemoteInputSink: AnyObject {
     /// drag), mouse moves move the window and the release stays local.
     func continueLocalDrag(at point: NSPoint) -> Bool
     func finishLocalDrag() -> Bool
+    /// Drags over this surface go to this host stream (nil: none).
+    var dragTarget: (any RemoteDragTarget)? { get }
     /// The host's text caret on this screen, when it reported one.
     func caretScreenRect() -> NSRect?
     /// The host text's font at the caret, at this window's scale, when reported.
@@ -32,6 +34,7 @@ extension RemoteInputSink {
     func finishLocalDrag() -> Bool { false }
     func caretScreenRect() -> NSRect? { nil }
     func caretFont() -> NSFont? { nil }
+    var dragTarget: (any RemoteDragTarget)? { nil }
 }
 
 /// A view showing one host surface and forwarding the mouse to the host.
@@ -40,7 +43,14 @@ extension RemoteInputSink {
 /// host even while a child window (menu) has the mouse.
 final class RemoteSurfaceView: NSView {
     let frameLayer = VideoFrameLayer()
-    weak var sink: (any RemoteInputSink)?
+    weak var sink: (any RemoteInputSink)? {
+        didSet {
+            // Drops from this Mac (and other hosts' windows) land on the host.
+            unregisterDraggedTypes()
+            if sink?.dragTarget != nil { registerForDraggedTypes(RemoteDragCoordinator.draggedTypes) }
+        }
+    }
+    var dragTarget: (any RemoteDragTarget)? { sink?.dragTarget }
     private var pressedButtons: UInt32 = 0
     private var localPress = false
     private var tracking: NSTrackingArea?
@@ -120,11 +130,21 @@ final class RemoteSurfaceView: NSView {
                                    clickCount: event.clickCount, modifiers: Self.modifiers(event)))
     }
 
+    /// This Mac's drag took the press over: no release will come here.
+    func abandonPress() {
+        guard pressedButtons != 0 else { return }
+        pressedButtons = 0
+        sink?.pressEnded()
+    }
+
     private func up(_ event: NSEvent, _ button: InputEvent.MouseButton) {
         sink?.sendInput(.mouseUp(point: point(event), button: button, buttonNumber: event.buttonNumber,
                                  clickCount: event.clickCount, modifiers: Self.modifiers(event)))
         pressedButtons &= ~(1 << UInt32(min(event.buttonNumber, 31)))
-        if pressedButtons == 0 { sink?.pressEnded() }
+        if pressedButtons == 0 {
+            sink?.pressEnded()
+            RemoteDragCoordinator.shared.pressEnded()
+        }
     }
 
     private func moved(_ event: NSEvent) {
@@ -175,10 +195,38 @@ final class RemoteSurfaceView: NSView {
     }
     override func mouseDragged(with event: NSEvent) {
         if localPress || sink?.continueLocalDrag(at: screenPoint(event)) == true { return }
+        // A drag began on the host: from here on it is this Mac's drag.
+        if let dragTarget, RemoteDragCoordinator.shared.surfaceDragged(self, target: dragTarget, event: event) { return }
         moved(event)
     }
     override func rightMouseDragged(with event: NSEvent) { moved(event) }
     override func otherMouseDragged(with event: NSEvent) { moved(event) }
+    // MARK: Drops
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard let dragTarget else { return [] }
+        return RemoteDragCoordinator.shared.dragUpdated(sender, target: dragTarget)
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        guard let dragTarget else { return }
+        RemoteDragCoordinator.shared.dragExited(sender, target: dragTarget)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard let dragTarget else { return false }
+        return RemoteDragCoordinator.shared.performDrop(sender, target: dragTarget)
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        guard let dragTarget else { return }
+        RemoteDragCoordinator.shared.dragEnded(sender, target: dragTarget)
+    }
+
+    override func wantsPeriodicDraggingUpdates() -> Bool { false }
+
     // Keep context menus and gestures from being handled locally.
     override func menu(for event: NSEvent) -> NSMenu? { nil }
 

@@ -14,7 +14,8 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// is adopted when the live resize ends. Dragging the host window's own title
 /// bar moves the host window, and the local window follows it.
 @MainActor
-final class MirrorWindowController: NSWindowController, NSWindowDelegate, RemoteInputSink, RemoteKeyTarget {
+final class MirrorWindowController: NSWindowController, NSWindowDelegate, RemoteInputSink, RemoteKeyTarget,
+                                    RemoteDragTarget {
     private(set) var stream: StreamDescription
     unowned let connection: HostConnection
     var onClose: (() -> Void)?
@@ -264,6 +265,13 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         let scale = pressScreenTopLeft == nil ? currentScale : pressScale
         return CGPoint(x: (point.x - topLeft.x) * scale.width, y: (topLeft.y - point.y) * scale.height)
     }
+
+    // MARK: RemoteDragTarget
+
+    var dragTarget: (any RemoteDragTarget)? { self }
+    /// The window's picture lacks the host's drag image: this Mac's drag shows it at once.
+    func takesOverHostDrag(at screenPoint: NSPoint) -> Bool { true }
+    var handsOverAtEdge: Bool { false }
 
     func sendInput(_ event: InputEvent) {
         if case let .mouseMove(point, _, _) = event, isFullScreen { revealButtonsInFullScreen(near: point) }

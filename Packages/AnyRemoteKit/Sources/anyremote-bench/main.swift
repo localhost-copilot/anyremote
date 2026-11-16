@@ -16,6 +16,9 @@
 // Full frame vs strips (see TileBench.swift):
 //   anyremote-bench --tiles [--seconds N] [--strips 4]
 //
+// Drag and drop through the host agent (see DragBench.swift):
+//   anyremote-bench --drag-test <scenario> --file <path> [--from x,y] [--to x,y]
+//
 // `--synthetic` opens a window of W×H points that scrolls dense text every
 // display frame: a reproducible worst-case workload for latency comparisons.
 
@@ -44,6 +47,15 @@ struct Options: Sendable {
     var tiles = false
     var strips = 4
     var microphone = false
+    var dragScenario: String?
+    var dragFile: String?
+    var dragFrom = CGPoint(x: 300, y: 300)
+    var dragTo = CGPoint(x: 850, y: 300)
+}
+
+func parsePoint(_ text: String?) -> CGPoint? {
+    let parts = (text ?? "").split(separator: ",").compactMap { Double($0) }
+    return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
 }
 
 func parseOptions() -> Options {
@@ -69,6 +81,10 @@ func parseOptions() -> Options {
         case "--tiles": options.tiles = true
         case "--microphone": options.microphone = true
         case "--strips": options.strips = Int(arguments.next() ?? "") ?? options.strips
+        case "--drag-test": options.dragScenario = arguments.next()
+        case "--file": options.dragFile = arguments.next()
+        case "--from": options.dragFrom = parsePoint(arguments.next()) ?? options.dragFrom
+        case "--to": options.dragTo = parsePoint(arguments.next()) ?? options.dragTo
         default:
             print("unknown argument \(argument)")
             exit(2)
@@ -257,7 +273,9 @@ Task.detached {
     // Let the synthetic window reach the window server before enumerating.
     if syntheticWindowID != nil { try? await Task.sleep(for: .milliseconds(500)) }
     do {
-        if options.microphone {
+        if let scenario = options.dragScenario {
+            try await runDragBench(scenario: scenario, file: options.dragFile, from: options.dragFrom, to: options.dragTo)
+        } else if options.microphone {
             try await runMicrophoneBench(seconds: options.seconds)
         } else if options.tiles {
             try await runTileBench(seconds: options.seconds, strips: options.strips, realTime: options.realTime)

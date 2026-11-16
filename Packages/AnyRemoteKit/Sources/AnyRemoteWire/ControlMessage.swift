@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 12
+public let anyRemoteProtocolVersion: UInt16 = 13
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -424,6 +424,18 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     /// Viewer → host: microphone packets follow in this format; nil when they
     /// stop (the request ended, or this Mac's microphone is not allowed).
     case microphoneStream(AudioStreamFormat?)
+
+    // Drag and drop
+    /// Viewer → host, once connected: the token its transfer connection
+    /// presents (`TransferMessage.attach`) to join this session.
+    case transferToken(Data)
+    /// Host → viewer: a drag started on the host under the viewer's press in
+    /// this stream. The viewer takes it over with a drag of its own.
+    case hostDragBegan(streamID: UInt16, DragManifest)
+    /// Viewer → host: the viewer's drag (see `DragEvent`).
+    case drag(DragEvent)
+    /// Only on the transfer connection.
+    case transfer(TransferMessage)
 }
 
 public enum ControlCoding {

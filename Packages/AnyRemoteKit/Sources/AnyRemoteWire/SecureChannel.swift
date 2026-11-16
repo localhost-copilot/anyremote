@@ -198,7 +198,8 @@ public struct ReplayWindow: Sendable {
 /// Stream framing for the control connection (big-endian):
 /// ```
 /// u32 length of what follows
-/// u8  kind (0 = cleartext handshake JSON, 1 = sealed control message)
+/// u8  kind (0 = cleartext handshake JSON, 1 = sealed control message,
+///           2 = sealed raw data: a `TransferChunk`)
 /// ... body
 /// ```
 public enum ControlFrame {
@@ -207,6 +208,7 @@ public enum ControlFrame {
     public enum Kind: UInt8, Sendable {
         case handshake = 0
         case sealed = 1
+        case sealedData = 2
     }
 
     public static func encode(kind: Kind, body: Data) -> Data {

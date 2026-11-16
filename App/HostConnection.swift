@@ -89,6 +89,17 @@ final class HostConnection {
         self.target = target
         client = RemoteHostClient(endpoint: target.endpoint, code: code, viewerName: ComputerNameProvider.name)
         client.onEvent = { [weak self] event in self?.handle(event) }
+        // The host fetches files of drags offered to it.
+        let owner = WeakConnection(self)
+        client.dragResolver = { dragID, itemID, reply in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let connection = owner.value else { return reply(nil) }
+                    RemoteDragCoordinator.shared.resolve(connection: connection, dragID: dragID, itemID: itemID,
+                                                         reply: reply)
+                }
+            }
+        }
     }
 
     var hostName: String { welcome?.hostName ?? target.name }
@@ -307,6 +318,7 @@ final class HostConnection {
             break
         case .disconnected(let reason):
             stopClipboardSharing()
+            RemoteDragCoordinator.shared.connectionClosed(self)
             let hadMirrors = !mirrors.isEmpty || !desktops.isEmpty
             for mirror in mirrors.values { mirror.hostDisconnected(reason: reason) }
             mirrors.removeAll()
@@ -369,6 +381,8 @@ final class HostConnection {
             pasteboard?.apply(items)
         case .microphone(let state):
             if state == .denied { MicrophoneSharing.explainDenial(hostName: hostName) }
+        case let .hostDragBegan(streamID, manifest):
+            RemoteDragCoordinator.shared.hostDragBegan(connection: self, streamID: streamID, manifest: manifest)
         }
     }
 
@@ -450,6 +464,12 @@ final class HostConnection {
         for desktop in desktops.values { desktop.cursorChanged() }
         for child in children.values { child.cursorChanged() }
     }
+}
+
+/// Lets callbacks off the main thread refer back to a connection without keeping it.
+private final class WeakConnection: @unchecked Sendable {
+    weak var value: HostConnection?
+    init(_ value: HostConnection) { self.value = value }
 }
 
 enum ComputerNameProvider {

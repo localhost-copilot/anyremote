@@ -23,6 +23,8 @@ one click away too.
   the full desktop, the whole Mac.
 - **Microphone** — apps on the other Mac record from your microphone, as if
   it were theirs: calls, voice messages, dictation.
+- **Drag and drop** — files, images and text between Macs, from a remote
+  window, out of the full desktop, or from this Mac into the other.
 - **Shared clipboard**, English or Simplified Chinese interface.
 
 Latency and image quality target Apple's Screen Sharing high-performance
@@ -232,6 +234,26 @@ so its recording indicator means what it says. With several viewers, the
 one that clicked or typed last is heard. The sound reaches the recording
 app about 45 ms after it was spoken (loopback).
 
+### Drag and drop
+
+Drag as you would on one Mac:
+
+- **Out of a remote window** — start a drag in the app (a file in Finder, a
+  photo, selected text) and drop it on this Mac: on Finder, the Desktop or
+  any app. Files arrive as copies; Finder shows their progress.
+- **Out of the full desktop** — the drag stays on the other Mac while the
+  pointer is over its screen, and comes to this Mac at the window's edge.
+- **Into the other Mac** — drag files, images or text from this Mac onto a
+  remote window or the full desktop and drop it on the app there.
+- Between two windows of the same Mac, the drag happens on that Mac (moving
+  a file between its folders moves it).
+
+Small drags (64 MB or less) are copied while the pointer is still moving,
+so apps that only take finished files get them at once; larger ones are
+copied after the drop. Folders keep their contents, links and attributes.
+A drag that is cancelled, or dropped where nothing takes it, leaves
+nothing behind.
+
 ### Clipboard, displays, language
 
 - The clipboard is shared both ways while connected (Settings → General →
@@ -262,7 +284,9 @@ app about 45 ms after it was spoken (loopback).
 ## Limitations
 
 - Trackpad gestures (pinch, rotate, swipe) are not forwarded; scrolling is.
-- Drag and drop between Macs is not implemented.
+- Dragged items are copied, never moved, between Macs. Apps that offer a
+  drag only to their own windows (a drag that never appears on the system
+  drag pasteboard) cannot drag out.
 - Windows hidden behind others still stream, but macOS throttles occluded
   windows' rendering.
 - On the host, macOS covers each shared window's close/minimize/zoom buttons
@@ -406,6 +430,33 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
   so macOS undoes it if the app quits) and switches the capture over within
   the same stream. Requests are coalesced and clamped to 640×400–3840×2400
   pt.
+- **Drag and drop** — the drag a person sees is always this Mac's own
+  `NSDraggingSession`; the host mirrors it invisibly. *Host to viewer:*
+  during an injected left press the host polls the drag pasteboard
+  (`NSPasteboard(name: .drag)`, change count every 20 ms). A new drag there
+  is described as a `DragManifest` (names, types, sizes, icons; small
+  inline data such as text and images) and sent as `hostDragBegan`; on the
+  next mouse drag the viewer begins a native drag of `NSFilePromiseProvider`
+  items (plus a file URL for items copied ahead, and the inline types). A
+  mirror window hands over at once, a desktop only once the pointer leaves
+  the video. *Viewer to host:* a drag entering a remote surface sends
+  `drag(.offer)` and `drag(.over)`; the host starts its own drag of
+  promises from an invisible non-activating panel (`.popUpMenu` level:
+  drags look through windows at screen saver level) with an injected press,
+  and moves it with injected drags, raising the window under the pointer.
+  Only `drag(.drop)` releases it there. Whenever the drag is elsewhere, the
+  host's drag waits over a small parking panel that refuses drops; there it
+  is cancelled with Escape, or, when the viewer took promises, the panel
+  takes the drop so the promised files can be received
+  (`NSFilePromiseReceiver` works only inside `performDragOperation`).
+  Items are named by (drag, item) IDs, never paths. They travel over a
+  second sealed TCP connection to the same port (`transfer(.attach)` with a
+  per-session token), as `ditto -c` archives in 256 KB chunks with an 8 MB
+  credit window, unpacked by `ditto -x` into a staging folder on the
+  destination volume and moved into place. A Swift 6 note:
+  `NSFilePromiseProviderDelegate` and `NSPasteboardWriting` methods of a
+  provider subclass must be `nonisolated`; inferred `@MainActor` isolation
+  makes AppKit skip them, and the receiver fails with error 256.
 - **System shortcuts** — while a desktop window is key, the viewer turns off
   the window server's global hot keys for its connection (private
   `CGSSetGlobalHotKeyOperatingMode`), so ⌘Tab and friends arrive as ordinary
@@ -483,12 +534,18 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 69 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 73 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
 Packages/AnyRemoteKit/.build/release/anyremote-bench --microphone            # microphone delay (needs the driver)
+Packages/AnyRemoteKit/.build/release/anyremote-bench --drag-test offer --file <path> --from x,y --to x,y
 ```
+
+`--drag-test offer|take|take-cancel|within` plays the viewer's half of a
+drag against an in-process host on this Mac (see `DragBench.swift`). It
+moves this Mac's pointer and drops for real: use scratch windows as sources
+and targets.
 
 The driver is built by the `AnyRemoteMicrophone` target into the app's
 Resources. Settings offers to update an installed driver when its

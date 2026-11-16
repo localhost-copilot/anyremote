@@ -83,6 +83,7 @@ final class ChildWindowController: NSObject, RemoteInputSink {
     func sendInput(_ event: InputEvent) { parent?.sendInput(event) }
     func pressBegan() { parent?.pressBegan() }
     func pressEnded() { parent?.pressEnded() }
+    var dragTarget: (any RemoteDragTarget)? { parent }
 }
 
 final class ChildPanel: NSPanel {

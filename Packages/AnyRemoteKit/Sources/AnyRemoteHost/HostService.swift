@@ -230,6 +230,21 @@ public final class HostService: @unchecked Sendable {
         return true
     }
 
+    /// A viewer's second connection, for dragged files, joins its session.
+    /// On the queue.
+    func attachTransfer(_ connection: ControlConnection, from placeholder: HostSession, toSession sessionID: UInt32,
+                        token: Data) {
+        lock.lock()
+        pending.removeValue(forKey: placeholder.sessionID)
+        let session = viewers.first { $0.sessionID == sessionID }
+        lock.unlock()
+        guard let session else {
+            connection.close()
+            return
+        }
+        session.adoptTransfer(connection, token: token)
+    }
+
     /// Everyone connected, for a refused viewer.
     var activeViewerName: String? {
         lock.lock()

@@ -18,7 +18,8 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// go to the host at the matching display point; the host's cursor is drawn
 /// locally, so pointer motion has no network latency.
 @MainActor
-final class DesktopWindowController: NSWindowController, NSWindowDelegate, RemoteInputSink, RemoteKeyTarget {
+final class DesktopWindowController: NSWindowController, NSWindowDelegate, RemoteInputSink, RemoteKeyTarget,
+                                     RemoteDragTarget {
     private(set) var stream: StreamDescription
     unowned let connection: HostConnection
     var onClose: (() -> Void)?
@@ -323,6 +324,18 @@ final class DesktopWindowController: NSWindowController, NSWindowDelegate, Remot
         pressTopLeft = nil
         pressScale = nil
     }
+
+    // MARK: RemoteDragTarget
+
+    var dragTarget: (any RemoteDragTarget)? { self }
+
+    /// The desktop's picture shows the host's own drag; past its edge this Mac's drag carries on.
+    func takesOverHostDrag(at screenPoint: NSPoint) -> Bool {
+        guard let window else { return true }
+        return !window.convertToScreen(surface.convert(videoRect, to: nil)).contains(screenPoint)
+    }
+
+    var handsOverAtEdge: Bool { true }
 
     /// Presses on the letterbox bars (full screen on a differently shaped screen) stay here.
     func beginLocalPress(at point: NSPoint) -> Bool {

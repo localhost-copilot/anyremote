@@ -115,6 +115,50 @@ final class InputInjector {
         return chunks
     }
 
+    // MARK: Bridged drags
+
+    /// The drag bridge drives the pointer itself, in global points: the
+    /// viewer's own drag has taken the press over (see `HostDragBridge`).
+    func pressForDrag(at location: CGPoint) {
+        pressedButtons = 1
+        frozenOrigin = nil
+        lastClickCount = 1
+        postMouse(.leftMouseDown, at: location, button: .left, modifiers: 0, clickCount: 1)
+    }
+
+    func drag(to location: CGPoint, modifiers: UInt64) {
+        if modifiers != lastDragModifiers, let event = CGEvent(source: source) {
+            // Option or Command pressed mid-drag changes what a drop does.
+            event.type = .flagsChanged
+            event.flags = CGEventFlags(rawValue: modifiers)
+            event.post(tap: .cghidEventTap)
+            lastDragModifiers = modifiers
+        }
+        postMouse(.leftMouseDragged, at: location, button: .left, modifiers: modifiers, clickCount: 1)
+    }
+
+    /// Ends the press the bridge (or the viewer's own press before it) began.
+    func releaseDrag(at location: CGPoint) {
+        postMouse(.leftMouseUp, at: location, button: .left, modifiers: lastDragModifiers, clickCount: 1)
+        pressedButtons = 0
+        frozenOrigin = nil
+        if lastDragModifiers != 0, let event = CGEvent(source: source) {
+            event.type = .flagsChanged
+            event.flags = []
+            event.post(tap: .cghidEventTap)
+        }
+        lastDragModifiers = 0
+    }
+
+    /// Escape: cancels the drag under way.
+    func cancelDrag() {
+        for down in [true, false] {
+            CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap)
+        }
+    }
+
+    private var lastDragModifiers: UInt64 = 0
+
     /// Releases anything still held, e.g. when the viewer disconnects mid-drag.
     func releaseAll(windowOrigin origin: CGPoint) {
         let location = CGEvent(source: nil)?.location ?? origin
