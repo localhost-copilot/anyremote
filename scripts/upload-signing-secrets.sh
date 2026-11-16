@@ -37,7 +37,27 @@ JS
 trap 'clipboard; rm -rf "$WORK"' EXIT
 clipboard "$DIR/keychain-password"
 echo "macOS now asks to let “security” export the key: paste the password (⌘V), then click Allow."
-security export -k "$KEYCHAIN" -t identities -f pkcs12 -P "$PASSWORD" -o "$WORK/identity.p12"
+security export -k "$KEYCHAIN" -t identities -f pkcs12 -P "$PASSWORD" -o "$WORK/identity.p12" &
+EXPORT=$!
+# The prompt can open on a display nobody looks at (such as AnyRemote's
+# virtual display while another Mac controls this one): bring it to the
+# middle of the main screen.
+for _ in {1..40}; do
+    kill -0 $EXPORT 2>/dev/null || break
+    osascript -l JavaScript <<'JS' 2>/dev/null | grep -q moved && break
+ObjC.import("AppKit")
+const agent = Application("System Events").processes.byName("SecurityAgent")
+if (agent.exists() && agent.windows.length > 0) {
+    const screen = $.NSScreen.screens.objectAtIndex(0).frame
+    const window = agent.windows[0]
+    const size = window.size()
+    window.position = [Math.round((screen.size.width - size[0]) / 2), Math.round(screen.size.height / 3)]
+    "moved"
+}
+JS
+    sleep 0.25
+done
+wait $EXPORT
 clipboard
 
 # The identity that goes up must be the one releases are checked against.
