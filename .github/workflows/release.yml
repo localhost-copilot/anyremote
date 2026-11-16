@@ -54,8 +54,9 @@ jobs:
           security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$SIGNING_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
           rm -f "$RUNNER_TEMP/identity.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
-          identity=$(security find-identity -v -p codesigning "$keychain" | awk 'NR == 1 { print $2 }')
-          [[ -n "$identity" ]] || { echo "::error::no signing identity in SIGNING_P12"; exit 1; }
+          # Self-signed, so not "valid" to find-identity -v: take the certificate's hash.
+          identity=$(security find-certificate -a -Z "$keychain" | awk '/SHA-1 hash:/ { print $3; exit }')
+          [[ "$identity" =~ ^[0-9A-F]{40}$ ]] || { echo "::error::no signing identity in SIGNING_P12"; exit 1; }
           echo "ANYREMOTE_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
           echo "ANYREMOTE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
 
