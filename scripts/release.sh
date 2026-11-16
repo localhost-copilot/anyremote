@@ -36,7 +36,14 @@ echo "zipped: build/dist/AnyRemote-$VERSION.zip"
 
 if [[ "${1:-}" == "--install" ]]; then
     osascript -e 'tell application id "com.localhost-copilot.anyremote" to quit' 2>/dev/null || true
-    for _ in {1..20}; do pgrep -f /Applications/AnyRemote.app/Contents/MacOS >/dev/null || break; sleep 0.5; done
+    # Quitting can wait on a confirmation or a viewer's session. Replacing the
+    # bundle under a running copy makes `open` only activate that old copy,
+    # and nothing starts again once it does quit.
+    for _ in {1..120}; do pgrep -f /Applications/AnyRemote.app/Contents/MacOS >/dev/null || break; sleep 0.5; done
+    if pgrep -f /Applications/AnyRemote.app/Contents/MacOS >/dev/null; then
+        echo "AnyRemote is still running; quit it and run this again (build/dist has the zip)." >&2
+        exit 1
+    fi
     rm -rf /Applications/AnyRemote.app
     ditto "$APP" /Applications/AnyRemote.app
     open /Applications/AnyRemote.app
