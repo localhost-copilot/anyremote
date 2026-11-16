@@ -167,6 +167,10 @@ final class HostSession: @unchecked Sendable {
     private var lastHostFullScreen: UInt64 = 0
     /// Tracked windows that recently left the screen, by when they left.
     private var departedWindows: [CGWindowID: UInt64] = [:]
+    /// Child windows whose capture couldn't start, by when; not tried again
+    /// for a while (Chrome's hidden full-screen toolbar windows were tried,
+    /// and opened and closed on the viewer, on every tracking pass).
+    private var failedChildren: [CGWindowID: UInt64] = [:]
     /// An app the viewer asked to open; its first window opens on the viewer.
     private var pendingLaunch: (path: String, pid: pid_t?, deadline: UInt64)?
     /// An app whose streamed window the viewer's input just closed. The
@@ -904,6 +908,7 @@ final class HostSession: @unchecked Sendable {
             } catch {
                 log.error("capture start failed: \(error.localizedDescription, privacy: .public)")
                 queue.async { [self] in
+                    if role == .child { failedChildren[window.windowID] = HostClock.nowNanos() }
                     endStream(streamID, reason: "Capture failed: \(error.localizedDescription)")
                 }
             }
@@ -1283,7 +1288,10 @@ final class HostSession: @unchecked Sendable {
         if let known = knownWindows {
             for id in known.subtracting(current) { departedWindows[id] = now }
             // Kept for as long as the full screen lasts, until they are back.
-            departedWindows = departedWindows.filter { now - max($0.value, lastHostFullScreen) < Self.spaceSwitchInterval }
+            let inFullScreen = streams.values.contains { $0.fullScreenOnHost }
+            departedWindows = departedWindows.filter {
+                inFullScreen || now - max($0.value, lastHostFullScreen) < Self.spaceSwitchInterval
+            }
             let recentInput = now - lastInputTime < Self.causedWindowInterval
             let launchPID = pendingLaunch?.pid
             let successorPID = awaitingSuccessor?.pid
@@ -1332,6 +1340,15 @@ final class HostSession: @unchecked Sendable {
     /// new: the animations there and back, plus the state poll in between.
     private static let spaceSwitchInterval: UInt64 = 4_000_000_000
 
+    /// Every active display's bounds, in global points (top-left origin).
+    private static func displayBounds() -> [CGRect] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        return ids.prefix(Int(count)).map { CGDisplayBounds($0) }
+    }
+
     private static let panelServiceNames = ["OpenAndSavePanelService", "Open and Save Panel Service"]
 
     private func trackChildren(of main: HostStream, mainFrame: CGRect, onScreen: [WindowServerWindow]) {
@@ -1341,9 +1358,16 @@ final class HostSession: @unchecked Sendable {
         // Mirroring one of our own windows: our mirrors and child panels are
         // same-PID windows too, and capturing them would feed back.
         let ownAllowed = main.pid == getpid() ? service?.includedOwnWindowIDs ?? [] : nil
+        let now = HostClock.nowNanos()
+        failedChildren = failedChildren.filter { now - $0.value < 5_000_000_000 }
+        let displays = Self.displayBounds()
         for window in onScreen where window.id != main.windowID && window.alpha > 0.01 {
             if let ownAllowed, window.pid == main.pid, window.layer == 0, !ownAllowed.contains(window.id) { continue }
-            guard window.frame.width >= 4, window.frame.height >= 4 else { continue }
+            guard window.frame.width >= 4, window.frame.height >= 4, failedChildren[window.id] == nil,
+                  displays.contains(where: { $0.intersects(window.frame) }) else { continue }
+            // A same-app window over the whole window (Chrome's in full
+            // screen) shows nothing the window's own stream doesn't.
+            if window.pid == main.pid, window.layer == 0, window.frame.contains(mainFrame) { continue }
             let samePID = window.pid == main.pid
             // An input method's candidates, next to the window being typed into.
             if !samePID, isInputMethodWindow(window) {
