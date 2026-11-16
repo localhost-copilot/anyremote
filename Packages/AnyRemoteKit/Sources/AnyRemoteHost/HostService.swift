@@ -410,27 +410,25 @@ public final class HostService: @unchecked Sendable {
         return (displays.first { $0.frame.contains(point) } ?? displays.first)?.visibleFrame
     }
 
+    /// The icon of a running app, for windows of it in the viewer's list.
     @MainActor
-    func icons(for summaries: [WindowSummary]) -> [String: Data] {
-        var cache = iconCache
-        let result = HostWindows.icons(for: summaries, cache: &cache)
-        iconCache = cache
-        return result
+    func windowIcon(bundleIdentifier: String) -> Data? {
+        if let cached = iconCache[bundleIdentifier] { return cached }
+        guard let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first,
+              let icon = HostWindows.icon(of: application) else { return nil }
+        iconCache[bundleIdentifier] = icon
+        return icon
     }
 
+    /// The icon of an app on disk, for the viewer's list of apps.
     @MainActor
-    func applicationList() -> (applications: [HostApplication], icons: [String: Data]) {
-        let applications = HostApplications.list()
-        var icons: [String: Data] = [:]
-        for application in applications {
-            if let cached = applicationIconCache[application.path] {
-                icons[application.path] = cached
-            } else if let icon = HostApplications.icon(path: application.path) {
-                applicationIconCache[application.path] = icon
-                icons[application.path] = icon
-            }
-        }
-        return (applications, icons)
+    func applicationIcon(path: String) -> Data? {
+        // Apps only: the viewer has no business with other files' icons.
+        guard path.hasSuffix(".app") else { return nil }
+        if let cached = applicationIconCache[path] { return cached }
+        guard let icon = HostApplications.icon(path: path) else { return nil }
+        applicationIconCache[path] = icon
+        return icon
     }
 
     // MARK: Status

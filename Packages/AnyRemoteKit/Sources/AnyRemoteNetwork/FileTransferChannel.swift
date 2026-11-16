@@ -5,7 +5,8 @@ import OSLog
 private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category: "Transfer")
 
 /// Moves dragged files and folders between Macs over a connection of their
-/// own, so a large copy never delays input or video.
+/// own, so a large copy never delays input or video. The viewer's list
+/// images (app icons, window thumbnails) travel here too, for the same reason.
 ///
 /// Either side fetches items the other side offered in a drag. An item
 /// travels as a `ditto` archive (folders, symbolic links, extended
@@ -13,6 +14,7 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// side streams into chunks, `ditto -x` on the receiving side unpacks them
 /// beside the destination, and the result is moved into place. The receiver
 /// grants credit as it writes, so neither side buffers more than a window.
+/// Images go one chunk each, the same way, within a smaller window.
 ///
 /// State is confined to the connection's queue (on the host that is the
 /// service queue the sessions share, so nothing here blocks it); archive
@@ -51,14 +53,23 @@ public final class FileTransferChannel: @unchecked Sendable {
         public func cancel() { channel?.cancelFetch(requestID) }
     }
 
+    /// Host side: renders the images a viewer asked for. `reply` (any
+    /// thread) takes them in order, nil where there is none.
+    public typealias ImageProvider = @Sendable (_ images: [HostImage],
+                                                _ reply: @escaping @Sendable ([Data?]) -> Void) -> Void
+
     static let chunkSize = 256 * 1024
     static let window: Int64 = 8 << 20
+    /// Small, so a drag's file that starts during a list of icons waits for little.
+    static let imageWindow: Int64 = 1 << 20
     static let ditto = URL(fileURLWithPath: "/usr/bin/ditto")
 
     public let connection: ControlConnection
     private var queue: DispatchQueue { connection.queue }
     /// Serves fetches from the other side. Called on the connection's queue.
     public var resolve: Resolver?
+    /// Serves the other side's image requests. Called on the connection's queue.
+    public var provideImages: ImageProvider?
     public var onClose: (@Sendable () -> Void)?
 
     private let idLock = NSLock()
@@ -66,10 +77,18 @@ public final class FileTransferChannel: @unchecked Sendable {
     // Queue-confined.
     private var fetches: [UInt32: Incoming] = [:]
     private var sends: [UInt32: Outgoing] = [:]
+    private var imageFetches: [UInt32: ImageFetch] = [:]
+    private var imageSends: [UInt32: ImageSend] = [:]
     private var closed = false
+    private var ready: Bool
+    /// Requests made before the connection could carry them.
+    private var waiting: [TransferMessage] = []
 
-    public init(connection: ControlConnection) {
+    /// `ready: false` holds requests until `markReady()` (a viewer's channel,
+    /// whose connection must first be secured and attached to its session).
+    public init(connection: ControlConnection, ready: Bool = true) {
         self.connection = connection
+        self.ready = ready
         // A write to an archive process that exited must fail, not kill the app.
         signal(SIGPIPE, SIG_IGN)
         connection.onMessage = { [weak self] message in
@@ -85,6 +104,84 @@ public final class FileTransferChannel: @unchecked Sendable {
             connection.close()
             connectionClosed()
         }
+    }
+
+    /// The connection now carries requests: sends those held until now. Call
+    /// on the connection's queue, after the message attaching it.
+    public func markReady() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        ready = true
+        for message in waiting { connection.send(.transfer(message)) }
+        waiting.removeAll()
+    }
+
+    private func request(_ message: TransferMessage) {
+        if ready { connection.send(.transfer(message)) } else { waiting.append(message) }
+    }
+
+    // MARK: Images
+
+    /// Fetches images from the host. `completion` (on a queue of the
+    /// channel's) gets those that arrived: the ones the host has, or fewer
+    /// if the connection closed or `timeout` passed first.
+    public func fetchImages(_ images: [HostImage], timeout: TimeInterval = 20,
+                            completion: @escaping @Sendable ([HostImage: Data]) -> Void) {
+        idLock.lock()
+        nextRequestID &+= 1
+        let requestID = nextRequestID
+        idLock.unlock()
+        queue.async { [self] in
+            guard !closed, !images.isEmpty, images.count <= Int(UInt16.max) else { return completion([:]) }
+            imageFetches[requestID] = ImageFetch(images: images, completion: completion)
+            request(.images(requestID: requestID, images))
+            queue.asyncAfter(deadline: .now() + timeout) { [self] in
+                guard let fetch = imageFetches.removeValue(forKey: requestID) else { return }
+                log.notice("images timed out with \(fetch.received.count) of \(images.count)")
+                connection.send(.transfer(.cancel(requestID: requestID)))
+                fetch.completion(fetch.received)
+            }
+        }
+    }
+
+    private func receiveImage(_ bytes: Data, requestID: UInt32) {
+        guard let fetch = imageFetches[requestID] else { return }
+        connection.send(.transfer(.credit(requestID: requestID, bytes: Int64(bytes.count))))
+        guard let (index, image) = try? ImageChunk.decode(bytes), index < fetch.images.count else { return }
+        fetch.received[fetch.images[index]] = image
+    }
+
+    private func serveImages(requestID: UInt32, images: [HostImage]) {
+        guard let provideImages else {
+            connection.send(.transfer(.ended(requestID: requestID, error: nil)))
+            return
+        }
+        let send = ImageSend()
+        imageSends[requestID] = send
+        provideImages(images) { [weak self] data in
+            guard let self else { return }
+            self.queue.async {
+                guard self.imageSends[requestID] === send else { return }
+                send.pending = data.prefix(images.count).enumerated().compactMap { index, image in
+                    image.map { (index, $0) }
+                }
+                self.sendImages(requestID)
+            }
+        }
+    }
+
+    /// Sends what the credit allows, then `ended` once all are out.
+    private func sendImages(_ requestID: UInt32) {
+        guard let send = imageSends[requestID], let pending = send.pending else { return }
+        while send.credit > 0, send.next < pending.count {
+            let (index, image) = pending[send.next]
+            send.next += 1
+            let bytes = ImageChunk.encode(index: index, image: image)
+            send.credit -= Int64(bytes.count)
+            connection.send(data: TransferChunk.encode(requestID: requestID, bytes: bytes))
+        }
+        guard send.next == pending.count else { return }
+        imageSends[requestID] = nil
+        connection.send(.transfer(.ended(requestID: requestID, error: nil)))
     }
 
     // MARK: Fetching
@@ -111,7 +208,7 @@ public final class FileTransferChannel: @unchecked Sendable {
                     self?.connection.send(.transfer(.credit(requestID: requestID, bytes: bytes)))
                 }
                 fetches[requestID] = incoming
-                connection.send(.transfer(.fetch(requestID: requestID, dragID: dragID, itemID: itemID)))
+                request(.fetch(requestID: requestID, dragID: dragID, itemID: itemID))
             } catch {
                 completion(.failure(error))
             }
@@ -129,6 +226,7 @@ public final class FileTransferChannel: @unchecked Sendable {
 
     private func receive(_ data: Data) {
         guard let chunk = try? TransferChunk.decode(data) else { return }
+        if imageFetches[chunk.requestID] != nil { return receiveImage(chunk.bytes, requestID: chunk.requestID) }
         fetches[chunk.requestID]?.write(chunk.bytes)
     }
 
@@ -141,9 +239,17 @@ public final class FileTransferChannel: @unchecked Sendable {
             serve(requestID: requestID, dragID: dragID, itemID: itemID)
         case let .credit(requestID, bytes):
             sends[requestID]?.grant(bytes)
+            if let send = imageSends[requestID] {
+                send.credit += bytes
+                sendImages(requestID)
+            }
         case let .cancel(requestID):
             sends.removeValue(forKey: requestID)?.cancel()
+            imageSends[requestID] = nil
+        case let .images(requestID, images):
+            serveImages(requestID: requestID, images: images)
         case let .ended(requestID, error):
+            if let fetch = imageFetches.removeValue(forKey: requestID) { return fetch.completion(fetch.received) }
             guard let incoming = fetches.removeValue(forKey: requestID) else { return }
             incoming.finish(error: error.map { TransferError.unavailable($0) })
         case .attach:
@@ -186,8 +292,34 @@ public final class FileTransferChannel: @unchecked Sendable {
         fetches.removeAll()
         for outgoing in sends.values { outgoing.cancel() }
         sends.removeAll()
+        for fetch in imageFetches.values { fetch.completion(fetch.received) }
+        imageFetches.removeAll()
+        imageSends.removeAll()
+        waiting.removeAll()
         onClose?()
     }
+}
+
+// MARK: - Images
+
+/// Images asked for, and those arrived. Confined to the channel's queue.
+private final class ImageFetch: @unchecked Sendable {
+    let images: [HostImage]
+    let completion: @Sendable ([HostImage: Data]) -> Void
+    var received: [HostImage: Data] = [:]
+
+    init(images: [HostImage], completion: @escaping @Sendable ([HostImage: Data]) -> Void) {
+        self.images = images
+        self.completion = completion
+    }
+}
+
+/// Images being sent: rendered ones wait here for credit. Confined to the channel's queue.
+private final class ImageSend: @unchecked Sendable {
+    var credit = FileTransferChannel.imageWindow
+    /// Nil while rendering.
+    var pending: [(index: Int, image: Data)]?
+    var next = 0
 }
 
 // MARK: - Sending

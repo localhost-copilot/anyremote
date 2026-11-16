@@ -1,0 +1,12 @@
+{
+  "en": [
+    "A long list of apps no longer disconnects you: lists arrive at once, and icons and thumbnails follow separately, only as needed.",
+    "Clicks and typing stay smooth while the window picker is open.",
+    "Fixed a crash that could happen while the clipboard is shared with another Mac."
+  ],
+  "zh-Hans": [
+    "App 很多时打开应用列表不会再导致断线：列表会立即显示，图标和缩略图另走通道、按需加载。",
+    "窗口选择器打开时，点击和输入依然流畅。",
+    "修复了与另一台 Mac 共享剪贴板时可能发生的崩溃。"
+  ]
+}

@@ -196,7 +196,7 @@ func runNetwork(_ options: Options, syntheticWindowID: CGWindowID?) async throws
     let client = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "anyremote-bench")
     let welcome = try await client.connect()
     print("connected to \(welcome.hostName) (missing permissions: \(welcome.missingPermissions))")
-    let listing = try await client.listWindows(thumbnailMaxPixels: 0)
+    let listing = try await client.listWindows()
     let candidates = listing.windows.filter { window in
         if let syntheticWindowID { return window.windowID == syntheticWindowID }
         return window.frame.width >= 200 && window.frame.height >= 150

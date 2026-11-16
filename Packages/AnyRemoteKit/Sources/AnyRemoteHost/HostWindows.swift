@@ -95,24 +95,13 @@ enum HostWindows {
         }
     }
 
-    /// 64×64 pt PNG application icons keyed by bundle identifier.
+    /// A 64×64 pt PNG of a running app's icon.
     @MainActor
-    static func icons(for summaries: [WindowSummary], cache: inout [String: Data]) -> [String: Data] {
-        var result: [String: Data] = [:]
-        for summary in summaries {
-            guard let bundle = summary.bundleIdentifier else { continue }
-            if let cached = cache[bundle] {
-                result[bundle] = cached
-                continue
-            }
-            guard let icon = NSRunningApplication(processIdentifier: summary.pid)?.icon else { continue }
-            var rect = CGRect(x: 0, y: 0, width: 128, height: 128)
-            guard let image = icon.cgImage(forProposedRect: &rect, context: nil, hints: nil),
-                  let data = encode(image, type: .png) else { continue }
-            cache[bundle] = data
-            result[bundle] = data
-        }
-        return result
+    static func icon(of application: NSRunningApplication) -> Data? {
+        guard let icon = application.icon else { return nil }
+        var rect = CGRect(x: 0, y: 0, width: 128, height: 128)
+        guard let image = icon.cgImage(forProposedRect: &rect, context: nil, hints: nil) else { return nil }
+        return encode(image, type: .png)
     }
 
     static func encode(_ image: CGImage, type: UTType, quality: Double? = nil) -> Data? {

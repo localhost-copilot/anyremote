@@ -123,7 +123,7 @@ import Testing
             .streamStarted(StreamDescription(streamID: 2, windowID: 99, role: .child, parentStreamID: 1,
                                              frame: CGRect(x: 1, y: 2, width: 3, height: 4), layer: 101,
                                              title: "", applicationName: "Finder")),
-            .windowList(requestID: 1, windows: [], displays: [], thumbnails: [5: Data([1, 2])], icons: ["a": Data()], missingPermissions: ["accessibility"]),
+            .windowList(requestID: 1, windows: [], displays: [], missingPermissions: ["accessibility"]),
             .menuBar(streamID: 1, applicationName: "TextEdit",
                      menus: [MenuNode(title: "File", children: [MenuNode(title: "New", keyEquivalent: "N")])]),
         ]

@@ -9,15 +9,12 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 
 public struct ApplicationListing: Sendable {
     public var applications: [HostApplication]
-    /// PNG icons keyed by app path.
-    public var icons: [String: Data]
 }
 
+/// Images come separately (`RemoteHostClient.fetchImages`).
 public struct WindowListing: Sendable {
     public var windows: [WindowSummary]
     public var displays: [DisplaySummary]
-    public var thumbnails: [UInt32: Data]
-    public var icons: [String: Data]
     /// Host permissions missing right now ("screen-recording", "accessibility", "post-events").
     public var missingPermissions: [String]
 }
@@ -301,13 +298,12 @@ public final class RemoteHostClient: @unchecked Sendable {
             lastPongNanos = now
             clockSync.add(viewerSent: viewerTime, hostTime: hostTime, viewerReceived: now)
             if let best = clockSync.best { clock.update(offsetNanos: best.offsetNanos) }
-        case let .windowList(requestID, windows, displays, thumbnails, icons, missing):
+        case let .windowList(requestID, windows, displays, missing):
             listings.removeValue(forKey: requestID)?.resume(returning: WindowListing(
-                windows: windows, displays: displays, thumbnails: thumbnails, icons: icons,
-                missingPermissions: missing))
-        case let .applicationList(requestID, applications, icons):
+                windows: windows, displays: displays, missingPermissions: missing))
+        case let .applicationList(requestID, applications):
             applicationListings.removeValue(forKey: requestID)?.resume(
-                returning: ApplicationListing(applications: applications, icons: icons))
+                returning: ApplicationListing(applications: applications))
         case let .statusItems(requestID, items):
             statusItemListings.removeValue(forKey: requestID)?.resume(returning: items)
         case let .statusItemMenu(id, menus):
@@ -359,17 +355,46 @@ public final class RemoteHostClient: @unchecked Sendable {
         queue.async { [self] in control?.send(message) }
     }
 
-    public func listWindows(thumbnailMaxPixels: Int = 480) async throws -> WindowListing {
-        try await withCheckedThrowingContinuation { continuation in
+    /// How long a list may take. Separate from the pings that tell whether
+    /// the host is there: a slow list fails on its own, and the caller may ask again.
+    static let listTimeout: TimeInterval = 10
+
+    /// Sends a list request and fails it with `timedOut` if no answer comes in time.
+    private func request<Value>(_ pending: ReferenceWritableKeyPath<RemoteHostClient, [UInt32: CheckedContinuation<Value, Error>]>,
+                                _ message: @escaping @Sendable (UInt32) -> ControlMessage) async throws -> Value {
+        // Key paths aren't Sendable; this one names a queue-confined property.
+        nonisolated(unsafe) let pending = pending
+        return try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
                 guard !finished, let control else {
                     continuation.resume(throwing: ConnectionError.closed)
                     return
                 }
                 nextRequestID &+= 1
-                listings[nextRequestID] = continuation
-                control.send(.listWindows(requestID: nextRequestID, thumbnailMaxPixels: thumbnailMaxPixels))
+                let requestID = nextRequestID
+                self[keyPath: pending][requestID] = continuation
+                control.send(message(requestID))
+                queue.asyncAfter(deadline: .now() + Self.listTimeout) { [self] in
+                    guard let continuation = self[keyPath: pending].removeValue(forKey: requestID) else { return }
+                    log.notice("list request \(requestID) timed out")
+                    continuation.resume(throwing: ConnectionError.timedOut)
+                }
             }
+        }
+    }
+
+    public func listWindows() async throws -> WindowListing {
+        try await request(\.listings) { .listWindows(requestID: $0) }
+    }
+
+    /// Icons and thumbnails for the lists, over the transfer connection so
+    /// they never hold up input. Returns those that arrived (none without
+    /// a transfer connection).
+    public func fetchImages(_ images: [HostImage]) async -> [HostImage: Data] {
+        guard !images.isEmpty else { return [:] }
+        guard let channel = transferLock.withLock({ currentTransfer }) else { return [:] }
+        return await withCheckedContinuation { continuation in
+            channel.fetchImages(images) { continuation.resume(returning: $0) }
         }
     }
 
@@ -383,31 +408,11 @@ public final class RemoteHostClient: @unchecked Sendable {
 
     /// The items on the right of the host's menu bar.
     public func listStatusItems() async throws -> [HostStatusItem] {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async { [self] in
-                guard !finished, let control else {
-                    continuation.resume(throwing: ConnectionError.closed)
-                    return
-                }
-                nextRequestID &+= 1
-                statusItemListings[nextRequestID] = continuation
-                control.send(.listStatusItems(requestID: nextRequestID))
-            }
-        }
+        try await request(\.statusItemListings) { .listStatusItems(requestID: $0) }
     }
 
     public func listApplications() async throws -> ApplicationListing {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async { [self] in
-                guard !finished, let control else {
-                    continuation.resume(throwing: ConnectionError.closed)
-                    return
-                }
-                nextRequestID &+= 1
-                applicationListings[nextRequestID] = continuation
-                control.send(.listApplications(requestID: nextRequestID))
-            }
-        }
+        try await request(\.applicationListings) { .listApplications(requestID: $0) }
     }
 
     public func launchApplication(path: String) { send(.launchApplication(path: path)) }
@@ -425,9 +430,10 @@ public final class RemoteHostClient: @unchecked Sendable {
         let transferQueue = DispatchQueue(label: "anyremote.client.transfer", qos: .userInitiated)
         let connection = ControlConnection(connection: NWConnection(to: endpoint, using: ControlConnection.parameters(bulk: true)),
                                            role: .viewer(code: code, viewerName: viewerName), queue: transferQueue)
-        let channel = FileTransferChannel(connection: connection)
-        connection.onSecured = { [weak connection] _ in
+        let channel = FileTransferChannel(connection: connection, ready: false)
+        connection.onSecured = { [weak connection, weak channel] _ in
             connection?.send(.transfer(.attach(sessionID: session.sessionID, token: token)))
+            channel?.markReady()
         }
         channel.resolve = { [weak self] dragID, itemID, reply in
             guard let resolver = self?.dragResolver else { return reply(nil) }

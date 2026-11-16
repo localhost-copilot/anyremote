@@ -695,9 +695,10 @@ private struct WindowPicker: View {
     }
 
     private func appTile(_ app: HostApplication) -> some View {
-        AppTile(application: app, icon: connection.applications?.icons[app.path],
+        AppTile(application: app, icon: connection.applicationIcons[app.path],
                 isSelected: appSelection == app.path, isLaunching: launching == app.path)
             .id(app.path)
+            .onAppear { connection.needIcon(forApplicationAt: app.path) }
             .onTapGesture(count: 2) { launch(app) }
             .simultaneousGesture(TapGesture().onEnded { appSelection = app.path; gridFocused = true })
             .contextMenu {
@@ -773,7 +774,7 @@ private struct AppSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                if let icon = group.bundleIdentifier.flatMap({ connection.listing?.icons[$0] }).flatMap(NSImage.init(data:)) {
+                if let icon = group.bundleIdentifier.flatMap({ connection.windowIcons[$0] }).flatMap(NSImage.init(data:)) {
                     Image(nsImage: icon).resizable().frame(width: 20, height: 20)
                 }
                 Text(group.name).font(.headline)
@@ -784,7 +785,7 @@ private struct AppSection: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 16, alignment: .top)],
                       alignment: .leading, spacing: 16) {
                 ForEach(group.windows, id: \.windowID) { window in
-                    WindowCard(window: window, thumbnail: connection.listing?.thumbnails[window.windowID],
+                    WindowCard(window: window, thumbnail: connection.thumbnails[window.windowID],
                                isSelected: selection == window.windowID,
                                isOpen: connection.openWindowIDs.contains(window.windowID))
                         .id(window.windowID)

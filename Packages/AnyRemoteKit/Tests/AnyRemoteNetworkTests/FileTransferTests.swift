@@ -128,4 +128,36 @@ import Testing
         #expect(throws: (any Error).self) { try result.get() }
         #expect(!FileManager.default.fileExists(atPath: destination.path))
     }
+
+    @Test func imagesArriveWithinTheCreditWindow() async throws {
+        let pair = try Pair()
+        defer { pair.close() }
+        // Together several times the window, so the host must wait for credit.
+        let images = (0..<12).map { HostImage.applicationIcon(path: "/Applications/App\($0).app") }
+            + [.windowIcon(bundleIdentifier: "missing")]
+        let image: @Sendable (Int) -> Data = { index in Data((0..<(300 << 10)).map { UInt8(truncatingIfNeeded: $0 &+ index) }) }
+        pair.host?.provideImages = { requested, reply in
+            DispatchQueue.global().async {
+                reply(requested.enumerated().map { index, item in
+                    if case .windowIcon = item { return nil }
+                    return image(index)
+                })
+            }
+        }
+        let received: [HostImage: Data] = await withCheckedContinuation { continuation in
+            pair.viewer!.fetchImages(images) { continuation.resume(returning: $0) }
+        }
+        #expect(received.count == 12)
+        for (index, item) in images.prefix(12).enumerated() { #expect(received[item] == image(index)) }
+        #expect(received[.windowIcon(bundleIdentifier: "missing")] == nil)
+    }
+
+    @Test func imagesWithoutAProviderEndEmpty() async throws {
+        let pair = try Pair()
+        defer { pair.close() }
+        let received: [HostImage: Data] = await withCheckedContinuation { continuation in
+            pair.viewer!.fetchImages([.thumbnail(windowID: 1, maximumPixels: 480)]) { continuation.resume(returning: $0) }
+        }
+        #expect(received.isEmpty)
+    }
 }

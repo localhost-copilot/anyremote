@@ -95,6 +95,37 @@ public enum TransferMessage: Codable, Equatable, Sendable {
     /// All chunks are sent (`error`: the item could not be sent).
     case ended(requestID: UInt32, error: String?)
     case cancel(requestID: UInt32)
+    /// Asks for these images. The reply is one chunk per image the host has
+    /// (an `ImageChunk`), within the requester's credit, then `ended`.
+    case images(requestID: UInt32, [HostImage])
+}
+
+/// An image a viewer fetches from the host for its lists.
+public enum HostImage: Codable, Hashable, Sendable {
+    /// A 96 px PNG of the app at this path.
+    case applicationIcon(path: String)
+    /// A 128 px PNG of the running app with this bundle identifier.
+    case windowIcon(bundleIdentifier: String)
+    /// A JPEG of the window now, longest side at most `maximumPixels`.
+    case thumbnail(windowID: UInt32, maximumPixels: Int)
+}
+
+/// The bytes of one image chunk: `u16` index into the request's images,
+/// then the image file's own bytes (no Base64).
+public enum ImageChunk {
+    public static func encode(index: Int, image: Data) -> Data {
+        var writer = ByteWriter(capacity: 2 + image.count)
+        writer.u16(UInt16(index))
+        writer.bytes(image)
+        return writer.data
+    }
+
+    public static func decode(_ bytes: Data) throws -> (index: Int, image: Data) {
+        guard bytes.count >= 2 else { throw WireError.truncated }
+        var reader = ByteReader(bytes.prefix(2))
+        let index = Int(try reader.u16())
+        return (index, Data(bytes.dropFirst(2)))
+    }
 }
 
 /// A raw piece of a transfer: `u32 requestID` followed by the bytes.

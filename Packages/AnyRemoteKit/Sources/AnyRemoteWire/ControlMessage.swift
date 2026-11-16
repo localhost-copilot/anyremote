@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 20
+public let anyRemoteProtocolVersion: UInt16 = 21
 
 /// Cleartext handshake exchanged before the session keys exist.
 ///
@@ -443,13 +443,17 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case goodbye(reason: String)
 
     // Window library
-    case listWindows(requestID: UInt32, thumbnailMaxPixels: Int)
+    // Lists carry no images: thumbnails and icons, megabytes for a full
+    // list of apps, would hold up input and pings behind them on this
+    // connection. The viewer fetches them over the transfer connection
+    // (`TransferMessage.images`).
+    case listWindows(requestID: UInt32)
     case windowList(requestID: UInt32, windows: [WindowSummary], displays: [DisplaySummary],
-                    thumbnails: [UInt32: Data], icons: [String: Data], missingPermissions: [String])
+                    missingPermissions: [String])
 
-    /// Installed apps; `icons` are PNGs keyed by app path.
+    /// Installed apps.
     case listApplications(requestID: UInt32)
-    case applicationList(requestID: UInt32, applications: [HostApplication], icons: [String: Data])
+    case applicationList(requestID: UInt32, applications: [HostApplication])
     /// Opens (or brings forward) the app; its window then opens like a picked one.
     case launchApplication(path: String)
     /// Quits the app (`force`: without letting it ask to save).

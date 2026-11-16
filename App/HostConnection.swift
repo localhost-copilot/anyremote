@@ -62,6 +62,18 @@ final class HostConnection {
     private(set) var listing: WindowListing?
     /// The host's apps, loaded when the picker shows them.
     private(set) var applications: ApplicationListing?
+    // Images come after the lists they belong to, over the transfer
+    // connection (see `RemoteHostClient.fetchImages`).
+    /// App icons by path. Kept while connected, so each is fetched once,
+    /// when a tile first shows it (`needIcon`).
+    private(set) var applicationIcons: [String: Data] = [:]
+    /// Icons of the listed windows' apps, by bundle identifier; kept likewise.
+    private(set) var windowIcons: [String: Data] = [:]
+    /// The latest thumbnail of each listed window.
+    private(set) var thumbnails: [UInt32: Data] = [:]
+    /// App icons asked for, or about to be.
+    @ObservationIgnored private var requestedIcons: Set<String> = []
+    @ObservationIgnored private var iconBatch: [String] = []
     @ObservationIgnored private var launchRequested: Date?
     @ObservationIgnored var onLaunchedWindow: (() -> Void)?
     private(set) var isRefreshing = false
@@ -285,11 +297,41 @@ final class HostConnection {
     }
 
     func loadApplications() async {
-        guard state == .connected else { return }
-        do {
-            applications = try await client.listApplications()
-        } catch {
-            log.error("application list failed: \(error.localizedDescription, privacy: .public)")
+        for attempt in 1...2 {
+            guard state == .connected else { return }
+            do {
+                applications = try await client.listApplications()
+                return
+            } catch ConnectionError.timedOut where attempt == 1 {
+                // A slow list, not a lost host (pings tell that): ask once more.
+                log.notice("application list timed out; asking again")
+            } catch {
+                log.error("application list failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+        }
+    }
+
+    /// A tile showing this app appeared: fetches its icon unless it's here
+    /// or coming. Tiles appearing together are fetched together.
+    func needIcon(forApplicationAt path: String) {
+        guard applicationIcons[path] == nil, requestedIcons.insert(path).inserted else { return }
+        iconBatch.append(path)
+        guard iconBatch.count == 1 else { return }
+        Task {
+            // A screenful of tiles appears within a few frames.
+            try? await Task.sleep(for: .milliseconds(30))
+            let paths = iconBatch
+            iconBatch.removeAll()
+            let images = await client.fetchImages(paths.map { .applicationIcon(path: $0) })
+            for path in paths {
+                if let data = images[.applicationIcon(path: path)] {
+                    applicationIcons[path] = data
+                } else {
+                    // Missing (or the connection dropped): a tile appearing again asks again.
+                    requestedIcons.remove(path)
+                }
+            }
         }
     }
 
@@ -311,20 +353,38 @@ final class HostConnection {
         }
     }
 
-    func refresh() async {
+    /// Lists the host's windows, then fetches their apps' missing icons and
+    /// (`thumbnails`) fresh thumbnails. The next refresh waits for those,
+    /// so a slow network gets fewer, not more.
+    func refresh(thumbnails withThumbnails: Bool = true) async {
         guard state == .connected, !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+        let listing: WindowListing
         do {
-            let listing = try await client.listWindows(thumbnailMaxPixels: 480)
-            self.listing = listing
-            if listing.missingPermissions != missingPermissions {
-                missingPermissions = listing.missingPermissions
-                for mirror in mirrors.values { mirror.updateNotice() }
-                for desktop in desktops.values { desktop.updateNotice() }
-            }
+            listing = try await client.listWindows()
         } catch {
             log.error("listing failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        self.listing = listing
+        if listing.missingPermissions != missingPermissions {
+            missingPermissions = listing.missingPermissions
+            for mirror in mirrors.values { mirror.updateNotice() }
+            for desktop in desktops.values { desktop.updateNotice() }
+        }
+        let ids = Set(listing.windows.map(\.windowID))
+        thumbnails = thumbnails.filter { ids.contains($0.key) }
+        let bundles = Set(listing.windows.compactMap(\.bundleIdentifier)).filter { windowIcons[$0] == nil }
+        var wanted = bundles.sorted().map { HostImage.windowIcon(bundleIdentifier: $0) }
+        if withThumbnails { wanted += listing.windows.map { .thumbnail(windowID: $0.windowID, maximumPixels: 480) } }
+        for (image, data) in await client.fetchImages(wanted) {
+            switch image {
+            case .windowIcon(let bundle): windowIcons[bundle] = data
+            case .thumbnail(let windowID, _) where self.listing?.windows.contains(where: { $0.windowID == windowID }) == true:
+                thumbnails[windowID] = data
+            default: break
+            }
         }
     }
 

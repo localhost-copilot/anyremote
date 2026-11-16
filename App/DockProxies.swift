@@ -136,7 +136,7 @@ final class DockProxies {
                 // A window opened by itself may not be in the listing yet.
                 iconRefreshes.insert(id)
                 Task { [weak self] in
-                    await group.connection.refresh()
+                    await group.connection.refresh(thumbnails: false)
                     self?.schedule()
                 }
                 continue
@@ -168,7 +168,7 @@ final class DockProxies {
         guard let listing = connection.listing else { return nil }
         let bundle = listing.windows.first { $0.applicationName == application && $0.bundleIdentifier != nil }?
             .bundleIdentifier
-        return bundle.flatMap { listing.icons[$0] }
+        return bundle.flatMap { connection.windowIcons[$0] }
     }
 
     /// The app's Dock badge on the host, matched by bundle when the window

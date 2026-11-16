@@ -289,8 +289,8 @@ final class HostSession: @unchecked Sendable {
         switch message {
         case let .ping(id, viewerTime):
             connection.send(.pong(id: id, viewerTime: viewerTime, hostTime: HostClock.nowNanos()))
-        case let .listWindows(requestID, thumbnailMaxPixels):
-            listWindows(requestID: requestID, thumbnailMaxPixels: thumbnailMaxPixels)
+        case let .listWindows(requestID):
+            listWindows(requestID: requestID)
         case let .openWindow(windowID):
             openWindow(windowID)
         case let .openDisplay(displayID):
@@ -524,27 +524,23 @@ final class HostSession: @unchecked Sendable {
 
     // MARK: Window library
 
-    private func listWindows(requestID: UInt32, thumbnailMaxPixels: Int) {
+    private func listWindows(requestID: UInt32) {
         let service = service
         let connection = connection
         Task {
             do {
-                let pairs = try await HostWindows.shareable(excludingPID: ProcessInfo.processInfo.processIdentifier,
-                                                            includeOwnWindowIDs: service?.includedOwnWindowIDs ?? [])
-                let summaries = pairs.map(\.1)
-                let thumbnails = await HostWindows.thumbnails(for: pairs.map(\.0),
-                                                              maximumPixels: min(thumbnailMaxPixels, 1024))
-                let (displays, icons) = await MainActor.run {
-                    (HostWindows.displays(virtualDisplayIDs: service?.virtualDisplayIDs ?? []),
-                     service?.icons(for: summaries) ?? [:])
+                let summaries = try await HostWindows.shareable(excludingPID: ProcessInfo.processInfo.processIdentifier,
+                                                                includeOwnWindowIDs: service?.includedOwnWindowIDs ?? [])
+                    .map(\.1)
+                let displays = await MainActor.run {
+                    HostWindows.displays(virtualDisplayIDs: service?.virtualDisplayIDs ?? [])
                 }
                 connection.send(.windowList(requestID: requestID, windows: summaries, displays: displays,
-                                            thumbnails: thumbnails, icons: icons,
                                             missingPermissions: Self.missingPermissions()))
             } catch {
                 log.error("window list failed: \(error.localizedDescription, privacy: .public)")
-                connection.send(.windowList(requestID: requestID, windows: [], displays: [], thumbnails: [:],
-                                            icons: [:], missingPermissions: Self.missingPermissions()))
+                connection.send(.windowList(requestID: requestID, windows: [], displays: [],
+                                            missingPermissions: Self.missingPermissions()))
             }
         }
     }
@@ -552,11 +548,46 @@ final class HostSession: @unchecked Sendable {
     // MARK: Applications
 
     private func listApplications(requestID: UInt32) {
-        let service = service
         let connection = connection
         Task { @MainActor in
-            let list = service?.applicationList() ?? (applications: [], icons: [:])
-            connection.send(.applicationList(requestID: requestID, applications: list.applications, icons: list.icons))
+            connection.send(.applicationList(requestID: requestID, applications: HostApplications.list()))
+        }
+    }
+
+    /// The images the viewer asked for over the transfer connection, in
+    /// order, nil where there is none. Only windows it may open have thumbnails.
+    private nonisolated static func images(_ images: [HostImage], service: HostService?,
+                                           reply: @escaping @Sendable ([Data?]) -> Void) {
+        Task {
+            var result = [Data?](repeating: nil, count: images.count)
+            var thumbnailSizes: [UInt32: Int] = [:]
+            for case let .thumbnail(windowID, maximumPixels) in images { thumbnailSizes[windowID] = maximumPixels }
+            var thumbnails: [UInt32: Data] = [:]
+            if !thumbnailSizes.isEmpty,
+               let windows = try? await HostWindows.shareable(excludingPID: ProcessInfo.processInfo.processIdentifier,
+                                                              includeOwnWindowIDs: service?.includedOwnWindowIDs ?? [])
+                .map(\.0).filter({ thumbnailSizes[$0.windowID] != nil }) {
+                for size in Set(thumbnailSizes.values) {
+                    let matching = windows.filter { thumbnailSizes[$0.windowID] == size }
+                    thumbnails.merge(await HostWindows.thumbnails(for: matching, maximumPixels: min(size, 1024))) { $1 }
+                }
+            }
+            let icons = await MainActor.run { () -> [Int: Data] in
+                var icons: [Int: Data] = [:]
+                for (index, image) in images.enumerated() {
+                    switch image {
+                    case .applicationIcon(let path): icons[index] = service?.applicationIcon(path: path)
+                    case .windowIcon(let bundle): icons[index] = service?.windowIcon(bundleIdentifier: bundle)
+                    case .thumbnail: break
+                    }
+                }
+                return icons
+            }
+            for (index, image) in images.enumerated() {
+                if case .thumbnail(let windowID, _) = image { result[index] = thumbnails[windowID] }
+                else { result[index] = icons[index] }
+            }
+            reply(result)
         }
     }
 
@@ -1998,6 +2029,8 @@ final class HostSession: @unchecked Sendable {
         let channel = FileTransferChannel(connection: connection)
         let bridge = dragBridge
         channel.resolve = { dragID, itemID, reply in bridge.resolve(dragID: dragID, itemID: itemID, reply: reply) }
+        let service = service
+        channel.provideImages = { images, reply in Self.images(images, service: service, reply: reply) }
         transfer = channel
         bridge.transfer = channel
         log.notice("transfer connection joined")

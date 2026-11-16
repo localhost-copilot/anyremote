@@ -480,7 +480,17 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
   closes its microphone 1.5 s later (an app that starts again at once keeps
   it).
 - **Clock sync** — ping/pong; the minimum-RTT sample gives the host↔viewer
-  clock offset, so latency is measured across machines.
+  clock offset, so latency is measured across machines. Six seconds
+  without a pong ends the connection; list requests time out on their own
+  (10 s, then the Apps list asks once more).
+- **Lists and their images** — `windowList` and `applicationList` carry
+  names and state only, so a list never holds up input and pings on the
+  control connection (all apps' icons came to about 5.6 MB of Base64 in
+  one message, enough to miss the pong deadline). The viewer then fetches
+  images over the transfer connection (`transfer(.images)`): its windows'
+  thumbnails on every refresh, their apps' icons once, and an app's icon
+  when its tile first appears. Each image is one binary chunk within a
+  1 MB credit window, and the viewer keeps icons for the connection.
 - **Bitrate** — receiver reports every second; ×0.75 on loss, +10% after
   four clean seconds; windows 6–80 Mbps, desktops up to 120 Mbps, child
   windows ≤20 Mbps. A shared stream runs at its viewers' lowest rate.
@@ -688,7 +698,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 104 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 106 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips

@@ -352,9 +352,16 @@ enum DevelopmentLaunch {
                 return
             }
             if let launch {
+                var listStart = Date()
                 await connection.loadApplications()
                 let apps = connection.applications?.applications ?? []
-                print("dev: \(apps.count) apps, \(connection.applications?.icons.count ?? 0) icons")
+                let listed = Date().timeIntervalSince(listStart) * 1000
+                // Every icon at once: the most the transfer connection is asked for.
+                listStart = Date()
+                let icons = await connection.client.fetchImages(apps.map { .applicationIcon(path: $0.path) })
+                print(String(format: "dev: %d apps in %.0f ms; %d icons (%d KB) in %.0f ms, rtt %.1f ms",
+                             apps.count, listed, icons.count, icons.values.reduce(0) { $0 + $1.count } / 1024,
+                             Date().timeIntervalSince(listStart) * 1000, connection.client.roundTripMilliseconds ?? -1))
                 guard let match = apps.first(where: { $0.name.localizedCaseInsensitiveCompare(launch) == .orderedSame })
                 else { print("dev: app not found"); return }
                 print("dev: launching \(match.name) running=\(match.isRunning) \(match.path)")
@@ -383,6 +390,8 @@ enum DevelopmentLaunch {
                 }
                 try? await Task.sleep(for: .milliseconds(250))
                 await connection.refresh()
+                print("dev: \(connection.listing?.windows.count ?? 0) windows, \(connection.thumbnails.count) thumbnails, "
+                      + "\(connection.windowIcons.count) icons")
             }
             print("dev: window not found")
         }

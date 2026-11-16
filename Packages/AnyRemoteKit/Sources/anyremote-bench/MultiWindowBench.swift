@@ -52,7 +52,7 @@ func runMultiWindowBench(_ options: Options, windowIDs ownWindowIDs: [CGWindowID
     var windowIDs = ownWindowIDs
     var labels = ownWindowIDs.indices.map { $0 < busy ? "scroll" : "still" }
     if let filter = options.appFilter {
-        let others = try await client.listWindows(thumbnailMaxPixels: 0).windows.filter {
+        let others = try await client.listWindows().windows.filter {
             $0.applicationName.localizedCaseInsensitiveContains(filter)
         }
         windowIDs += others.map(\.windowID)

@@ -1,8 +1,0 @@
-{
-  "en": [
-    "Fixed a crash that could happen while the clipboard is shared with another Mac."
-  ],
-  "zh-Hans": [
-    "修复了与另一台 Mac 共享剪贴板时可能发生的崩溃。"
-  ]
-}

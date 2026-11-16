@@ -476,15 +476,18 @@ private struct ResultRow: View {
     @ViewBuilder
     private var icon: some View {
         let data: Data? = switch item {
-        case .app(let app): connection.applications?.icons[app.path]
-        case .window(let window): window.bundleIdentifier.flatMap { connection.listing?.icons[$0] }
+        case .app(let app): connection.applicationIcons[app.path]
+        case .window(let window): window.bundleIdentifier.flatMap { connection.windowIcons[$0] }
         }
-        if let data, let image = NSImage(data: data) {
-            Image(nsImage: image).resizable().interpolation(.high)
-        } else {
-            Image(systemName: { if case .window = item { "macwindow" } else { "app.dashed" } }())
-                .font(.title3).foregroundStyle(.tertiary)
+        Group {
+            if let data, let image = NSImage(data: data) {
+                Image(nsImage: image).resizable().interpolation(.high)
+            } else {
+                Image(systemName: { if case .window = item { "macwindow" } else { "app.dashed" } }())
+                    .font(.title3).foregroundStyle(.tertiary)
+            }
         }
+        .onAppear { if case .app(let app) = item { connection.needIcon(forApplicationAt: app.path) } }
     }
 }
 
