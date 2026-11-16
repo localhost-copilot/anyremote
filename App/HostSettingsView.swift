@@ -70,6 +70,7 @@ final class HostSettingsModel {
     private(set) var showsRemoteAppsInDock = DockProxies.isEnabled
     private(set) var sharesClipboard = ClipboardSharing.isEnabled
     private(set) var showsRemoteNotifications = RemoteNotifications.isEnabled
+    private(set) var showsRemoteStatusItems = RemoteStatusItems.isEnabled
     /// Notifications are turned off for AnyRemote in System Settings.
     private(set) var notificationsDenied = false
     private(set) var playsRemoteSound = SoundSharing.isEnabled
@@ -120,6 +121,11 @@ final class HostSettingsModel {
     func setSharesClipboard(_ value: Bool) {
         sharesClipboard = value
         ClipboardSharing.isEnabled = value
+    }
+
+    func setShowsRemoteStatusItems(_ value: Bool) {
+        showsRemoteStatusItems = value
+        RemoteStatusItems.isEnabled = value
     }
 
     func setShowsRemoteNotifications(_ value: Bool) {
@@ -213,6 +219,10 @@ struct HostSettingsView: View {
                 Toggle("Show Remote Apps in the Dock", isOn: Binding(
                     get: { model.showsRemoteAppsInDock }, set: { model.setShowsRemoteAppsInDock($0) }))
                 Text("Each app with windows open here gets its own Dock icon and ⌘Tab entry, with its badge. Quitting it closes its windows on this Mac only. It stays in Applications › AnyRemote, so Spotlight finds it and its icon can be kept in the Dock.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Toggle("Show Other Macs’ Menu Bar Items", isOn: Binding(
+                    get: { model.showsRemoteStatusItems }, set: { model.setShowsRemoteStatusItems($0) }))
+                Text("While a Mac has windows open here, its icon in the menu bar lists the items on the right of its menu bar: choose one to use its menu or panel here.")
                     .font(.callout).foregroundStyle(.secondary)
                 Toggle("Show Notifications from Other Macs", isOn: Binding(
                     get: { model.showsRemoteNotifications }, set: { model.setShowsRemoteNotifications($0) }))

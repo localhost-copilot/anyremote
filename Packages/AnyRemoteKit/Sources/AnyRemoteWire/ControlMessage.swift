@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 15
+public let anyRemoteProtocolVersion: UInt16 = 16
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -134,6 +134,10 @@ public struct StreamDescription: Codable, Equatable, Sendable {
         /// `frame` the display's frame, and input points are relative to
         /// its top-left corner.
         case display
+        /// What a menu bar item opened that isn't a menu (a popover, a
+        /// panel): shown on its own below the viewer's item. Input points
+        /// are relative to its top-left corner.
+        case popup
     }
 
     public var streamID: UInt16
@@ -459,6 +463,20 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     /// Viewer → host: the viewer's copy of a notification was clicked. The
     /// host opens it (or its app) and that app's window opens here.
     case openNotification(id: String, applicationPath: String?)
+
+    // Menu bar items
+    /// Viewer → host: the items on the right of the host's menu bar.
+    case listStatusItems(requestID: UInt32)
+    case statusItems(requestID: UInt32, items: [HostStatusItem])
+    /// Viewer → host: click the item. A menu comes back as `statusItemMenu`,
+    /// a popover as a `.popup` stream, a window as a mirror.
+    case openStatusItem(id: String)
+    /// Host → viewer: the menu the item opened, shown on the host until the
+    /// viewer answers with `performStatusItemMenu`.
+    case statusItemMenu(id: String, menus: [MenuNode])
+    /// Viewer → host: choose the item at `path` in the open menu, or close
+    /// the menu (nil).
+    case performStatusItemMenu(id: String, path: [Int]?)
 }
 
 public enum ControlCoding {

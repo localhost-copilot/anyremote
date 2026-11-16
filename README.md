@@ -157,6 +157,18 @@ Clicking one does what clicking it there would (opens the message, the
 conversation) and brings that app's window here. The first one asks for
 permission to show notifications; Settings says when it is turned off.
 
+### The other Mac's menu bar items
+
+The icons on the right of the other Mac's menu bar (a VPN, iStat Menus,
+Amphetamine, its input menu) can be used from here, like Parallels brings
+Windows' notification area over (Settings → General → *Show Other Macs’
+Menu Bar Items*, off by default). While a Mac has windows open here, a
+display icon for it sits in this Mac's menu bar; its menu lists that Mac's
+items. Choosing one clicks it there: a menu it opens opens from the icon
+here as a native menu, a popover or panel (iStat's graphs) appears below the
+icon and closes when clicked outside, and a window it opens comes as a
+mirror.
+
 ### Apps
 
 **Apps** (next to **Windows** above the grid) lists the host's apps
@@ -345,6 +357,10 @@ nothing behind.
   *Mark as Read*) aren't offered here; a click opens the notification.
   Badges show while the app has windows open here (that's when it has a
   Dock icon).
+- Menu bar items are listed by their app's icon and name: macOS draws the
+  menu bar itself, so an item's own picture can't be captured, and items an
+  app doesn't make clickable through Accessibility (Control Center's) are
+  missing.
 - Two viewers opening the same *window* each get their own capture, and
   resizing it from both fights; only desktops are shared.
 - Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
@@ -527,6 +543,21 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
   scroll gesture event (118/119 deltas): swipe tracking
   (`trackSwipeEvent`, two-finger swipes between pages) follows those and
   stands still without them.
+- **Menu bar items** — the right side of the menu bar is each app's
+  `AXExtrasMenuBar`; the host lists the pressable items on a display's top
+  edge (`listStatusItems`) on a queue of its own, since a press waits for
+  an app that opens a menu (until a 0.25 s messaging timeout). On
+  `openStatusItem` it presses the item: an `AXMenu` that opened is read
+  like the app menus and sent as `statusItemMenu`, and the viewer's choice
+  (`performStatusItemMenu`) is performed or the menu cancelled. Otherwise a
+  new window of that app within 1.2 s is streamed as a `popup` stream (with
+  alpha and the glass backdrop, input relative to its own corner) when it
+  isn't at the normal level, or opened as a mirror when it is. Closing the
+  popup on the viewer presses the item again, which is how popovers close.
+  The viewer shows the menu by giving it to its status item and clicking
+  it, so it opens from the icon. In loopback the host's real menu and the
+  viewer's copy compete for the one menu tracking session; use
+  `--status-menu-demo` there.
 - **System shortcuts** — while a desktop window is key, the viewer turns off
   the window server's global hot keys for its connection (private
   `CGSSetGlobalHotKeyOperatingMode`), so ⌘Tab and friends arrive as ordinary
@@ -604,7 +635,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 80 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 82 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -694,6 +725,11 @@ against this Mac's own host service unless `--connect` is given.
 - A stand-in opened outside AnyRemote (no `-AnyRemoteLaunched`) starts the
   app found by its `AnyRemoteParentBundleID` with `-AnyRemoteOpenedForApp YES`
   and posts `open` until answered.
+- `--open <app> --status-items-test <menu app> [<popup app>]` — lists the
+  host's menu bar items (with timing), opens one app's menu and prints it,
+  then another's popover and closes it from here after a few seconds
+- `--open <app> --status-menu-demo` — shows a sample remote menu from the
+  Mac's menu bar icon here and logs the choice
 - `--notification-test` — posts a notification on this Mac (from Script
   Editor) and prints what the viewer receives, and the Dock badges
 - `--discovery-test`, `--exit-after <seconds>`

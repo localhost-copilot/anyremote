@@ -51,6 +51,8 @@ public final class RemoteHostClient: @unchecked Sendable {
         case notification(HostNotification)
         /// The host's Dock badges changed (all of them).
         case badges([HostBadge])
+        /// A menu bar item clicked from here opened this menu on the host.
+        case statusItemMenu(id: String, [MenuNode])
     }
 
     public enum MicrophoneState: Sendable, Equatable {
@@ -79,6 +81,7 @@ public final class RemoteHostClient: @unchecked Sendable {
     private var nextRequestID: UInt32 = 0
     private var listings: [UInt32: CheckedContinuation<WindowListing, Error>] = [:]
     private var applicationListings: [UInt32: CheckedContinuation<ApplicationListing, Error>] = [:]
+    private var statusItemListings: [UInt32: CheckedContinuation<[HostStatusItem], Error>] = [:]
     private var connectContinuation: CheckedContinuation<HostWelcome, Error>?
     private var finished = false
     public private(set) var welcome: HostWelcome?
@@ -257,6 +260,8 @@ public final class RemoteHostClient: @unchecked Sendable {
         listings.values.forEach { $0.resume(throwing: error) }
         applicationListings.values.forEach { $0.resume(throwing: error) }
         applicationListings.removeAll()
+        statusItemListings.values.forEach { $0.resume(throwing: error) }
+        statusItemListings.removeAll()
         listings.removeAll()
         receiverLock.lock()
         let current = receivers
@@ -290,6 +295,10 @@ public final class RemoteHostClient: @unchecked Sendable {
         case let .applicationList(requestID, applications, icons):
             applicationListings.removeValue(forKey: requestID)?.resume(
                 returning: ApplicationListing(applications: applications, icons: icons))
+        case let .statusItems(requestID, items):
+            statusItemListings.removeValue(forKey: requestID)?.resume(returning: items)
+        case let .statusItemMenu(id, menus):
+            emit(.statusItemMenu(id: id, menus))
         case .streamStarted(let description):
             emit(.streamStarted(description))
         case let .streamMoved(streamID, frame, title):
@@ -358,6 +367,21 @@ public final class RemoteHostClient: @unchecked Sendable {
 
     /// Dynamic resolution: the host desktop takes this size (points), or its own with nil.
     public func setDesktopSize(streamID: UInt16, size: CGSize?) { send(.desktopSize(streamID: streamID, size: size)) }
+
+    /// The items on the right of the host's menu bar.
+    public func listStatusItems() async throws -> [HostStatusItem] {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
+                guard !finished, let control else {
+                    continuation.resume(throwing: ConnectionError.closed)
+                    return
+                }
+                nextRequestID &+= 1
+                statusItemListings[nextRequestID] = continuation
+                control.send(.listStatusItems(requestID: nextRequestID))
+            }
+        }
+    }
 
     public func listApplications() async throws -> ApplicationListing {
         try await withCheckedThrowingContinuation { continuation in

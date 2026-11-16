@@ -84,33 +84,7 @@ final class RemoteMenuBar: NSObject, NSMenuDelegate {
     }
 
     private func build(_ nodes: [MenuNode], into menu: NSMenu, path: [Int]) {
-        for (index, node) in nodes.enumerated() {
-            if node.isSeparator {
-                menu.addItem(.separator())
-                continue
-            }
-            let item = NSMenuItem(title: node.title, action: #selector(choose(_:)), keyEquivalent: "")
-            item.target = self
-            item.isEnabled = node.isEnabled
-            item.representedObject = path + [index]
-            switch node.mark {
-            case "✓", "✔": item.state = .on
-            case "-", "•", "–": item.state = .mixed
-            default: break
-            }
-            if !node.keyEquivalent.isEmpty {
-                item.keyEquivalent = Self.keyEquivalent(node.keyEquivalent)
-                item.keyEquivalentModifierMask = Self.modifiers(node.keyModifiers)
-            }
-            if !node.children.isEmpty {
-                let submenu = NSMenu(title: node.title)
-                submenu.autoenablesItems = false
-                build(node.children, into: submenu, path: path + [index])
-                item.submenu = submenu
-                item.action = nil
-            }
-            menu.addItem(item)
-        }
+        RemoteMenuBuilder.build(nodes, into: menu, path: path, target: self, action: #selector(choose(_:)))
     }
 
     @objc private func choose(_ sender: NSMenuItem) {
@@ -125,7 +99,7 @@ final class RemoteMenuBar: NSObject, NSMenuDelegate {
 
     /// AX key equivalent characters are uppercase letters; AppKit implies
     /// Shift for uppercase, so lowercase them.
-    private static func keyEquivalent(_ character: String) -> String {
+    static func keyEquivalent(_ character: String) -> String {
         switch character {
         case "\u{1B}": return "\u{1B}"
         default: return character.lowercased()
@@ -140,5 +114,41 @@ final class RemoteMenuBar: NSObject, NSMenuDelegate {
         if ax & 2 != 0 { flags.insert(.option) }
         if ax & 4 != 0 { flags.insert(.control) }
         return flags
+    }
+}
+
+/// Builds native menus from menus read on the host. Each item's
+/// `representedObject` is its path (indices from the top down), which the
+/// action sends back to the host.
+@MainActor
+enum RemoteMenuBuilder {
+    static func build(_ nodes: [MenuNode], into menu: NSMenu, path: [Int], target: AnyObject, action: Selector) {
+        for (index, node) in nodes.enumerated() {
+            if node.isSeparator {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: node.title, action: action, keyEquivalent: "")
+            item.target = target
+            item.isEnabled = node.isEnabled
+            item.representedObject = path + [index]
+            switch node.mark {
+            case "✓", "✔": item.state = .on
+            case "-", "•", "–": item.state = .mixed
+            default: break
+            }
+            if !node.keyEquivalent.isEmpty {
+                item.keyEquivalent = RemoteMenuBar.keyEquivalent(node.keyEquivalent)
+                item.keyEquivalentModifierMask = RemoteMenuBar.modifiers(node.keyModifiers)
+            }
+            if !node.children.isEmpty {
+                let submenu = NSMenu(title: node.title)
+                submenu.autoenablesItems = false
+                build(node.children, into: submenu, path: path + [index], target: target, action: action)
+                item.submenu = submenu
+                item.action = nil
+            }
+            menu.addItem(item)
+        }
     }
 }

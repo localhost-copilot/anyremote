@@ -47,6 +47,8 @@ final class HostStream: @unchecked Sendable {
     var desktopSizes: [UInt32: CGSize?] = [:]
     /// Shared streams: the first viewer drains the statistics, the others read this.
     var lastSummary: PipelineStats.Summary?
+    /// Popups: the menu bar item that opened it.
+    var statusItemID: String?
 
     init(description: StreamDescription, sender: WindowStreamSender, pid: pid_t, bitRate: Int,
          audience: StreamAudience? = nil) {
@@ -301,6 +303,14 @@ final class HostSession: @unchecked Sendable {
             dragBridge.handle(event)
         case .notices(let subscription):
             service?.notices.subscribe(self, subscription)
+        case let .listStatusItems(requestID):
+            service?.statusItems.list(reply: queue) { [weak self] items in
+                self?.connection.send(.statusItems(requestID: requestID, items: items))
+            }
+        case let .openStatusItem(id):
+            openStatusItem(id)
+        case let .performStatusItemMenu(id, path):
+            service?.statusItems.finishMenu(id, path: path)
         case let .openNotification(id, path):
             // Launching first notes the windows on screen, so one the click opens comes here.
             if let path { launchApplication(path) }
@@ -846,10 +856,10 @@ final class HostSession: @unchecked Sendable {
                                             parentStreamID: parent, frame: window.frame, layer: layer,
                                             title: title, applicationName: applicationName)
         let configuration = HEVCEncoder.Configuration(averageBitRate: role == .window ? Self.initialBitRate : 12_000_000,
-                                                      alpha: role == .child)
+                                                      alpha: role == .child || role == .popup)
         // Menus, popovers and alerts have glass that blurs what's behind
         // them; captured alone, it turns gray.
-        let backdrop = role == .child
+        let backdrop = role == .child || role == .popup
         let sender = WindowStreamSender(
             window: window, streamID: streamID, configuration: configuration,
             maximumDatagramSize: 1400 - DatagramEnvelope.overhead, backdrop: backdrop
@@ -914,6 +924,12 @@ final class HostSession: @unchecked Sendable {
                 streamsMayHaveEnded()
                 return
             }
+        }
+        // Closed on the viewer (or the session ended): close it on the host too,
+        // by clicking its menu bar item again.
+        if stream.description.role == .popup, !notify, let item = stream.statusItemID,
+           WindowServerWindow.describe(stream.windowID)?.isOnScreen == true {
+            service?.statusItems.toggle(item)
         }
         for child in stream.children.values { endStream(child, reason: reason, notify: notify) }
         if let parent = stream.description.parentStreamID {
@@ -1011,7 +1027,7 @@ final class HostSession: @unchecked Sendable {
         let ceiling = switch stream.description.role {
         case .window: Self.maximumBitRate
         case .display: Self.displayMaximumBitRate
-        case .child: 20_000_000
+        case .child, .popup: 20_000_000
         }
         // Each viewer adapts its own rate; the stream runs at the lowest.
         var rate = stream.viewerBitRates[sessionID] ?? (stream.bitRate, 0)
@@ -1078,6 +1094,7 @@ final class HostSession: @unchecked Sendable {
         // A shared display is followed by its first viewer, for everyone.
         for stream in streams.values where stream.description.role == .display
             && (stream.audience?.leader ?? self) === self { trackDisplay(stream) }
+        trackPopups()
         let mains = streams.values.filter { $0.description.role == .window }
         if let launch = pendingLaunch, HostClock.nowNanos() > launch.deadline { pendingLaunch = nil }
         guard !mains.isEmpty else {
@@ -1350,6 +1367,10 @@ final class HostSession: @unchecked Sendable {
         // The whole desktop: points are relative to the display, nothing to
         // focus or keep in place, and windows it opens stay on it.
         prepareKeyboard(for: event)
+        if stream.description.role == .popup {
+            injector.post(event, windowOrigin: stream.description.frame.origin)
+            return
+        }
         if stream.description.role == .display {
             if stream.offScreenSince != nil, case .mouseDown = event { return }
             let wasPressed = injector.isPressed
@@ -1414,6 +1435,63 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
+    // MARK: Menu bar items
+
+    /// Clicks a menu bar item for the viewer. Its menu goes back to be shown
+    /// there natively; a popover or panel it opens is streamed as a popup;
+    /// a window it opens comes as a mirror.
+    private func openStatusItem(_ id: String) {
+        guard let pid = StatusItemReader.pid(of: id), let service else { return }
+        let before = Set(WindowServerWindow.onScreen().lazy.filter { $0.pid == pid }.map(\.id))
+        service.statusItems.open(id, reply: queue) { [weak self] menu in
+            guard let self else { return }
+            if let menu {
+                connection.send(.statusItemMenu(id: id, menus: menu))
+            } else {
+                awaitStatusItemWindow(id: id, pid: pid, before: before, deadline: HostClock.nowNanos() + 1_200_000_000)
+            }
+        }
+    }
+
+    private func awaitStatusItemWindow(id: String, pid: pid_t, before: Set<CGWindowID>, deadline: UInt64) {
+        let opened = WindowServerWindow.onScreen().filter {
+            $0.pid == pid && !before.contains($0.id) && $0.alpha > 0.01 && $0.frame.width >= 20 && $0.frame.height >= 20
+                && $0.layer != 25
+        }
+        if let popup = opened.first(where: { $0.layer != 0 }) {
+            log.notice("menu bar item \(id, privacy: .public) opened popup \(popup.id) layer \(popup.layer)")
+            Task { [self] in
+                let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                queue.async { [self] in
+                    guard let window = content?.windows.first(where: { $0.windowID == popup.id }) else { return }
+                    startStream(window: window, pid: pid, role: .popup, parent: nil, layer: popup.layer,
+                                title: popup.title, applicationName: popup.ownerName)
+                    streams.values.first { $0.windowID == popup.id && $0.description.role == .popup }?.statusItemID = id
+                }
+            }
+        } else if let window = opened.first {
+            openWindow(window.id)
+        } else if HostClock.nowNanos() < deadline {
+            queue.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
+                self?.awaitStatusItemWindow(id: id, pid: pid, before: before, deadline: deadline)
+            }
+        }
+    }
+
+    /// Popups end when they close on the host, and follow it when it moves.
+    private func trackPopups() {
+        for popup in streams.values where popup.description.role == .popup {
+            guard let current = WindowServerWindow.describe(popup.windowID), current.isOnScreen else {
+                endStream(popup.streamID, reason: "Closed.")
+                continue
+            }
+            if current.frame != popup.description.frame {
+                popup.description.frame = current.frame
+                connection.send(.streamMoved(streamID: popup.streamID, frame: current.frame, title: current.title))
+            }
+        }
+    }
+
     /// A left press may start a drag here, which the viewer then takes over.
     private func trackPress(_ event: InputEvent, streamID: UInt16, wasPressed: Bool) {
         switch event {
@@ -1434,6 +1512,8 @@ final class HostSession: @unchecked Sendable {
             return stream.description.frame.origin
         case .window:
             return WindowServerWindow.describe(stream.windowID)?.frame.origin ?? stream.description.frame.origin
+        case .popup:
+            return stream.description.frame.origin
         case .child:
             return nil
         }

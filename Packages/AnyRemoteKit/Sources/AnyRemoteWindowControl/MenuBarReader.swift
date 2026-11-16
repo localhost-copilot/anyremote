@@ -42,6 +42,30 @@ public enum MenuBarReader {
         return AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
     }
 
+    /// The items of an open menu (a menu bar item's).
+    static func read(menu: AXUIElement) -> [MenuNode] {
+        var budget = maximumItems
+        return children(of: menu, depth: 1, budget: &budget)
+    }
+
+    /// Presses the item at `path` in an open menu.
+    static func perform(in menu: AXUIElement, path: [Int]) -> Bool {
+        var menu = menu
+        var item: AXUIElement?
+        for index in path {
+            if let item {
+                guard let submenu = elementChildren(item).first(where: { role(of: $0) == kAXMenuRole as String })
+                else { return false }
+                menu = submenu
+            }
+            let items = elementChildren(menu)
+            guard index >= 0, index < items.count else { return false }
+            item = items[index]
+        }
+        guard let item else { return false }
+        return AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
+    }
+
     private static func menuBar(pid: pid_t) -> AXUIElement? {
         let application = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(application, 0.5)
@@ -51,7 +75,7 @@ public enum MenuBarReader {
         return (value as! AXUIElement)
     }
 
-    private static func elementChildren(_ element: AXUIElement) -> [AXUIElement] {
+    static func elementChildren(_ element: AXUIElement) -> [AXUIElement] {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success else {
             return []
@@ -59,7 +83,7 @@ public enum MenuBarReader {
         return (value as? [AXUIElement]) ?? []
     }
 
-    private static func role(of element: AXUIElement) -> String? {
+    static func role(of element: AXUIElement) -> String? {
         var value: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value)
         return value as? String

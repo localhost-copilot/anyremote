@@ -71,6 +71,8 @@ final class HostConnection {
     /// Host displays currently shown as full desktops.
     private(set) var openDisplayIDs: Set<UInt32> = []
     @ObservationIgnored private var children: [UInt16: ChildWindowController] = [:]
+    /// What the other Mac's menu bar items opened, shown below their icon.
+    @ObservationIgnored private var popups: [UInt16: PopupWindowController] = [:]
     @ObservationIgnored private var pendingOpen: Set<UInt32> = []
     @ObservationIgnored private var cursorImages: [UInt32: NSCursor] = [:]
     @ObservationIgnored private(set) var currentCursor: NSCursor?
@@ -356,6 +358,9 @@ final class HostConnection {
             }
             children.values.forEach { $0.close() }
             children.removeAll()
+            let openPopups = popups.values
+            popups.removeAll()
+            openPopups.forEach { $0.hostEnded() }
             if state != .disconnected { state = .failed(reason ?? "Disconnected.") }
             missingPermissions = []
             onClosed?()
@@ -369,8 +374,11 @@ final class HostConnection {
                 child.hostFrameChanged(frame)
             } else if let desktop = desktops[streamID] {
                 desktop.hostFrameChanged(frame, title: title)
+            } else {
+                popups[streamID]?.hostFrameChanged(frame)
             }
         case let .streamEnded(streamID, reason):
+            popups.removeValue(forKey: streamID)?.hostEnded()
             if let mirror = mirrors.removeValue(forKey: streamID) {
                 openWindowIDs.remove(mirror.windowID)
                 mirror.hostEnded(reason: reason)
@@ -404,6 +412,8 @@ final class HostConnection {
             if state == .denied { MicrophoneSharing.explainDenial(hostName: hostName) }
         case let .hostDragBegan(streamID, manifest):
             RemoteDragCoordinator.shared.hostDragBegan(connection: self, streamID: streamID, manifest: manifest)
+        case let .statusItemMenu(id, menus):
+            RemoteStatusItems.shared.showMenu(menus, itemID: id, from: self)
         case .notification(let notification):
             RemoteNotifications.shared.show(notification, from: self)
         case .badges(let badges):
@@ -474,6 +484,15 @@ final class HostConnection {
             let child = ChildWindowController(connection: self, description: description, parent: parent)
             children[description.streamID] = child
             child.start()
+        case .popup:
+            let popup = PopupWindowController(connection: self, description: description)
+            popup.onClose = { [weak self] in
+                self?.popups[description.streamID] = nil
+                self?.client.detach(streamID: description.streamID)
+            }
+            popups[description.streamID] = popup
+            popup.start()
+            RemoteStatusItems.shared.onPopup?(popup)
         }
     }
 
@@ -490,6 +509,7 @@ final class HostConnection {
         for mirror in mirrors.values { mirror.cursorChanged() }
         for desktop in desktops.values { desktop.cursorChanged() }
         for child in children.values { child.cursorChanged() }
+        for popup in popups.values { popup.cursorChanged() }
     }
 }
 

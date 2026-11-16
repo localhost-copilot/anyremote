@@ -153,6 +153,10 @@
 "This Mac is no longer paired with it." = "本机已不再与那台 Mac 配对。";
 "The app isn’t installed there anymore." = "那台 Mac 上已经没有这个 App 了。";
 "Show Notifications from Other Macs" = "显示其他 Mac 的通知";
+"Show Other Macs’ Menu Bar Items" = "显示其他 Mac 的菜单栏项目";
+"While a Mac has windows open here, its icon in the menu bar lists the items on the right of its menu bar: choose one to use its menu or panel here." = "当某台 Mac 有窗口在本机打开时，菜单栏中会出现它的图标，列出那台 Mac 菜单栏右侧的项目：选择其中一个即可在本机使用它的菜单或面板。";
+"Menu Bar of “%@”" = "“%@”的菜单栏";
+"No Menu Bar Items" = "没有菜单栏项目";
 "Notifications are turned off for AnyRemote in System Settings." = "已在“系统设置”中关闭 AnyRemote 的通知。";
 "Open Notification Settings…" = "打开通知设置…";
 "Notifications of apps on a connected Mac appear here too. Clicking one opens it on that Mac and brings its window here." = "已连接的 Mac 上的 App 通知也会显示在本机。点按通知会在那台 Mac 上打开它，并把它的窗口带到本机。";

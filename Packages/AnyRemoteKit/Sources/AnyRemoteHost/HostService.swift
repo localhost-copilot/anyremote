@@ -64,6 +64,8 @@ public final class HostService: @unchecked Sendable {
     let microphone: HostMicrophone
     /// The host's notifications and Dock badges, for the viewers that want them.
     let notices = HostNotices()
+    /// The items on the right of the menu bar, for viewers that show them.
+    let statusItems = HostStatusItems()
 
     /// Called on the main queue.
     public var onStatusChange: (@MainActor @Sendable (Status) -> Void)?

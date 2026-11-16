@@ -22,6 +22,11 @@ import AppKit
 ///     --discovery-test                      print the hosts Bonjour finds
 ///     --open <application> --gesture-test   pinch, rotate and smart-zoom the mirror (as AppKit would
 ///                                           deliver them) so the host app gets them
+///     --open <application> --status-items-test <menu app> <popup app>
+///                                           list the menu bar items, open one app's menu and
+///                                           another's popover (closing both without choosing)
+///     --open <application> --status-menu-demo
+///                                           show a sample menu of the other Mac under its icon
 ///     --notification-test                   post a notification on this Mac and print what the
 ///                                           viewer receives, the Dock badges, and an open request
 ///     --permission-guide                    show Settings and the permission guide card
@@ -255,6 +260,25 @@ enum DevelopmentLaunch {
         if arguments.contains("--text-test") {
             app.developmentMirrorHandler = { mirror in TextTest.run(mirror) }
         }
+        if let menuApp = value("--status-items-test") {
+            let popupApp = arguments.drop { $0 != "--status-items-test" }.dropFirst(2).first
+            app.developmentMirrorHandler = { mirror in StatusItemsTest.run(mirror, menuApp: menuApp, popupApp: popupApp) }
+        }
+        if arguments.contains("--status-menu-demo") {
+            app.developmentMirrorHandler = { mirror in
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1.5))
+                    RemoteStatusItems.shared.showMenu([
+                        MenuNode(title: "Start New Session", children: [MenuNode(title: "Indefinitely"),
+                                                                        MenuNode(title: "5 minutes")]),
+                        MenuNode(title: "", isSeparator: true),
+                        MenuNode(title: "Allow Display Sleep", mark: "✓"),
+                        MenuNode(title: "Settings…", keyEquivalent: ",", keyModifiers: 0),
+                        MenuNode(title: "Quit", isEnabled: false),
+                    ], itemID: "demo", from: mirror.connection)
+                }
+            }
+        }
         if arguments.contains("--gesture-test") {
             app.developmentMirrorHandler = { mirror in GestureTest.run(mirror) }
         }
@@ -339,6 +363,52 @@ enum DevelopmentLaunch {
             print("dev: window not found")
         }
         return true
+    }
+
+    /// `--status-items-test`: the other Mac's menu bar items through this
+    /// Mac's icon for it.
+    @MainActor private enum StatusItemsTest {
+        static func run(_ mirror: MirrorWindowController, menuApp: String, popupApp: String?) {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                let connection = mirror.connection
+                let start = Date()
+                guard let items = try? await connection.client.listStatusItems() else {
+                    return print("status-items-test: listing failed")
+                }
+                print(String(format: "status-items-test: %d items in %.0f ms", items.count,
+                             Date().timeIntervalSince(start) * 1000))
+                if let png = items.first(where: { $0.image != nil })?.image {
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("status-item-icon.png")
+                    try? png.write(to: url)
+                    print("status-items-test: icon \(NSImage(data: png)?.size ?? .zero) written to \(url.path)")
+                }
+                for item in items {
+                    print("status-items-test:   \(item.id) \(item.applicationName) “\(item.title)” "
+                          + "picture=\(item.image?.count ?? 0) bytes \(item.frame)")
+                }
+                RemoteStatusItems.shared.onMenu = { id, nodes in
+                    print("status-items-test: menu of \(id): " + nodes.prefix(6).map(\.title).joined(separator: " | "))
+                }
+                RemoteStatusItems.shared.onPopup = { popup in
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(1.5))
+                        print("status-items-test: popup \(popup.stream.frame) shown at \(popup.window?.frame ?? .zero) "
+                              + "visible=\(popup.window?.isVisible ?? false) window=\(popup.window?.windowNumber ?? 0)")
+                        try? await Task.sleep(for: .seconds(4))
+                        popup.close()
+                        print("status-items-test: popup closed here")
+                    }
+                }
+                if let item = items.first(where: { $0.applicationName.localizedCaseInsensitiveContains(menuApp) }) {
+                    RemoteStatusItems.shared.open(item, from: connection)
+                }
+                try? await Task.sleep(for: .seconds(2))
+                if let popupApp, let item = items.first(where: { $0.applicationName.localizedCaseInsensitiveContains(popupApp) }) {
+                    RemoteStatusItems.shared.open(item, from: connection)
+                }
+            }
+        }
     }
 
     /// `--gesture-test`: trackpad gesture events made the way the window

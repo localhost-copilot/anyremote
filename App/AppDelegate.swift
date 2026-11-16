@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         dockProxies = DockProxies(viewer: { [unowned self] in viewer })
         RemoteNotifications.shared.connection = { [unowned self] id in viewer.connections[id] }
         RemoteNotifications.shared.install()
+        RemoteStatusItems.shared.connections = { [unowned self] in Array(viewer.connections.values) }
         keyForwarder.install(target: { NSApp.keyWindow?.windowController as? any RemoteKeyTarget })
         viewer.onOpenedMirror = { [weak self] mirror in
             mirror.onMenuBarChange = { [weak self] mirror in self?.updateRemoteMenus(for: mirror) }
