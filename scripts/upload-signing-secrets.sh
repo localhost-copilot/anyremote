@@ -16,7 +16,29 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 chmod 700 "$WORK"
 PASSWORD=$(openssl rand -hex 24)
+# macOS asks for the signing keychain's password before letting the key go.
+# It is only in a file, so it goes on the clipboard, marked concealed (so
+# clipboard sharing and history skip it), and is cleared afterwards.
+clipboard() {
+    osascript -l JavaScript - "$@" <<'JS' >/dev/null
+ObjC.import("AppKit")
+function run(argv) {
+    const board = $.NSPasteboard.generalPasteboard
+    board.clearContents
+    if (argv.length == 0) return
+    const text = $.NSString.stringWithContentsOfFileEncodingError(argv[0], $.NSUTF8StringEncoding, null)
+    board.declareTypesOwner($(["public.utf8-plain-text", "org.nspasteboard.ConcealedType"]), null)
+    board.setStringForType(text.stringByTrimmingCharactersInSet($.NSCharacterSet.whitespaceAndNewlineCharacterSet),
+                           "public.utf8-plain-text")
+    board.setStringForType("", "org.nspasteboard.ConcealedType")
+}
+JS
+}
+trap 'clipboard; rm -rf "$WORK"' EXIT
+clipboard "$DIR/keychain-password"
+echo "macOS now asks to let “security” export the key: paste the password (⌘V), then click Allow."
 security export -k "$KEYCHAIN" -t identities -f pkcs12 -P "$PASSWORD" -o "$WORK/identity.p12"
+clipboard
 
 # The identity that goes up must be the one releases are checked against.
 CHECK="$WORK/check.keychain-db"
