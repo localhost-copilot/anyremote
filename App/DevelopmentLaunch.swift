@@ -20,6 +20,8 @@ import AppKit
 ///     -DesktopFitsWindow NO                 turn dynamic resolution off for this launch
 ///     --connect host[:port] --code CODE     connect to another Mac
 ///     --discovery-test                      print the hosts Bonjour finds
+///     --notification-test                   post a notification on this Mac and print what the
+///                                           viewer receives, the Dock badges, and an open request
 ///     --permission-guide                    show Settings and the permission guide card
 ///     --exit-after <seconds>
 ///
@@ -101,8 +103,9 @@ enum DevelopmentLaunch {
         }
         // Several sizes, comma-separated; "off" gives the display its own size back.
         let desktopSizes = value("--desktop-size")?.split(separator: ",").map { $0 == "off" ? nil : parseSize(String($0)) } ?? []
+        let notificationTest = arguments.contains("--notification-test")
         guard synthetic != nil || recorder != nil || application != nil || connectAddress != nil || launch != nil
-                || quit != nil || desktop
+                || quit != nil || desktop || notificationTest
         else { return false }
         if desktop {
             app.developmentDesktopHandler = { desktop in
@@ -272,6 +275,10 @@ enum DevelopmentLaunch {
                 print("dev: connect failed: \(model.lastError ?? "unknown")"); return
             }
             print("dev: connected to \(connection.hostName)")
+            if notificationTest {
+                await NotificationTest.run(connection)
+                return
+            }
             if desktop {
                 let displays = connection.displays
                 print("dev: displays " + displays.map { "\($0.displayID) \($0.name ?? "?") \($0.frame)" }.joined(separator: ", "))
@@ -327,6 +334,34 @@ enum DevelopmentLaunch {
             print("dev: window not found")
         }
         return true
+    }
+
+    /// `--notification-test`: a notification posted on the host (this Mac)
+    /// must arrive once, with the app it came from.
+    @MainActor private enum NotificationTest {
+        static func run(_ connection: HostConnection) async {
+            var arrived: [HostNotification] = []
+            RemoteNotifications.shared.onArrival = { notification in
+                arrived.append(notification)
+                print("notification-test: arrived from \(notification.applicationName) "
+                      + "bundle=\(notification.bundleIdentifier ?? "-") path=\(notification.applicationPath ?? "-") "
+                      + "title=“\(notification.title)” subtitle=“\(notification.subtitle)” body=“\(notification.body)” "
+                      + "icon=\(notification.icon?.count ?? 0) bytes")
+            }
+            try? await Task.sleep(for: .seconds(3))
+            print("notification-test: badges " + connection.badges.map { "\($0.applicationName)=\($0.label) [\($0.bundleIdentifier ?? "-")]" }
+                .joined(separator: ", "))
+            let script = Process()
+            script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            script.arguments = ["-e", "display notification \"Body, with a comma\" with title \"AnyRemote test\" subtitle \"Sub\""]
+            try? script.run()
+            script.waitUntilExit()
+            try? await Task.sleep(for: .seconds(3))
+            print("notification-test: \(arrived.count) arrived")
+            // A banner that is gone: the host only logs it (the click path without opening anything here).
+            connection.client.send(.openNotification(id: "00000000-0000-0000-0000-000000000000", applicationPath: nil))
+            try? await Task.sleep(for: .seconds(1))
+        }
     }
 
     /// `--desktop --ime-test`: types through this Mac's input method into the

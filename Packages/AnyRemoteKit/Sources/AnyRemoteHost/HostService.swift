@@ -62,6 +62,8 @@ public final class HostService: @unchecked Sendable {
     private var status = Status()
     /// Confined to `queue`, which the sessions share.
     let microphone: HostMicrophone
+    /// The host's notifications and Dock badges, for the viewers that want them.
+    let notices = HostNotices()
 
     /// Called on the main queue.
     public var onStatusChange: (@MainActor @Sendable (Status) -> Void)?
@@ -263,6 +265,7 @@ public final class HostService: @unchecked Sendable {
     func sessionEnded(_ session: HostSession) {
         forget(session)
         microphone.sessionEnded(session)
+        notices.remove(session)
     }
 
     private func forget(_ session: HostSession) {

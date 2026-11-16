@@ -148,7 +148,11 @@
 "Running" = "正在运行";
 "Close All on This Mac" = "只在本机关闭全部窗口";
 "Show Remote Apps in the Dock" = "在程序坞中显示远程 App";
-"Each app with windows open here gets its own Dock icon and ⌘Tab entry. Quitting it closes its windows on this Mac only." = "每个在本机打开了窗口的远程 App 都有自己的程序坞图标和 ⌘Tab 项。退出它只会关闭本机上的窗口。";
+"Each app with windows open here gets its own Dock icon and ⌘Tab entry, with its badge. Quitting it closes its windows on this Mac only." = "每个在本机打开了窗口的远程 App 都有自己的程序坞图标（带角标）和 ⌘Tab 项。退出它只会关闭本机上的窗口。";
+"Show Notifications from Other Macs" = "显示其他 Mac 的通知";
+"Notifications are turned off for AnyRemote in System Settings." = "已在“系统设置”中关闭 AnyRemote 的通知。";
+"Open Notification Settings…" = "打开通知设置…";
+"Notifications of apps on a connected Mac appear here too. Clicking one opens it on that Mac and brings its window here." = "已连接的 Mac 上的 App 通知也会显示在本机。点按通知会在那台 Mac 上打开它，并把它的窗口带到本机。";
 "Share Clipboard" = "共享剪贴板";
 "Copy on one Mac, paste on the other: text, images and links. Files and passwords stay on their Mac." = "在一台 Mac 上拷贝，在另一台上粘贴：文本、图片和链接。文件和密码不会离开各自的 Mac。";
 "Turn On…" = "打开…";

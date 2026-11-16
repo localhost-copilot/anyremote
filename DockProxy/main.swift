@@ -7,7 +7,7 @@ import AppKit
 /// named `<AnyRemote bundle ID>.dock.<event>`, the object being the proxy ID:
 ///
 ///   to AnyRemote: ready, activate, focus {window}, closeAll
-///   to the proxy: update {windows: [[id, title]], closeAllTitle}, quit
+///   to the proxy: update {windows: [[id, title]], badge, closeAllTitle}, quit
 @MainActor
 final class DockProxy: NSObject, NSApplicationDelegate {
     private let id: String
@@ -54,6 +54,11 @@ final class DockProxy: NSObject, NSApplicationDelegate {
             return (id, title)
         }
         if let title = note.userInfo?["closeAllTitle"] as? String { closeAllTitle = title }
+        // The remote app's own Dock badge (unread count), or none.
+        if let badge = note.userInfo?["badge"] as? String {
+            let label = badge.isEmpty ? nil : badge
+            if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
+        }
     }
 
     @objc private func quit(_ note: Notification) {

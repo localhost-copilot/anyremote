@@ -81,6 +81,9 @@ final class HostConnection {
     @ObservationIgnored private var sharingObserver: NSObjectProtocol?
     @ObservationIgnored private var soundObserver: NSObjectProtocol?
     @ObservationIgnored private var microphoneObserver: NSObjectProtocol?
+    @ObservationIgnored private var noticeObservers: [NSObjectProtocol] = []
+    /// The Dock badges of the host's apps, for their Dock icons here.
+    @ObservationIgnored private(set) var badges: [HostBadge] = []
     @ObservationIgnored private var audioReportTimer: Timer?
     /// Sound statistics of the last second, while the host's sound plays here.
     @ObservationIgnored private(set) var audioReport: AudioStreamReceiver.Report?
@@ -140,6 +143,7 @@ final class HostConnection {
         // Sent as soon as the host has let us in.
         client.setAudio(enabled: SoundSharing.isEnabled)
         client.setMicrophone(enabled: MicrophoneSharing.isEnabled)
+        updateNotices()
         do {
             welcome = try await client.connect(takeOver: takeOver)
             missingPermissions = welcome?.missingPermissions ?? []
@@ -159,6 +163,12 @@ final class HostConnection {
                 forName: MicrophoneSharing.changed, object: nil, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.client.setMicrophone(enabled: MicrophoneSharing.isEnabled) }
+            }
+            // Badges only show on the remote apps' Dock icons, so they follow that setting.
+            noticeObservers = [RemoteNotifications.changed, .mirrorsChanged].map { name in
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.updateNotices() }
+                }
             }
             sendTextInput()
             textInputObserver = NotificationCenter.default.addObserver(
@@ -186,6 +196,11 @@ final class HostConnection {
         client.send(.textInput(settings))
     }
 
+    private func updateNotices() {
+        client.setNotices(NoticeSubscription(notifications: RemoteNotifications.isEnabled,
+                                             badges: DockProxies.isEnabled))
+    }
+
     /// Starts or stops sharing the clipboard with the host, per the setting.
     private func updateClipboardSharing() {
         let enabled = ClipboardSharing.isEnabled && state == .connected
@@ -210,6 +225,12 @@ final class HostConnection {
         soundObserver = nil
         if let microphoneObserver { NotificationCenter.default.removeObserver(microphoneObserver) }
         microphoneObserver = nil
+        noticeObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        noticeObservers = []
+        if !badges.isEmpty {
+            badges = []
+            NotificationCenter.default.post(name: .mirrorsChanged, object: nil)
+        }
         if let textInputObserver { NotificationCenter.default.removeObserver(textInputObserver) }
         textInputObserver = nil
         sentTextInput = nil
@@ -383,6 +404,12 @@ final class HostConnection {
             if state == .denied { MicrophoneSharing.explainDenial(hostName: hostName) }
         case let .hostDragBegan(streamID, manifest):
             RemoteDragCoordinator.shared.hostDragBegan(connection: self, streamID: streamID, manifest: manifest)
+        case .notification(let notification):
+            RemoteNotifications.shared.show(notification, from: self)
+        case .badges(let badges):
+            guard badges != self.badges else { return }
+            self.badges = badges
+            NotificationCenter.default.post(name: .mirrorsChanged, object: nil)
         }
     }
 

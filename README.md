@@ -25,6 +25,8 @@ one click away too.
   it were theirs: calls, voice messages, dictation.
 - **Drag and drop** — files, images and text between Macs, from a remote
   window, out of the full desktop, or from this Mac into the other.
+- **Notifications and badges** — the other Mac's notifications appear here,
+  and a click opens them there; remote apps' Dock icons carry their badges.
 - **Shared clipboard**, English or Simplified Chinese interface.
 
 Latency and image quality target Apple's Screen Sharing high-performance
@@ -134,7 +136,17 @@ Each remote app with windows open here gets its own Dock icon and ⌘Tab entry,
 like Parallels' Coherence mode: a small stand-in app (`DockProxy/`) named
 "App (Mac)" with the app's icon. Clicking it brings that app's windows
 forward, its Dock menu lists them, and Quit closes them on this Mac only
-(Settings → General → *Show Remote Apps in the Dock*).
+(Settings → General → *Show Remote Apps in the Dock*). Its icon carries the
+badge the app shows in the other Mac's Dock (unread mail, messages).
+
+### Notifications
+
+While connected, notifications that appear on the other Mac appear here too
+(Settings → General → *Show Notifications from Other Macs*, on by default),
+titled with the app and the Mac, "Mail (Mac mini)", with the app's icon.
+Clicking one does what clicking it there would (opens the message, the
+conversation) and brings that app's window here. The first one asks for
+permission to show notifications; Settings says when it is turned off.
 
 ### Apps
 
@@ -310,6 +322,12 @@ nothing behind.
 - Sound is per app, not per window: two windows of one app (or two browser
   tabs) share their sound, and an open window plays its app's sound even
   from its other windows.
+- Notifications arrive only as the host shows them as banners: none while
+  a Focus is on there or for apps whose notifications are off or set to
+  *None*, and only while connected. Notification Center's buttons (*Reply*,
+  *Mark as Read*) aren't offered here; a click opens the notification.
+  Badges show while the app has windows open here (that's when it has a
+  Dock icon).
 - Two viewers opening the same *window* each get their own capture, and
   resizing it from both fights; only desktops are shared.
 - Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
@@ -464,6 +482,23 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
   `NSFilePromiseProviderDelegate` and `NSPasteboardWriting` methods of a
   provider subclass must be `nonisolated`; inferred `@MainActor` isolation
   makes AppKit skip them, and the receiver fails with error 256.
+- **Notifications and badges** — macOS has no API for another app's
+  notifications, so the host reads what Notification Center shows through
+  Accessibility, on its own queue, only while a viewer subscribed
+  (`notices`). Each banner is an element of subrole
+  `AXNotificationCenterBanner` with a UUID identifier, `title`, `subtitle`
+  and `body` texts, and a description that starts with the app's name
+  (macOS 27). Banners are polled twice a second; ones on screen when
+  watching starts are skipped, AnyRemote's own (a viewer's copies, when a
+  Mac controls itself) and macOS's "may this app notify" questions are left
+  out. A new one goes out as `hostNotification`, with the app's icon the
+  first time per session; the viewer posts it with `UNUserNotificationCenter`.
+  A click sends `openNotification`: the host notes the windows on screen
+  (as for launching an app, so a window the click opens comes to the
+  viewer), presses the banner if it is still shown and activates the app.
+  Badges are the Dock items' `AXStatusLabel`, polled every 2 s and sent as
+  the whole list (`badges`) when it changes; the viewer gives each Dock
+  stand-in its app's badge.
 - **System shortcuts** — while a desktop window is key, the viewer turns off
   the window server's global hot keys for its connection (private
   `CGSSetGlobalHotKeyOperatingMode`), so ⌘Tab and friends arrive as ordinary
@@ -541,7 +576,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 75 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 79 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -625,6 +660,8 @@ against this Mac's own host service unless `--connect` is given.
 - `--permission-guide` — Settings with the permission card
 - `--settings` — opens Settings
 - `--status-panel` — opens the menu bar panel and prints its frame for `screencapture -R`
+- `--notification-test` — posts a notification on this Mac (from Script
+  Editor) and prints what the viewer receives, and the Dock badges
 - `--discovery-test`, `--exit-after <seconds>`
 
 Environment:

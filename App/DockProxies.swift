@@ -36,6 +36,8 @@ final class DockProxies {
         var url: URL?
         var application: NSRunningApplication?
         var mirrors: [MirrorWindowController] = []
+        /// The badge the app shows on its Dock icon on the other Mac.
+        var badge = ""
         init(id: String) { self.id = id }
     }
 
@@ -105,8 +107,10 @@ final class DockProxies {
         }
         for (id, group) in groups {
             let mirrors = group.mirrors.sorted { $0.windowID < $1.windowID }
+            let badge = Self.badge(for: group.application, in: group.connection)
             if let proxy = proxies[id] {
                 proxy.mirrors = mirrors
+                proxy.badge = badge
                 sendUpdate(proxy)
                 continue
             }
@@ -122,6 +126,7 @@ final class DockProxies {
             }
             let proxy = Proxy(id: id)
             proxy.mirrors = mirrors
+            proxy.badge = badge
             proxies[id] = proxy
             launch(proxy, name: "\(group.application) (\(group.connection.hostName))", icon: icon)
         }
@@ -139,12 +144,21 @@ final class DockProxies {
         return bundle.flatMap { listing.icons[$0] }
     }
 
+    /// The app's Dock badge on the host, matched by bundle when the window
+    /// listing knows it, else by name.
+    private static func badge(for application: String, in connection: HostConnection) -> String {
+        let bundle = connection.listing?.windows.first { $0.applicationName == application }?.bundleIdentifier
+        let badge = connection.badges.first { bundle != nil && $0.bundleIdentifier == bundle }
+            ?? connection.badges.first { $0.applicationName == application }
+        return badge?.label ?? ""
+    }
+
     private func sendUpdate(_ proxy: Proxy) {
         let windows: [[Any]] = proxy.mirrors.map { mirror in
             let title = mirror.stream.title.isEmpty ? mirror.stream.applicationName : mirror.stream.title
             return [Int(mirror.windowID), title]
         }
-        post("update", to: proxy.id, ["windows": windows,
+        post("update", to: proxy.id, ["windows": windows, "badge": proxy.badge,
                                        "closeAllTitle": String(localized: "Close All on This Mac")])
     }
 
@@ -160,9 +174,9 @@ final class DockProxies {
         case "ready":
             sendUpdate(proxy)
         case "activate":
-            bringForward(proxy.mirrors)
+            Self.bringForward(proxy.mirrors)
         case "focus":
-            bringForward(proxy.mirrors.filter { Int($0.windowID) == window })
+            Self.bringForward(proxy.mirrors.filter { Int($0.windowID) == window })
         case "closeAll":
             for mirror in proxy.mirrors { mirror.close() }
         default:
@@ -171,7 +185,7 @@ final class DockProxies {
     }
 
     /// Shows the mirrors in their current order, the frontmost one key.
-    private func bringForward(_ mirrors: [MirrorWindowController]) {
+    static func bringForward(_ mirrors: [MirrorWindowController]) {
         let windows = mirrors.compactMap(\.window)
         guard !windows.isEmpty else { return }
         NSApp.activate()

@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 13
+public let anyRemoteProtocolVersion: UInt16 = 14
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -436,6 +436,19 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case drag(DragEvent)
     /// Only on the transfer connection.
     case transfer(TransferMessage)
+
+    // Notifications and badges
+    /// Viewer → host, once connected and on every change: which of the
+    /// host's notifications and Dock badges to send.
+    case notices(NoticeSubscription)
+    /// Host → viewer: a notification just appeared on the host.
+    case hostNotification(HostNotification)
+    /// Host → viewer: every Dock badge the host's apps show now, whenever
+    /// one changes (and once after subscribing).
+    case badges([HostBadge])
+    /// Viewer → host: the viewer's copy of a notification was clicked. The
+    /// host opens it (or its app) and that app's window opens here.
+    case openNotification(id: String, applicationPath: String?)
 }
 
 public enum ControlCoding {

@@ -299,6 +299,12 @@ final class HostSession: @unchecked Sendable {
             transferToken = token
         case .drag(let event):
             dragBridge.handle(event)
+        case .notices(let subscription):
+            service?.notices.subscribe(self, subscription)
+        case let .openNotification(id, path):
+            // Launching first notes the windows on screen, so one the click opens comes here.
+            if let path { launchApplication(path) }
+            service?.notices.open(id: id)
         case .goodbye:
             end(reason: "Viewer disconnected.")
         default:

@@ -58,6 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         hostSettings.onStatusChange = { [weak self] _ in self?.statusMenu?.updateIcon() }
         pickerHotKey = GlobalHotKey.pickerShortcut { [weak self] in self?.showHosts() }
         dockProxies = DockProxies(viewer: { [unowned self] in viewer })
+        RemoteNotifications.shared.connection = { [unowned self] id in viewer.connections[id] }
+        RemoteNotifications.shared.install()
         keyForwarder.install(target: { NSApp.keyWindow?.windowController as? any RemoteKeyTarget })
         viewer.onOpenedMirror = { [weak self] mirror in
             mirror.onMenuBarChange = { [weak self] mirror in self?.updateRemoteMenus(for: mirror) }

@@ -47,6 +47,10 @@ public final class RemoteHostClient: @unchecked Sendable {
         case microphone(MicrophoneState)
         /// A drag began on the host under this viewer's press.
         case hostDragBegan(streamID: UInt16, DragManifest)
+        /// A notification appeared on the host.
+        case notification(HostNotification)
+        /// The host's Dock badges changed (all of them).
+        case badges([HostBadge])
     }
 
     public enum MicrophoneState: Sendable, Equatable {
@@ -88,6 +92,7 @@ public final class RemoteHostClient: @unchecked Sendable {
     // Queue-confined.
     private var wantsAudio = false
     private var offersMicrophone = false
+    private var notices = NoticeSubscription(notifications: false, badges: false)
     private var microphone: ViewerMicrophone?
 
     // Queue-confined.
@@ -191,6 +196,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         }
         if wantsAudio { control?.send(.audio(enabled: true)) }
         if offersMicrophone { control?.send(.microphone(enabled: true)) }
+        if !notices.isEmpty { control?.send(.notices(notices)) }
         openTransfer()
         connectContinuation?.resume(returning: welcome)
         connectContinuation = nil
@@ -312,6 +318,10 @@ public final class RemoteHostClient: @unchecked Sendable {
             microphoneWanted(wanted)
         case let .hostDragBegan(streamID, manifest):
             emit(.hostDragBegan(streamID: streamID, manifest))
+        case .hostNotification(let notification):
+            emit(.notification(notification))
+        case .badges(let badges):
+            emit(.badges(badges))
         default:
             log.debug("unexpected message from host")
         }
@@ -422,6 +432,17 @@ public final class RemoteHostClient: @unchecked Sendable {
 
     /// The viewer's drag over the host's surfaces.
     public func sendDrag(_ event: DragEvent) { send(.drag(event)) }
+
+    // MARK: Notifications
+
+    /// Asks the host for its notifications and Dock badges (or to stop).
+    public func setNotices(_ subscription: NoticeSubscription) {
+        queue.async { [self] in
+            guard subscription != notices else { return }
+            notices = subscription
+            if welcome != nil { control?.send(.notices(subscription)) }
+        }
+    }
 
     // MARK: Sound
 

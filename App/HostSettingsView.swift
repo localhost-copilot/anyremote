@@ -29,6 +29,10 @@ final class HostSettingsModel {
         if current != permissions { permissions = current }
         let driver = MicrophoneDriverInstaller.status
         if driver != microphoneDriver { microphoneDriver = driver }
+        Task {
+            let denied = await RemoteNotifications.isDenied()
+            if denied != notificationsDenied { notificationsDenied = denied }
+        }
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -65,6 +69,9 @@ final class HostSettingsModel {
 
     private(set) var showsRemoteAppsInDock = DockProxies.isEnabled
     private(set) var sharesClipboard = ClipboardSharing.isEnabled
+    private(set) var showsRemoteNotifications = RemoteNotifications.isEnabled
+    /// Notifications are turned off for AnyRemote in System Settings.
+    private(set) var notificationsDenied = false
     private(set) var playsRemoteSound = SoundSharing.isEnabled
     private(set) var sendsMicrophone = MicrophoneSharing.isEnabled
     private(set) var microphoneDriver = MicrophoneDriverInstaller.status
@@ -113,6 +120,11 @@ final class HostSettingsModel {
     func setSharesClipboard(_ value: Bool) {
         sharesClipboard = value
         ClipboardSharing.isEnabled = value
+    }
+
+    func setShowsRemoteNotifications(_ value: Bool) {
+        showsRemoteNotifications = value
+        RemoteNotifications.isEnabled = value
     }
 
     func setShowsRemoteAppsInDock(_ value: Bool) {
@@ -200,8 +212,21 @@ struct HostSettingsView: View {
                     .font(.callout).foregroundStyle(.secondary)
                 Toggle("Show Remote Apps in the Dock", isOn: Binding(
                     get: { model.showsRemoteAppsInDock }, set: { model.setShowsRemoteAppsInDock($0) }))
-                Text("Each app with windows open here gets its own Dock icon and ⌘Tab entry. Quitting it closes its windows on this Mac only.")
+                Text("Each app with windows open here gets its own Dock icon and ⌘Tab entry, with its badge. Quitting it closes its windows on this Mac only.")
                     .font(.callout).foregroundStyle(.secondary)
+                Toggle("Show Notifications from Other Macs", isOn: Binding(
+                    get: { model.showsRemoteNotifications }, set: { model.setShowsRemoteNotifications($0) }))
+                Text("Notifications of apps on a connected Mac appear here too. Clicking one opens it on that Mac and brings its window here.")
+                    .font(.callout).foregroundStyle(.secondary)
+                if model.showsRemoteNotifications, model.notificationsDenied {
+                    HStack {
+                        Label("Notifications are turned off for AnyRemote in System Settings.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout).foregroundStyle(.orange)
+                        Spacer()
+                        Button("Open Notification Settings…") { RemoteNotifications.openSystemSettings() }
+                    }
+                }
                 Toggle("Open AnyRemote at Login", isOn: Binding(
                     get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
                 Text("Recommended on a Mac mini that is controlled remotely, so it’s ready after a restart.")
