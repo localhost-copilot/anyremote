@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 14
+public let anyRemoteProtocolVersion: UInt16 = 15
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -191,6 +191,16 @@ public enum InputEvent: Codable, Equatable, Sendable {
     /// Text the viewer's input method composed (Chinese, Japanese, ...),
     /// typed on the host as is, whatever its keyboard layout.
     case text(String)
+    /// A trackpad pinch, rotation or smart zoom (double-tap with two
+    /// fingers). `phase` is an `NSEvent.Phase` raw value (smart zoom: 0);
+    /// `value` is the magnification change or the rotation in degrees.
+    case gesture(point: CGPoint, kind: GestureKind, phase: UInt32, value: Double, modifiers: UInt64)
+
+    public enum GestureKind: String, Codable, Sendable {
+        case magnify
+        case rotate
+        case smartMagnify
+    }
 }
 
 /// Whose input method composes text (Chinese, Japanese…) for the host.

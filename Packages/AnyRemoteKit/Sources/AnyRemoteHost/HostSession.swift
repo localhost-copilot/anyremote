@@ -1388,6 +1388,13 @@ final class HostSession: @unchecked Sendable {
             setTrackerFast(true)
         case .key(_, true, _, _), .text:
             focus(stream, force: false)
+        case let .gesture(_, kind, phase, value, _):
+            // Gestures go to the frontmost app only, so a pinch on a window
+            // that wasn't clicked yet makes it frontmost first, as a key does.
+            log.debug("gesture \(kind.rawValue, privacy: .public) phase \(phase) value \(value)")
+            if kind == .smartMagnify || phase & UInt32(NSEvent.Phase.began.rawValue) != 0 {
+                focus(stream, force: false)
+            }
         default:
             break
         }

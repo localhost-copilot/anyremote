@@ -79,7 +79,64 @@ final class InputInjector {
 
         case let .text(text):
             postText(text)
+
+        case let .gesture(point, kind, phase, value, modifiers):
+            postGesture(kind, at: global(point), phase: Self.scrollPhase(phase), value: value, modifiers: modifiers)
         }
+    }
+
+    // MARK: Gestures
+
+    /// Gesture events have no public API. The window server's own trackpad
+    /// events are CGEvents of type 29 (`NSEventTypeGesture`) whose private
+    /// fields name the gesture (field 110: the IOHIDEventType: 5 rotation,
+    /// 6 scroll, 8 zoom, 22 smart zoom), its amount (113 zoom, 114 rotation,
+    /// 118/119 scroll) and phase (132, a CGScrollPhase); AppKit turns them
+    /// into magnify, rotate and smartMagnify events. Checked on macOS 27.
+    private enum GestureField {
+        static let hidType = field(110)
+        static let zoom = field(113)
+        static let rotation = field(114)
+        static let scrollX = field(118)
+        static let scrollY = field(119)
+        static let phase = field(132)
+        static func field(_ value: UInt32) -> CGEventField { unsafeBitCast(value, to: CGEventField.self) }
+    }
+
+    private static let gestureType = unsafeBitCast(UInt32(29), to: CGEventType.self)
+
+    private func postGesture(_ kind: InputEvent.GestureKind, at location: CGPoint, phase: Int64, value: Double,
+                             modifiers: UInt64) {
+        guard let event = CGEvent(source: source) else { return }
+        event.type = Self.gestureType
+        event.location = location
+        event.flags = CGEventFlags(rawValue: modifiers)
+        switch kind {
+        case .magnify:
+            event.setIntegerValueField(GestureField.hidType, value: 8)
+            event.setDoubleValueField(GestureField.zoom, value: value)
+        case .rotate:
+            event.setIntegerValueField(GestureField.hidType, value: 5)
+            event.setDoubleValueField(GestureField.rotation, value: value)
+        case .smartMagnify:
+            event.setIntegerValueField(GestureField.hidType, value: 22)
+        }
+        event.setIntegerValueField(GestureField.phase, value: phase)
+        event.post(tap: .cghidEventTap)
+    }
+
+    /// A trackpad scroll comes with a scroll gesture event; swipe tracking
+    /// (two-finger swipes between pages, `trackSwipeEvent`) follows those,
+    /// not the scroll events, and never moves without them.
+    private func postScrollGesture(at location: CGPoint, deltaX: Double, deltaY: Double, phase: Int64) {
+        guard let event = CGEvent(source: source) else { return }
+        event.type = Self.gestureType
+        event.location = location
+        event.setIntegerValueField(GestureField.hidType, value: 6)
+        event.setDoubleValueField(GestureField.scrollX, value: deltaX)
+        event.setDoubleValueField(GestureField.scrollY, value: deltaY)
+        event.setIntegerValueField(GestureField.phase, value: phase)
+        event.post(tap: .cghidEventTap)
     }
 
     /// Types text whatever the host's keyboard layout: each key event carries
@@ -225,6 +282,10 @@ final class InputInjector {
             guard !precise, delta != 0 else { return Int32(delta.rounded()) }
             return Int32(delta < 0 ? min(-1, delta.rounded()) : max(1, delta.rounded()))
         }
+        let scrollPhase = Self.scrollPhase(phase)
+        if precise, scrollPhase != 0 {
+            postScrollGesture(at: location, deltaX: deltaX, deltaY: deltaY, phase: scrollPhase)
+        }
         guard let event = CGEvent(scrollWheelEvent2Source: source, units: precise ? .pixel : .line, wheelCount: 2,
                                   wheel1: lines(deltaY), wheel2: lines(deltaX), wheel3: 0)
         else { return }
@@ -237,7 +298,7 @@ final class InputInjector {
             event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(deltaY.rounded()))
             event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(deltaX.rounded()))
         }
-        event.setIntegerValueField(.scrollWheelEventScrollPhase, value: Self.scrollPhase(phase))
+        event.setIntegerValueField(.scrollWheelEventScrollPhase, value: scrollPhase)
         event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Self.momentumPhase(momentumPhase))
         event.post(tap: .cghidEventTap)
     }

@@ -201,6 +201,10 @@ the *remote* app). AnyRemote's own commands use ⌃⌥⌘:
 | ⌃⌥⌘W | Close on this Mac (the host window stays open) |
 | ⌃⌥⌘I | Statistics overlay |
 
+**Trackpad**: scrolling (with momentum), pinch to zoom, rotate, smart zoom
+(double-tap with two fingers) and two-finger swipes between pages act on the
+remote app as they would there.
+
 Keys are sent as virtual key codes, so the host's keyboard layout applies.
 
 **Input methods** (Pinyin, WeChat, Sogou, Kotoeri…) are this Mac's by
@@ -295,7 +299,11 @@ nothing behind.
 
 ## Limitations
 
-- Trackpad gestures (pinch, rotate, swipe) are not forwarded; scrolling is.
+- Trackpad gestures reach the remote app's frontmost window (as on the
+  Mac itself, where they go to the active app): a pinch on a background
+  mirror brings its app forward on the other Mac first. Three- and
+  four-finger swipes (Mission Control, Spaces) and Force Touch stay on this
+  Mac.
 - Dragged items are copied, never moved, between Macs. Apps that offer a
   drag only to their own windows (a drag that never appears on the system
   drag pasteboard) cannot drag out.
@@ -499,6 +507,17 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
   Badges are the Dock items' `AXStatusLabel`, polled every 2 s and sent as
   the whole list (`badges`) when it changes; the viewer gives each Dock
   stand-in its app's badge.
+- **Trackpad gestures** — the viewer forwards AppKit's magnify, rotate and
+  smartMagnify events (`InputEvent.gesture`). There is no public API to
+  make them, so the host posts what the window server's trackpad driver
+  posts: CGEvents of type 29 whose private fields hold the IOHIDEventType
+  (110: 8 zoom, 5 rotation, 22 smart zoom, 6 scroll), the amount (113 zoom,
+  114 rotation; they share storage, so set one) and a CGScrollPhase (132).
+  They go to the frontmost app, so a gesture's first event focuses the
+  window like a key. Every trackpad scroll with a phase is preceded by a
+  scroll gesture event (118/119 deltas): swipe tracking
+  (`trackSwipeEvent`, two-finger swipes between pages) follows those and
+  stands still without them.
 - **System shortcuts** — while a desktop window is key, the viewer turns off
   the window server's global hot keys for its connection (private
   `CGSSetGlobalHotKeyOperatingMode`), so ⌘Tab and friends arrive as ordinary
@@ -576,7 +595,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 79 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 80 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -660,6 +679,9 @@ against this Mac's own host service unless `--connect` is given.
 - `--permission-guide` — Settings with the permission card
 - `--settings` — opens Settings
 - `--status-panel` — opens the menu bar panel and prints its frame for `screencapture -R`
+- `--open <app> --gesture-test` — hands the mirror pinch, rotate and smart
+  zoom events made as the window server makes them; the host app gets them
+  (use a scratch app that logs `magnify(with:)`)
 - `--notification-test` — posts a notification on this Mac (from Script
   Editor) and prints what the viewer receives, and the Dock badges
 - `--discovery-test`, `--exit-after <seconds>`

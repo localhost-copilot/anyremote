@@ -236,6 +236,23 @@ final class RemoteSurfaceView: NSView {
                                 momentumPhase: UInt32(event.momentumPhase.rawValue),
                                 modifiers: Self.modifiers(event)))
     }
+
+    // Trackpad gestures act on the remote app: pinch to zoom a photo or a
+    // page, rotate, double-tap with two fingers for smart zoom.
+    override func magnify(with event: NSEvent) {
+        sink?.sendInput(.gesture(point: point(event), kind: .magnify, phase: UInt32(event.phase.rawValue),
+                                 value: event.magnification, modifiers: Self.modifiers(event)))
+    }
+
+    override func rotate(with event: NSEvent) {
+        sink?.sendInput(.gesture(point: point(event), kind: .rotate, phase: UInt32(event.phase.rawValue),
+                                 value: Double(event.rotation), modifiers: Self.modifiers(event)))
+    }
+
+    override func smartMagnify(with event: NSEvent) {
+        sink?.sendInput(.gesture(point: point(event), kind: .smartMagnify, phase: 0, value: 0,
+                                 modifiers: Self.modifiers(event)))
+    }
 }
 
 /// A window whose keys go to the host: a mirror or a full desktop.

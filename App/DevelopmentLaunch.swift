@@ -20,6 +20,8 @@ import AppKit
 ///     -DesktopFitsWindow NO                 turn dynamic resolution off for this launch
 ///     --connect host[:port] --code CODE     connect to another Mac
 ///     --discovery-test                      print the hosts Bonjour finds
+///     --open <application> --gesture-test   pinch, rotate and smart-zoom the mirror (as AppKit would
+///                                           deliver them) so the host app gets them
 ///     --notification-test                   post a notification on this Mac and print what the
 ///                                           viewer receives, the Dock badges, and an open request
 ///     --permission-guide                    show Settings and the permission guide card
@@ -253,6 +255,9 @@ enum DevelopmentLaunch {
         if arguments.contains("--text-test") {
             app.developmentMirrorHandler = { mirror in TextTest.run(mirror) }
         }
+        if arguments.contains("--gesture-test") {
+            app.developmentMirrorHandler = { mirror in GestureTest.run(mirror) }
+        }
 
         Task { @MainActor in
             let target: HostTarget
@@ -334,6 +339,47 @@ enum DevelopmentLaunch {
             print("dev: window not found")
         }
         return true
+    }
+
+    /// `--gesture-test`: trackpad gesture events made the way the window
+    /// server makes them, handed to the mirror's view as AppKit would.
+    @MainActor private enum GestureTest {
+        static func run(_ mirror: MirrorWindowController) {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.5))
+                let view = mirror.surface
+                guard let window = view.window else { return }
+                let center = window.convertPoint(toScreen: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
+                // CGEvent locations count from the top of the main screen.
+                let location = CGPoint(x: center.x, y: (NSScreen.screens.first?.frame.height ?? 0) - center.y)
+                func event(_ hidType: Int64, phase: Int64, zoom: Double = 0, rotation: Double = 0) -> NSEvent? {
+                    func field(_ value: UInt32) -> CGEventField { unsafeBitCast(value, to: CGEventField.self) }
+                    guard let event = CGEvent(source: nil) else { return nil }
+                    event.type = unsafeBitCast(UInt32(29), to: CGEventType.self)
+                    event.location = location
+                    event.setIntegerValueField(field(110), value: hidType)
+                    // Zoom and rotation share their storage: set only the gesture's own.
+                    if hidType == 8 { event.setDoubleValueField(field(113), value: zoom) }
+                    if hidType == 5 { event.setDoubleValueField(field(114), value: rotation) }
+                    event.setIntegerValueField(field(132), value: phase)
+                    return NSEvent(cgEvent: event)
+                }
+                var sequence: [NSEvent?] = [event(8, phase: 1)]
+                sequence += (0..<4).map { _ in event(8, phase: 2, zoom: 0.1) }
+                sequence += [event(8, phase: 4), event(5, phase: 1), event(5, phase: 2, rotation: 15), event(5, phase: 4),
+                             event(22, phase: 0)]
+                for case let event? in sequence {
+                    switch event.type {
+                    case .magnify: view.magnify(with: event)
+                    case .rotate: view.rotate(with: event)
+                    case .smartMagnify: view.smartMagnify(with: event)
+                    default: print("gesture-test: unexpected event type \(event.type.rawValue)")
+                    }
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                print("gesture-test: sent \(sequence.count) gesture events")
+            }
+        }
     }
 
     /// `--notification-test`: a notification posted on the host (this Mac)
