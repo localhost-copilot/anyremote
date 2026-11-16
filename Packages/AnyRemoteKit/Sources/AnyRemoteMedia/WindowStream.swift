@@ -37,7 +37,7 @@ public final class WindowStreamSender: @unchecked Sendable {
         send: @escaping @Sendable ([Data]) -> Void
     ) {
         self.init(streamID: streamID, configuration: configuration, maximumDatagramSize: maximumDatagramSize,
-                  stats: stats, send: send) { encode in
+                  stats: stats, skipsUnchangedFrames: true, send: send) { encode in
             WindowCaptureSession(window: window, frameRate: configuration.expectedFrameRate,
                                  alpha: configuration.alpha, backdrop: backdrop, handler: encode)
         }
@@ -77,6 +77,7 @@ public final class WindowStreamSender: @unchecked Sendable {
         configuration: HEVCEncoder.Configuration,
         maximumDatagramSize: Int,
         stats: PipelineStats,
+        skipsUnchangedFrames: Bool = false,
         send: @escaping @Sendable ([Data]) -> Void,
         makeCapture: (@escaping @Sendable (CapturedFrame) -> Void) -> any FrameCapturing
     ) {
@@ -106,7 +107,18 @@ public final class WindowStreamSender: @unchecked Sendable {
         } else {
             let encoder = HEVCEncoder(configuration: configuration) { emit(streamID, $0) }
             encoding = .whole(encoder)
-            encodeFrame = { frame in encoder.encode(frame) }
+            // Windows only: display captures know what changed and send
+            // nothing when nothing did. Development: ANYREMOTE_UNCHANGED_FRAMES=1
+            // sends them all, for comparisons.
+            if skipsUnchangedFrames, ProcessInfo.processInfo.environment["ANYREMOTE_UNCHANGED_FRAMES"] != "1" {
+                let filter = UnchangedFrameFilter()
+                encodeFrame = { frame in
+                    guard filter.admits(frame, keyframeDue: encoder.keyframeDue) else { return }
+                    encoder.encode(frame)
+                }
+            } else {
+                encodeFrame = { frame in encoder.encode(frame) }
+            }
         }
         capture = makeCapture(encodeFrame)
     }

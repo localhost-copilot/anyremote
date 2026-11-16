@@ -19,6 +19,9 @@
 // Drag and drop through the host agent (see DragBench.swift):
 //   anyremote-bench --drag-test <scenario> --file <path> [--from x,y] [--to x,y]
 //
+// Several windows at once, some still (see MultiWindowBench.swift):
+//   anyremote-bench --windows N [--busy K] [--synthetic WxH] [--seconds N] [--connect … --code …]
+//
 // `--synthetic` opens a window of W×H points that scrolls dense text every
 // display frame: a reproducible worst-case workload for latency comparisons.
 
@@ -51,6 +54,8 @@ struct Options: Sendable {
     var dragFile: String?
     var dragFrom = CGPoint(x: 300, y: 300)
     var dragTo = CGPoint(x: 850, y: 300)
+    var windows = 0
+    var busy = 1
 }
 
 func parsePoint(_ text: String?) -> CGPoint? {
@@ -79,6 +84,8 @@ func parseOptions() -> Options {
         case "--connect": options.connect = arguments.next()
         case "--code": options.code = arguments.next()
         case "--tiles": options.tiles = true
+        case "--windows": options.windows = Int(arguments.next() ?? "") ?? 0
+        case "--busy": options.busy = Int(arguments.next() ?? "") ?? options.busy
         case "--microphone": options.microphone = true
         case "--strips": options.strips = Int(arguments.next() ?? "") ?? options.strips
         case "--drag-test": options.dragScenario = arguments.next()
@@ -265,18 +272,30 @@ let options = parseOptions()
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
 nonisolated(unsafe) var syntheticWindow: NSWindow?
-if let size = options.synthetic {
+nonisolated(unsafe) var benchWindows: [NSWindow] = []
+if options.windows > 0 {
+    let size = options.synthetic ?? CGSize(width: 1200, height: 800)
+    benchWindows = MainActor.assumeIsolated {
+        (0..<options.windows).map { index in
+            SyntheticWorkloadWindow.open(size: size, origin: CGPoint(x: 40 + index * 50, y: 40 + index * 30),
+                                         scrolls: index < options.busy)
+        }
+    }
+} else if let size = options.synthetic {
     syntheticWindow = MainActor.assumeIsolated { SyntheticWorkloadWindow.open(size: size) }
 }
 let syntheticWindowID = syntheticWindow.map { CGWindowID($0.windowNumber) }
+let benchWindowIDs = benchWindows.map { CGWindowID($0.windowNumber) }
 Task.detached {
     // Let the synthetic window reach the window server before enumerating.
-    if syntheticWindowID != nil { try? await Task.sleep(for: .milliseconds(500)) }
+    if syntheticWindowID != nil || !benchWindowIDs.isEmpty { try? await Task.sleep(for: .milliseconds(500)) }
     do {
         if let scenario = options.dragScenario {
             try await runDragBench(scenario: scenario, file: options.dragFile, from: options.dragFrom, to: options.dragTo)
         } else if options.microphone {
             try await runMicrophoneBench(seconds: options.seconds)
+        } else if !benchWindowIDs.isEmpty {
+            try await runMultiWindowBench(options, windowIDs: benchWindowIDs, busy: min(options.busy, benchWindowIDs.count))
         } else if options.tiles {
             try await runTileBench(seconds: options.seconds, strips: options.strips, realTime: options.realTime)
         } else if options.network || options.hostOnly || options.connect != nil {

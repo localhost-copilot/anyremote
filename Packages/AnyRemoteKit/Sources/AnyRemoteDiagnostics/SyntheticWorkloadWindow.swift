@@ -1,10 +1,13 @@
 import AppKit
 
 /// A window that scrolls dense text by a few points every display refresh:
-/// a reproducible, worst-case workload for latency comparisons.
+/// a reproducible, worst-case workload for latency comparisons. With
+/// `scrolls` false it shows the same text standing still, like a window
+/// that is open but not in use.
 @MainActor
 public enum SyntheticWorkloadWindow {
-    public static func open(size: CGSize, origin: CGPoint = CGPoint(x: 40, y: 40)) -> NSWindow {
+    public static func open(size: CGSize, origin: CGPoint = CGPoint(x: 40, y: 40),
+                            scrolls: Bool = true) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(origin: origin, size: size),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.title = "AnyRemote synthetic workload"
@@ -13,7 +16,7 @@ public enum SyntheticWorkloadWindow {
         view.autoresizingMask = [.width, .height]
         window.contentView = view
         window.orderFrontRegardless()
-        view.startScrolling()
+        if scrolls { view.startScrolling() }
         return window
     }
 }

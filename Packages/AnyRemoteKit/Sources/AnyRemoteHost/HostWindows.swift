@@ -35,6 +35,12 @@ enum HostWindows {
         return content.windows.first { $0.windowID == id }
     }
 
+    static func scWindows(ids: Set<CGWindowID>) async throws -> [CGWindowID: SCWindow] {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        return Dictionary(content.windows.filter { ids.contains($0.windowID) }.map { ($0.windowID, $0) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
     /// Displays in global top-left points, with the menu bar and Dock removed
     /// from `visibleFrame`.
     @MainActor

@@ -184,8 +184,10 @@ final class HostSession: @unchecked Sendable {
     /// for a while (Chrome's hidden full-screen toolbar windows were tried,
     /// and opened and closed on the viewer, on every tracking pass).
     private var failedChildren: [CGWindowID: UInt64] = [:]
-    /// An app the viewer asked to open; its first window opens on the viewer.
-    private var pendingLaunch: (path: String, pid: pid_t?, deadline: UInt64)?
+    /// An app the viewer asked to open. Opened from the app list (`allWindows`)
+    /// all its windows come to the viewer, as clicking its Dock icon brings
+    /// them all forward; opened for a notification, only the window it shows.
+    private var pendingLaunch: (path: String, pid: pid_t?, deadline: UInt64, allWindows: Bool)?
     /// An app whose streamed window the viewer's input just closed. The
     /// window that replaces it (Chrome's browser window after its profile
     /// picker, an app's main window after a welcome window) opens on the
@@ -291,7 +293,7 @@ final class HostSession: @unchecked Sendable {
         case let .listApplications(requestID):
             listApplications(requestID: requestID)
         case let .launchApplication(path):
-            launchApplication(path)
+            launchApplication(path, allWindows: true)
         case let .quitApplication(path, force):
             quitApplication(path, force: force)
         case let .peerPairing(pairing):
@@ -355,7 +357,7 @@ final class HostSession: @unchecked Sendable {
             service?.statusItems.finishMenu(id, path: path)
         case let .openNotification(id, path):
             // Launching first notes the windows on screen, so one the click opens comes here.
-            if let path { launchApplication(path) }
+            if let path { launchApplication(path, allWindows: false) }
             service?.notices.open(id: id)
         case .goodbye:
             end(reason: "Viewer disconnected.")
@@ -549,9 +551,9 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
-    private func launchApplication(_ path: String) {
+    private func launchApplication(_ path: String, allWindows: Bool) {
         let now = HostClock.nowNanos()
-        pendingLaunch = (path, nil, now + 20_000_000_000)
+        pendingLaunch = (path, nil, now + 20_000_000_000, allWindows)
         // Windows on screen now are not the app's new one.
         knownWindows = Self.trackedWindowIDs(WindowServerWindow.onScreen())
         log.notice("launching \(path, privacy: .public)")
@@ -569,8 +571,8 @@ final class HostSession: @unchecked Sendable {
                     return
                 }
                 pendingLaunch?.pid = pid
-                // Already running: no new window may come; show its front one.
-                queue.asyncAfter(deadline: .now() + 1) { [self] in openExistingWindow(pid: pid) }
+                // Already running: no new window may come; show the ones it has.
+                queue.asyncAfter(deadline: .now() + 1) { [self] in openExistingWindows(pid: pid) }
             }
         }
     }
@@ -604,17 +606,41 @@ final class HostSession: @unchecked Sendable {
         DispatchQueue.main.async { callback?(pairing, address) }
     }
 
-    private func openExistingWindow(pid: pid_t) {
-        guard pendingLaunch?.pid == pid else { return }
+    /// The launched app's windows on screen: its front one, or all of them.
+    /// Minimized windows and those on other Spaces stay on the host, as they
+    /// would here.
+    private func openExistingWindows(pid: pid_t) {
+        guard let launch = pendingLaunch, launch.pid == pid else { return }
         let streamed = Set(streams.values.map(\.windowID))
         let standard = AXWindow.standardWindowIDs(pid: pid)
         // On-screen windows come front to back.
-        guard let window = WindowServerWindow.onScreen().first(where: {
+        let windows = WindowServerWindow.onScreen().filter {
             $0.pid == pid && $0.layer == 0 && standard.contains($0.id) && !streamed.contains($0.id)
-        }) else { return }
-        pendingLaunch = nil
-        openWindow(window.id)
+        }
+        guard let front = windows.first else { return }
+        guard launch.allWindows else {
+            pendingLaunch = nil
+            openWindow(front.id)
+            return
+        }
+        settleLaunch()
+        // Back to front: the viewer brings each new mirror forward, so the
+        // front window ends up in front there too.
+        openWindows(windows.reversed().map(\.id))
     }
+
+    /// The launched app has shown a window: windows it restores along with
+    /// it still come for a moment, later ones only as caused by input.
+    private func settleLaunch() {
+        guard let launch = pendingLaunch else { return }
+        guard launch.allWindows else {
+            pendingLaunch = nil
+            return
+        }
+        pendingLaunch?.deadline = min(launch.deadline, HostClock.nowNanos() + Self.launchSettleInterval)
+    }
+
+    private static let launchSettleInterval: UInt64 = 2_000_000_000
 
     private static func trackedWindowIDs(_ onScreen: [WindowServerWindow]) -> Set<CGWindowID> {
         let ownPID = getpid()
@@ -622,6 +648,33 @@ final class HostSession: @unchecked Sendable {
     }
 
     // MARK: Streams
+
+    /// Opens several windows in this order, looked up together so they start
+    /// in it.
+    private func openWindows(_ windowIDs: [CGWindowID]) {
+        let ids = windowIDs.filter { id in
+            !openingWindows.contains(id)
+                && !streams.values.contains { $0.windowID == id && $0.description.role == .window }
+        }
+        guard ids.count > 1 else {
+            ids.first.map(openWindow)
+            return
+        }
+        openingWindows.formUnion(ids)
+        Task { [self] in
+            let windows = (try? await HostWindows.scWindows(ids: Set(ids))) ?? [:]
+            queue.async { [self] in
+                openingWindows.subtract(ids)
+                guard !ended else { return }
+                for id in ids {
+                    guard let window = windows[id], let app = window.owningApplication else { continue }
+                    let summary = HostWindows.summary(window, app: app)
+                    startStream(window: window, pid: app.processID, role: .window, parent: nil, layer: 0,
+                                title: summary.title, applicationName: summary.applicationName)
+                }
+            }
+        }
+    }
 
     private func openWindow(_ windowID: CGWindowID) {
         if let existing = streams.values.first(where: { $0.windowID == windowID && $0.description.role == .window }) {
@@ -1536,7 +1589,7 @@ final class HostSession: @unchecked Sendable {
                   !Self.panelServiceNames.contains(where: { window.ownerName.contains($0) }),
                   standardWindowIDs(pid: window.pid, after: seen)?.contains(window.id) == true else { continue }
             newWindowCandidates[window.id] = nil
-            if window.pid == pendingLaunch?.pid { pendingLaunch = nil }
+            if window.pid == pendingLaunch?.pid { settleLaunch() }
             if window.pid == awaitingSuccessor?.pid { awaitingSuccessor = nil }
             for main in streams.values where main.description.role == .window {
                 guard let childID = main.children.removeValue(forKey: window.id), childID != 0 else { continue }

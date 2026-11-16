@@ -31,6 +31,36 @@ the workload drew), encode 11.5–13 ms, total p50 18–22 ms at 30–55 Mbps
 own). Across a real network add
 one-way network latency to *receive*.
 
+## Several windows at once
+
+Opening an app from **Apps** opens all its windows, so several mirrors
+stream at once. On macOS 27 ScreenCaptureKit hands over a complete frame of
+*every* captured window, its whole area marked dirty, whenever anything on
+the host's screen changes; even when that window is unchanged, belongs to
+another process and overlaps nothing. The frames are byte-identical to the
+previous one. Encoding them all saturated the media engine.
+`UnchangedFrameFilter` compares each window frame with the last one (≈1 ms
+for a 2400×1600 frame that matches; it stops at the first difference
+otherwise) and drops it once the window has been still for 0.5 s (the
+encoder sharpens a picture that stopped moving over ~30 frames). After 1 s
+still, it compares only every third frame.
+
+`anyremote-bench --windows 6 --busy 1` against `--host` in its own process
+(M6, loopback): six 1200×800 pt (2400×1600 px) windows, one scrolling, two
+interleaved rounds; `ANYREMOTE_UNCHANGED_FRAMES=1` is the "before":
+
+| | Scrolling window receive p50 / p95 | its fps | Encode p50 | Video, all windows | Host CPU |
+|---|---|---|---|---|---|
+| Every frame encoded | 24–27 / 34–37 ms | 54–55 | 17.4 ms | 54–88 Mbps | 16–18% |
+| Unchanged frames dropped | 7.2–7.7 / 9–12 ms | 60–62 | 5.5 ms | 15–51 Mbps | 20–24% |
+
+Each still window now sends nothing (it sent ~8 Mbps at the full frame
+rate), and windows that do change are as fast as alone (1 scrolling: 7.6–7.8
+ms either way; 3 scrolling: 6.7–7.5 ms, ~45 Mbps each). Comparing every
+frame of five still windows cost 13% of a core before the every-third-frame
+rule. A still window's first change reaches the viewer up to two frames
+later.
+
 ## Full desktop between two Macs
 
 Full desktop between two Macs (M4 Mac mini host running testufo, M6 viewer

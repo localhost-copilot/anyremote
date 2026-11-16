@@ -98,6 +98,13 @@ public final class HEVCEncoder: @unchecked Sendable {
         keyframeLock.unlock()
     }
 
+    /// Thread-safe. A keyframe was asked for and not yet started.
+    public var keyframeDue: Bool {
+        keyframeLock.lock()
+        defer { keyframeLock.unlock() }
+        return keyframeRequested
+    }
+
     private func takeKeyframeRequest() -> Bool {
         keyframeLock.lock()
         defer { keyframeLock.unlock() }

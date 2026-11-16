@@ -150,7 +150,7 @@ after their windows close, so a remote app you have used is an app like any
 other here: type its name in Spotlight ("Xcode (Mac mini)"), find it in the
 Apps launcher, or choose *Options › Keep in Dock* on its Dock icon. Opening
 it starts AnyRemote if needed (without the window picker), connects to that
-Mac, opens the app there and brings its window here. Forgetting a Mac
+Mac, opens the app there and brings its windows here. Forgetting a Mac
 removes its apps; turning *Show Remote Apps in the Dock* off removes all.
 
 ### Notifications
@@ -179,8 +179,10 @@ mirror.
 **Apps** (next to **Windows** above the grid) lists the host's apps
 (`/Applications`, `/System/Applications`, their Utilities, `~/Applications`
 and anything running). Opening one launches it there, or brings it forward,
-and its front window opens here; an app with no window gets a new one, as if
-its Dock icon was clicked. The list is grouped: *Recent* (opened from this
+and its windows open here, the front one in front, as clicking its Dock icon
+brings them all forward (minimized ones and those on another Space stay
+there); an app with no window gets a new one, as if its Dock icon was
+clicked. A window picked under **Windows** opens alone. The list is grouped: *Recent* (opened from this
 Mac lately, newest first), then the others *Running*, then *Not Running*;
 the arrow keys move between groups by column. A running app's context menu
 has *Quit* and *Force Quit* (on the host).
@@ -654,10 +656,11 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 88 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 92 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
+Packages/AnyRemoteKit/.build/release/anyremote-bench --windows 6 --busy 1    # several windows at once
 Packages/AnyRemoteKit/.build/release/anyremote-bench --microphone            # microphone delay (needs the driver)
 Packages/AnyRemoteKit/.build/release/anyremote-bench --drag-test offer --file <path> --from x,y --to x,y
 ```
@@ -780,6 +783,8 @@ Environment:
   strip count).
 - `ANYREMOTE_DISPLAY_SYNC=1` restores vsync on the windowed layer.
 - `ANYREMOTE_PACING=1` holds frames until their host display time.
+- `ANYREMOTE_UNCHANGED_FRAMES=1` on the host encodes window frames that show
+  nothing new too (see `UnchangedFrameFilter`), for before/after runs.
 
 Keep workloads visible when measuring: macOS throttles occluded windows, and
 an occluded mirror is never presented.

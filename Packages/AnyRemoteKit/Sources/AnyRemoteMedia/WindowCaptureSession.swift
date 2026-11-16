@@ -444,7 +444,9 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         // 1.5x the cadence: at exactly the refresh period SCK skips frames whose
         // timestamps arrive a little early (measured: ~50 of 60 delivered).
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate * 3 / 2))
-        configuration.queueDepth = 4
+        // One more than the encoder's in-flight and waiting frames need: the
+        // last frame stays out of the pool for `UnchangedFrameFilter`.
+        configuration.queueDepth = 5
         configuration.showsCursor = false
         configuration.scalesToFit = false
         configuration.ignoreShadowsSingleWindow = true
