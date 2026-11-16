@@ -93,6 +93,12 @@ final class HostConnection {
     init(target: HostTarget, code: PairingCode) {
         self.target = target
         client = RemoteHostClient(endpoint: target.endpoint, code: code, viewerName: ComputerNameProvider.name)
+        // The host's virtual display for remote windows takes this size, so
+        // they can grow as large as this screen and fill it in full screen.
+        // The screen being worked on (its key window: where Connect was
+        // clicked), which needn't be the largest or the one with the menu
+        // bar: with a 4K screen in use, the largest was a portrait one.
+        client.screen = (NSScreen.main ?? NSScreen.screens.first)?.viewerScreen
         client.onEvent = { [weak self] event in self?.handle(event) }
         // The host fetches files of drags offered to it.
         let owner = WeakConnection(self)

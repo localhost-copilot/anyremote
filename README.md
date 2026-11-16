@@ -115,8 +115,9 @@ minimized on the host, the host undoes it and the mirror minimizes instead.
 If the host app makes its window full screen itself (a web page's video in
 Chrome, which ends when the window leaves full screen), it stays so and the
 mirror follows it in and out; leaving full screen on the mirror takes the
-host window out too. Meanwhile the host's other windows are on another
-Space, so their mirrors keep their last picture.
+host window out too. With the virtual display (below) the full-screen
+window's Space is on that display only, so the host's own windows stay where
+they are.
 
 These are the mirror's own, native buttons, drawn where the host window has
 its buttons: macOS covers a shared window's buttons with a purple sharing
@@ -301,10 +302,23 @@ nothing behind.
   *Share Clipboard*): text, rich text, HTML, images and links, up to 16 MB.
   Concealed or transient contents (password managers) and copied files stay
   on their Mac.
-- Settings → *HiDPI virtual display*: on a headless Mac mini (or one with a
-  1x monitor) shared windows move to a 1920×1200 pt virtual display rendered
-  at 2x, so they are sharp and can be larger than the physical screen. They
-  move back when the mirror closes.
+- Settings → *Match the Other Mac's Screens* (on by default): while a
+  viewer is connected, the windows it
+  opens move to virtual displays rendered at 2x, one per viewer screen its
+  windows are on, that screen's size. They are sharp even on a headless Mac
+  mini, can be as large as the screen their mirror is on, and go full screen
+  in a Space of their display only, so the host's own windows (and the
+  viewer's windows on its other screens) stay put. A mirror moved to another
+  screen takes its host window to that screen's display when focused. The
+  displays touch the host's screens only at a corner, chained one after
+  another, and the host's own pointer is turned back from them; when macOS
+  rearranges displays (one plugged in, waking) they are put back. A display
+  is made when a window first needs it and they all go away when the viewer
+  disconnects, after the windows left full screen and moved back. macOS
+  first mirrors a new display with the host's screen, so the host's windows
+  shift for about a second each time one appears. Turned off, the windows
+  stay on the host's screens, no larger than them. A viewer that doesn't
+  tell its screens (0.22.2) gets one 1920×1200 display.
 - The interface is in English; Settings → General → Language switches to
   Simplified Chinese (or the system language) after a restart.
 
@@ -369,8 +383,9 @@ nothing behind.
   resizing it from both fights; only desktops are shared.
 - Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
   there is no FEC.
-- The virtual display sits right of the main display; on a Mac with a real
-  monitor the pointer can wander onto it while a mirror is open.
+- While a window opened from the viewer is full screen on a virtual
+  display, the viewer's other windows on that display (the same viewer
+  screen) are on another Space, so their mirrors keep their last picture.
 
 ## How it works
 
@@ -639,7 +654,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 82 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 85 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips

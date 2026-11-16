@@ -120,7 +120,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         statisticsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatistics() }
         }
-        connection.client.send(.focus(streamID: streamID))
+        connection.client.send(.focus(streamID: streamID, screen: window?.screen?.viewerScreen))
         connection.client.send(.requestMenuBar(streamID: streamID))
         updateNotice()
     }
@@ -347,6 +347,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
             windowButtons.isHidden = true
             return
         }
+        if isFullScreen { (window as? MirrorWindow)?.passClicksThroughFullScreenTitlebar() }
         windowButtons.adoptButtons(of: window)
         guard let controls, !isFullScreen || revealsButtonsInFullScreen else {
             windowButtons.isHidden = true
@@ -448,6 +449,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
             hostFullScreen = true
             enteredForHost = true
             if !isFullScreen, !inFullScreenTransition { window.toggleFullScreen(nil) }
+            layoutWindowButtons()
         case .exitFullScreen:
             hostFullScreen = false
             if isFullScreen, !inFullScreenTransition { window.toggleFullScreen(nil) }
@@ -526,9 +528,21 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         guard abs(current.width - size.width) >= 1 || abs(current.height - size.height) >= 1 else { return }
         var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
         frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+        // The host window may be larger than this screen leaves room for (an
+        // app zoomed it to the host's screen, which has no Dock): this window
+        // fits the screen, and the host window takes its size, rather than
+        // the picture being squeezed into it.
+        var clamped = false
+        if let visible = window.screen?.visibleFrame {
+            if frame.width > visible.width { frame.size.width = visible.width; clamped = true }
+            if frame.height > visible.height { frame.size.height = visible.height; clamped = true }
+            frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+            frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+        }
         adoptingRemoteSize = true
         window.setFrame(frame, display: true)
         adoptingRemoteSize = false
+        if clamped { requestHostResize(surface.bounds.size) }
     }
 
     /// Asks the host window to take `size` (points), as a finished live resize would.
@@ -563,6 +577,14 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     func windowWillEnterFullScreen(_ notification: Notification) {
         inFullScreenTransition = true
         layoutWindowButtons()
+        // Full screen started here: the host window follows into a real full
+        // screen when it can (it then fills the virtual display exactly).
+        // On the virtual display of the screen it goes full screen on, which
+        // it fills; the host moves it there first if it was on another.
+        if !enteredForHost {
+            connection.client.send(.focus(streamID: streamID, screen: window?.screen?.viewerScreen))
+            connection.client.send(.windowAction(streamID: streamID, action: .enterFullScreen))
+        }
     }
 
     func windowWillExitFullScreen(_ notification: Notification) {
@@ -605,9 +627,16 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        connection.client.send(.focus(streamID: streamID))
+        connection.client.send(.focus(streamID: streamID, screen: window?.screen?.viewerScreen))
         refreshMenuBar()
         onMenuBarChange?(self)
+    }
+
+    /// Moved to another screen: the host window moves to that screen's
+    /// virtual display, so it can grow to this screen's size.
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard let window, window.isKeyWindow, !isFullScreen, !inFullScreenTransition else { return }
+        connection.client.send(.focus(streamID: streamID, screen: window.screen?.viewerScreen))
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -627,12 +656,34 @@ final class MirrorWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
+    /// The title bar's container view (NSTitlebarContainerView). AppKit
+    /// moves this one view between the window and its full-screen title
+    /// bar window, so it is found once, while the buttons are still in it.
+    private weak var titlebarContainer: NSView?
+
     func hideTitlebarChrome() {
         for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             standardWindowButton(button)?.isHidden = true
         }
+        if titlebarContainer == nil {
+            var view = standardWindowButton(.closeButton)?.superview
+            while let candidate = view, !String(describing: type(of: candidate)).contains("TitlebarContainer") {
+                view = candidate.superview
+            }
+            titlebarContainer = view
+        }
         // NSTitlebarContainerView would otherwise turn clicks in the top
         // ~28 pt into local window drags.
-        standardWindowButton(.closeButton)?.superview?.superview?.isHidden = true
+        titlebarContainer?.isHidden = true
+    }
+
+    /// In full screen the title bar lives in a window of its own, which
+    /// comes down with the menu bar over the content. Hidden, it still takes
+    /// the clicks and pointer moves there, which belong to the host's own
+    /// full-screen toolbar (Chrome's tabs, say) and to the buttons shown
+    /// over the host's.
+    func passClicksThroughFullScreenTitlebar() {
+        guard let bar = titlebarContainer?.window, bar !== self, !bar.ignoresMouseEvents else { return }
+        bar.ignoresMouseEvents = true
     }
 }

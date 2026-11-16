@@ -57,7 +57,11 @@ public final class HostService: @unchecked Sendable {
     private var viewers: [HostSession] = []
     private var iconCache: [String: Data] = [:]
     private var applicationIconCache: [String: Data] = [:]
-    private var virtualDisplay: VirtualDisplay?
+    /// Virtual displays for remote windows.
+    let remoteDisplays = RemoteDisplays(visibleFrame: HostService.visibleFrame(containing:))
+    /// Bumped whenever the virtual display is wanted again, which cancels a
+    /// pending removal.
+    private var virtualDisplayGeneration = 0
     private var ownWindowIDs: Set<CGWindowID> = []
     private var status = Status()
     /// Confined to `queue`, which the sessions share.
@@ -296,52 +300,92 @@ public final class HostService: @unchecked Sendable {
 
     // MARK: Displays
 
-    var virtualDisplayIDs: Set<CGDirectDisplayID> {
-        lock.lock()
-        defer { lock.unlock() }
-        return virtualDisplay.map { [$0.displayID] } ?? []
-    }
+    /// The virtual displays remote windows are on. Any thread.
+    var virtualDisplayIDs: Set<CGDirectDisplayID> { remoteDisplays.displayIDs }
 
-    /// Creates the virtual display if the settings call for one, and returns
-    /// its visible frame for a newly opened window.
-    func virtualDisplayFrameForNewStream() -> CGRect? {
+    /// Where a window shown on the viewer's `screen` goes, as the settings
+    /// say (see `RemoteDisplays`): a virtual display (made if needed) and
+    /// the frame a window there may take; nil to stay on this Mac's
+    /// screens. On the queue.
+    func remoteWindowTarget(for screen: ViewerScreen?) -> (displayID: CGDirectDisplayID, frame: CGRect)? {
         let settings = settingsStore.settings
-        let wanted: Bool = switch settings.virtualDisplay {
-        case .always: true
-        case .never: false
-        case .automatic: !VirtualDisplay.hasHiDPIDisplay
-        }
+        let fixed = CGSize(width: settings.virtualDisplayWidth, height: settings.virtualDisplayHeight)
         lock.lock()
-        var display = virtualDisplay
+        virtualDisplayGeneration += 1
         lock.unlock()
-        guard wanted || display != nil else { return nil }
-        if display == nil {
-            display = VirtualDisplay(pointSize: CGSize(width: settings.virtualDisplayWidth,
-                                                       height: settings.virtualDisplayHeight))
-            guard let display else { return nil }
-            lock.lock()
-            virtualDisplay = display
-            lock.unlock()
-            display.makeExtended()
-            // The window server needs a moment to settle the new arrangement.
-            usleep(300_000)
-        }
-        guard let display else { return nil }
-        return visibleFrame(containing: CGPoint(x: display.bounds.midX, y: display.bounds.midY)) ?? display.bounds
+        guard settings.virtualDisplay != .never else { return nil }
+        // A viewer on this Mac itself (loopback) sees these displays as its
+        // own screens; one of them isn't a screen to make a display for.
+        let screen = screen.flatMap { remoteDisplays.displayIDs.contains($0.id) ? nil : $0 }
+        let target = remoteDisplays.target(for: screen, fallbackSize: fixed)
+        if target != nil { watchDisplayArrangement() }
+        return target
     }
 
-    /// Removes the virtual display once nothing streams from it. On the queue.
-    func streamsDidEnd(session: HostSession) {
-        let stillUsed = sessions(except: session).contains { $0.isStreaming }
+    /// The frame a window may take on the virtual display `displayID`.
+    func remoteWindowFrame(on displayID: CGDirectDisplayID) -> CGRect? {
+        remoteDisplays.frame(of: displayID)
+    }
+
+    // MARK: Keeping the virtual displays in place
+
+    private var watchingArrangement = false
+    private var arrangementCheckPending = false
+
+    /// macOS rearranges displays when one comes or goes, wakes or changes
+    /// mode, and may then mirror a virtual display with this Mac's screen
+    /// again (seen when another display appeared): its windows land on this
+    /// Mac's screen and the virtual display shows a copy of it. After every
+    /// change the displays are put back, and the remote windows with them.
+    private func watchDisplayArrangement() {
         lock.lock()
-        let display = stillUsed ? nil : virtualDisplay
-        if display != nil { virtualDisplay = nil }
+        let already = watchingArrangement
+        watchingArrangement = true
         lock.unlock()
-        if display != nil { log.info("removing virtual display") }
+        guard !already else { return }
+        CGDisplayRegisterReconfigurationCallback({ _, flags, context in
+            guard !flags.contains(.beginConfigurationFlag), let context else { return }
+            Unmanaged<HostService>.fromOpaque(context).takeUnretainedValue().arrangementChanged()
+        }, Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    private func arrangementChanged() {
+        queue.async { [self] in
+            guard !arrangementCheckPending, !remoteDisplays.isEmpty else { return }
+            arrangementCheckPending = true
+            // One look once the changes settle (one change sends several).
+            queue.asyncAfter(deadline: .now() + 0.5) { [self] in
+                arrangementCheckPending = false
+                let restored = remoteDisplays.restoreArrangement()
+                guard !restored.isEmpty else { return }
+                for session in sessions() { session.returnWindows(to: restored) }
+            }
+        }
+    }
+
+    /// Removes the virtual displays once no viewer is in control any more,
+    /// after a moment, so windows that were full screen there first leave
+    /// their Space and move back. They stay while a viewer stays connected
+    /// without windows: making them again would shift this Mac's windows
+    /// again (see `RemoteDisplays`). On the queue.
+    func streamsDidEnd(session: HostSession) {
+        guard sessions().isEmpty, !remoteDisplays.isEmpty else { return }
+        lock.lock()
+        let generation = virtualDisplayGeneration
+        lock.unlock()
+        queue.asyncAfter(deadline: .now() + 3) { [self] in
+            guard sessions().isEmpty else { return }
+            lock.lock()
+            let current = generation == virtualDisplayGeneration
+            lock.unlock()
+            if current { remoteDisplays.removeAll() }
+        }
     }
 
     /// The visible frame (global top-left points) of the display containing `point`.
-    func visibleFrame(containing point: CGPoint) -> CGRect? {
+    func visibleFrame(containing point: CGPoint) -> CGRect? { Self.visibleFrame(containing: point) }
+
+    static func visibleFrame(containing point: CGPoint) -> CGRect? {
         let displays: [DisplaySummary]
         if Thread.isMainThread {
             displays = MainActor.assumeIsolated { HostWindows.displays(virtualDisplayIDs: []) }

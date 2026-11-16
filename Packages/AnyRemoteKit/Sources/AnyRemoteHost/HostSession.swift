@@ -17,8 +17,10 @@ final class HostStream: @unchecked Sendable {
     var axWindow: AXWindow?
     /// Main windows: child window ID → child stream ID.
     var children: [CGWindowID: UInt16] = [:]
-    /// Where the window was before it was moved onto the virtual display.
+    /// Where the window was before it was moved onto a virtual display.
     var originalOrigin: CGPoint?
+    /// The virtual display it is on (one per viewer screen).
+    var virtualDisplayID: CGDirectDisplayID?
     var bitRate: Int
     var controls: WindowControls?
     /// Where macOS's sharing indicator covers the title bar buttons (window
@@ -35,6 +37,9 @@ final class HostStream: @unchecked Sendable {
     /// Main windows: the size the viewer asked for while the window was in
     /// full screen, applied once it leaves.
     var sizeAfterFullScreen: CGSize?
+    /// Main windows: when the viewer asked for full screen, until the window
+    /// is in it; resizes meanwhile would disturb its transition.
+    var fullScreenRequested: UInt64?
     /// Display streams: the display's backing scale.
     var displayScale: CGFloat = 0
     /// Display streams: the display captured now (a virtual display standing
@@ -165,8 +170,13 @@ final class HostSession: @unchecked Sendable {
     /// screen, and they come back when it leaves: neither is a window closing
     /// or a new window opening.
     private var lastHostFullScreen: UInt64 = 0
-    /// Tracked windows that recently left the screen, by when they left.
-    private var departedWindows: [CGWindowID: UInt64] = [:]
+    /// The newest window on screen at the last tracking pass, and as of the
+    /// last full-screen change. Window numbers only grow, so a window no newer
+    /// than that, showing up around a full-screen change, is one coming back
+    /// from the other Space rather than one just opened. (Keeping a list of
+    /// the windows that left missed some, and they all opened on the viewer.)
+    private var newestWindowID: CGWindowID = 0
+    private var newestWindowIDAtFullScreen: CGWindowID = 0
     /// Child windows whose capture couldn't start, by when; not tried again
     /// for a while (Chrome's hidden full-screen toolbar windows were tried,
     /// and opened and closed on the viewer, on every tracking pass).
@@ -178,6 +188,9 @@ final class HostSession: @unchecked Sendable {
     /// picker, an app's main window after a welcome window) opens on the
     /// viewer too, even when the app takes a while to show it.
     private var awaitingSuccessor: (pid: pid_t, deadline: UInt64)?
+    /// The viewer's screen in use: the one it connected from, then that of
+    /// the window it last focused. New windows go to its virtual display.
+    private var viewerScreen: ViewerScreen?
     private var ended = false
     /// The viewer wants the sound of what it shows.
     private var audioRequested = false
@@ -243,11 +256,12 @@ final class HostSession: @unchecked Sendable {
                 service?.attachTransfer(connection, from: self, toSession: sessionID, token: token)
                 return
             }
-            guard case let .authenticate(viewerName, takeOver) = message else {
+            guard case let .authenticate(viewerName, takeOver, screen) = message else {
                 connection.close(after: .rejected(reason: "Expected authentication."))
                 return
             }
             self.viewerName = viewerName
+            viewerScreen = screen
             guard let service, service.admit(self, takeOver: takeOver) else {
                 let holder = self.service?.activeViewerName ?? "another viewer"
                 connection.close(after: .rejected(reason: "This Mac is being controlled by \(holder)."))
@@ -299,8 +313,12 @@ final class HostSession: @unchecked Sendable {
             }
         case let .resize(streamID, size):
             scheduleResize(streamID: streamID, size: size)
-        case let .focus(streamID):
-            if let stream = streams[streamID] { focus(stream, force: true) }
+        case let .focus(streamID, screen):
+            if let screen { viewerScreen = screen }
+            if let stream = streams[streamID] {
+                if let screen { follow(stream, to: screen) }
+                focus(stream, force: true)
+            }
         case let .input(streamID, event):
             inject(event, streamID: streamID)
         case let .requestMenuBar(streamID):
@@ -719,9 +737,6 @@ final class HostSession: @unchecked Sendable {
         startCursorMonitor()
     }
 
-    /// Queue-confined.
-    var isStreaming: Bool { !ended && !streams.isEmpty }
-
     static let isLoopback = ProcessInfo.processInfo.environment["ANYREMOTE_LOOPBACK"] == "1"
 
     /// A display's frame in global top-left points and its backing scale.
@@ -915,15 +930,51 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
-    /// Moves the window onto the HiDPI virtual display when one is in use.
+    /// Moves the window onto the virtual display for the viewer's screen in
+    /// use, when the settings call for them (see `RemoteDisplays`).
     private func prepareForStreaming(_ stream: HostStream) {
-        guard let service, let target = service.virtualDisplayFrameForNewStream(),
+        guard let service, let target = service.remoteWindowTarget(for: viewerScreen),
               let ax = stream.axWindow, let origin = ax.position else { return }
-        guard !target.contains(CGPoint(x: origin.x + 1, y: origin.y + 1)) else { return }
+        stream.virtualDisplayID = target.displayID
+        guard !target.frame.contains(CGPoint(x: origin.x + 1, y: origin.y + 1)) else { return }
         stream.originalOrigin = origin
-        try? ax.setPosition(CGPoint(x: target.minX, y: target.minY))
-        if let size = ax.size, size.width > target.width || size.height > target.height {
-            try? ax.setSize(CGSize(width: min(size.width, target.width), height: min(size.height, target.height)))
+        Self.move(ax, into: target.frame)
+    }
+
+    /// The viewer's window is on `screen`: the host window moves to that
+    /// screen's virtual display, so it can grow to that screen's size and
+    /// fill it in full screen. Not while in full screen: its Space belongs
+    /// to the display it is on.
+    private func follow(_ stream: HostStream, to screen: ViewerScreen) {
+        guard stream.description.role == .window, let current = stream.virtualDisplayID, !stream.fullScreenOnHost,
+              stream.fullScreenRequested == nil, let service, let ax = stream.axWindow,
+              let target = service.remoteWindowTarget(for: screen), target.displayID != current else { return }
+        log.notice("window \(stream.windowID) follows the viewer to another screen")
+        stream.virtualDisplayID = target.displayID
+        // The click that focused the mirror may be pressed still; this move
+        // isn't a drag of the window to undo (see `keepInPlace`).
+        stream.pressFrame = nil
+        if stream.originalOrigin == nil { stream.originalOrigin = ax.position }
+        Self.move(ax, into: target.frame)
+    }
+
+    /// Top-left of `frame`, no larger than it.
+    private static func move(_ ax: AXWindow, into frame: CGRect) {
+        try? ax.setPosition(CGPoint(x: frame.minX, y: frame.minY))
+        if let size = ax.size, size.width > frame.width || size.height > frame.height {
+            try? ax.setSize(CGSize(width: min(size.width, frame.width), height: min(size.height, frame.height)))
+        }
+    }
+
+    /// Puts windows back onto the virtual displays macOS took them off (see
+    /// `RemoteDisplays.restoreArrangement`): `targets` are the frames
+    /// windows may take on the displays put back. Queue-confined.
+    func returnWindows(to targets: [CGDirectDisplayID: CGRect]) {
+        for stream in streams.values where stream.description.role == .window {
+            guard let id = stream.virtualDisplayID, let target = targets[id], let ax = stream.axWindow,
+                  let origin = ax.position, !target.contains(CGPoint(x: origin.x + 1, y: origin.y + 1)) else { continue }
+            log.notice("window \(stream.windowID) left its virtual display; moving it back")
+            Self.move(ax, into: target)
         }
     }
 
@@ -957,7 +1008,19 @@ final class HostSession: @unchecked Sendable {
         if let parent = stream.description.parentStreamID {
             streams[parent]?.children.removeValue(forKey: stream.windowID)
         }
-        if let origin = stream.originalOrigin { try? stream.axWindow?.setPosition(origin) }
+        if let origin = stream.originalOrigin, let ax = stream.axWindow {
+            // A full-screen window leaves its Space on the virtual display
+            // first; the display's removal would otherwise take the Space
+            // along to this Mac's screen. Asked of the window itself: the
+            // state polled for the viewer may not have caught up.
+            poller.run("put back \(streamID)", pid: stream.pid, reply: queue) { () -> Bool in
+                guard ax.isFullScreen else { return false }
+                ax.setFullScreen(false)
+                return true
+            } then: { [queue] wasFullScreen in
+                queue.asyncAfter(deadline: .now() + (wasFullScreen ? 1.5 : 0)) { try? ax.setPosition(origin) }
+            }
+        }
         if let standIn = stream.standIn {
             stream.standIn = nil
             restore(display: stream.windowID, from: standIn)
@@ -1238,6 +1301,26 @@ final class HostSession: @unchecked Sendable {
         switch action {
         case .close:
             if stream.axWindow?.pressCloseButton() != true { log.notice("close button press failed") }
+        case .enterFullScreen:
+            // Only where it takes a Space of the virtual display: on this
+            // Mac's own screens it would take its windows off them.
+            guard !stream.fullScreenOnHost, let window = stream.axWindow,
+                  let displays = service?.virtualDisplayIDs, !displays.isEmpty,
+                  displays.contains(where: { CGDisplayBounds($0).contains(CGPoint(x: stream.description.frame.midX,
+                                                                                  y: stream.description.frame.midY)) })
+            else { return }
+            stream.fullScreenRequested = HostClock.nowNanos()
+            poller.run("enter full screen \(streamID)", pid: stream.pid, reply: queue) { window.setFullScreen(true) } then: { _ in }
+            // An app without full screen: the window takes the size asked for meanwhile.
+            queue.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self, let stream = streams[streamID], stream.fullScreenRequested != nil,
+                      !stream.fullScreenOnHost else { return }
+                stream.fullScreenRequested = nil
+                if let size = stream.sizeAfterFullScreen {
+                    stream.sizeAfterFullScreen = nil
+                    scheduleResize(streamID: streamID, size: size)
+                }
+            }
         case .exitFullScreen:
             guard stream.fullScreenOnHost, let window = stream.axWindow else { return }
             poller.run("exit full screen \(streamID)", pid: stream.pid, reply: queue) { window.setFullScreen(false) } then: { _ in }
@@ -1255,17 +1338,32 @@ final class HostSession: @unchecked Sendable {
         for stream in mains {
             guard let window = stream.axWindow else { continue }
             let streamID = stream.streamID
+            // In full screen the buttons are in the toolbar that slides down
+            // from the top, which moves them without resizing the window:
+            // the viewer follows them there to show its buttons over them.
+            let followsButtons = stream.fullScreenOnHost
             poller.run("state \(streamID)", pid: stream.pid, reply: queue) {
-                (minimized: window.isMinimized, fullScreen: window.isFullScreen)
+                (minimized: window.isMinimized, fullScreen: window.isFullScreen,
+                 controls: followsButtons ? window.controlFrames : nil)
             } then: { [weak self] state in
                 guard let self, let stream = streams[streamID] else { return }
+                if let frames = state.controls, stream.fullScreenOnHost {
+                    let controls = WindowControls(close: frames.close, minimize: frames.minimize, zoom: frames.zoom,
+                                                  fullScreen: frames.fullScreen)
+                    if controls != stream.controls {
+                        stream.controls = controls
+                        connection.send(.windowControls(streamID: streamID, controls))
+                    }
+                }
                 stream.minimizedOnHost = state.minimized
                 if state.minimized {
                     poller.run("restore \(streamID)", pid: stream.pid, reply: queue) { window.setMinimized(false) } then: { _ in }
                     connection.send(.windowStateRequest(streamID: streamID, .minimize))
                 } else if state.fullScreen != stream.fullScreenOnHost {
                     stream.fullScreenOnHost = state.fullScreen
+                    stream.fullScreenRequested = nil
                     lastHostFullScreen = HostClock.nowNanos()
+                    newestWindowIDAtFullScreen = max(newestWindowIDAtFullScreen, newestWindowID)
                     log.notice("window \(stream.windowID) \(state.fullScreen ? "entered" : "left", privacy: .public) full screen")
                     connection.send(.windowStateRequest(streamID: streamID, state.fullScreen ? .enterFullScreen : .exitFullScreen))
                     if !state.fullScreen, let size = stream.sizeAfterFullScreen {
@@ -1286,24 +1384,20 @@ final class HostSession: @unchecked Sendable {
         let now = HostClock.nowNanos()
         let current = Self.trackedWindowIDs(onScreen)
         if let known = knownWindows {
-            for id in known.subtracting(current) { departedWindows[id] = now }
-            // Kept for as long as the full screen lasts, until they are back.
-            let inFullScreen = streams.values.contains { $0.fullScreenOnHost }
-            departedWindows = departedWindows.filter {
-                inFullScreen || now - max($0.value, lastHostFullScreen) < Self.spaceSwitchInterval
-            }
             let recentInput = now - lastInputTime < Self.causedWindowInterval
             let launchPID = pendingLaunch?.pid
             let successorPID = awaitingSuccessor?.pid
             let spaceSwitch = now - lastHostFullScreen < Self.spaceSwitchInterval
+                || streams.values.contains { $0.fullScreenOnHost }
             for window in onScreen where current.contains(window.id) && !known.contains(window.id)
                 && (recentInput || (launchPID != nil && window.pid == launchPID)
                     || (successorPID != nil && window.pid == successorPID))
-                && !(spaceSwitch && departedWindows[window.id] != nil) {
+                && !(spaceSwitch && window.id <= newestWindowIDAtFullScreen) {
                 newWindowCandidates[window.id] = now
             }
         }
         knownWindows = current
+        newestWindowID = max(newestWindowID, onScreen.lazy.map(\.id).max() ?? 0)
         guard !newWindowCandidates.isEmpty, now - lastCandidateCheck >= 100_000_000 else { return }
         lastCandidateCheck = now
         let streamed = Set(streams.values.filter { $0.description.role == .window }.map(\.windowID))
@@ -1363,11 +1457,25 @@ final class HostSession: @unchecked Sendable {
         let displays = Self.displayBounds()
         for window in onScreen where window.id != main.windowID && window.alpha > 0.01 {
             if let ownAllowed, window.pid == main.pid, window.layer == 0, !ownAllowed.contains(window.id) { continue }
+            // Mostly off every display: parked out of sight, like Chrome's
+            // toolbar strips above a full-screen window until the pointer
+            // reaches the top. Their mirrors can't be placed off the
+            // viewer's screen, so they would sit as empty bars on top of it.
+            let shown = displays.reduce(0) { area, display in
+                let part = display.intersection(window.frame)
+                return part.isNull ? area : area + part.width * part.height
+            }
             guard window.frame.width >= 4, window.frame.height >= 4, failedChildren[window.id] == nil,
-                  displays.contains(where: { $0.intersects(window.frame) }) else { continue }
+                  shown >= window.frame.width * window.frame.height / 2 else { continue }
             // A same-app window over the whole window (Chrome's in full
             // screen) shows nothing the window's own stream doesn't.
             if window.pid == main.pid, window.layer == 0, window.frame.contains(mainFrame) { continue }
+            // Full screen on a display of its own, the window is captured
+            // with its display, which shows what lies on it already (Chrome's
+            // toolbar layer, a link's address, menus). Mirrors of those would
+            // be pushed below the viewer's menu bar strip, a line across the
+            // top of the page.
+            if main.fullScreenOnHost, mainFrame.contains(window.frame) { continue }
             let samePID = window.pid == main.pid
             // An input method's candidates, next to the window being typed into.
             if !samePID, isInputMethodWindow(window) {
@@ -1813,9 +1921,10 @@ final class HostSession: @unchecked Sendable {
     private func applyResize(streamID: UInt16, size requested: CGSize) {
         guard let stream = streams[streamID] else { return }
         if stream.axWindow == nil { stream.axWindow = try? AXWindow(pid: stream.pid, windowID: stream.windowID) }
-        guard let ax = stream.axWindow, !stream.fullScreenOnHost else {
+        let inFullScreen = stream.fullScreenOnHost || stream.fullScreenRequested != nil
+        guard let ax = stream.axWindow, !inFullScreen else {
             // A full-screen window keeps the screen's size until it leaves.
-            if stream.fullScreenOnHost { stream.sizeAfterFullScreen = requested }
+            if inFullScreen { stream.sizeAfterFullScreen = requested }
             connection.send(.resizeApplied(streamID: streamID, size: stream.description.frame.size))
             return
         }

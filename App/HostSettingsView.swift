@@ -175,14 +175,14 @@ struct HostSettingsView: View {
             if model.settings.isEnabled { permissionsSection }
             if model.settings.isEnabled { pairingSection }
             Section("Display") {
-                Picker("HiDPI Virtual Display", selection: Binding(
-                    get: { model.settings.virtualDisplay }, set: { model.setVirtualDisplay($0) })) {
-                    Text("When No Retina Display Is Connected").tag(HostSettings.VirtualDisplayMode.automatic)
-                    Text("Always").tag(HostSettings.VirtualDisplayMode.always)
-                    Text("Never").tag(HostSettings.VirtualDisplayMode.never)
+                Toggle(isOn: Binding(
+                    get: { model.settings.virtualDisplay != .never },
+                    set: { model.setVirtualDisplay($0 ? .automatic : .never) })) {
+                    Text("Match the Other Mac's Screens")
+                    Text(model.settings.virtualDisplay == .never
+                     ? "Windows controlled from another Mac stay on this Mac's screens and can be no larger than them. When one goes full screen, your other windows move aside."
+                     : "Windows controlled from another Mac move to virtual displays the size of its screens, out of the way of yours. They can be as large as those screens and go full screen without moving your windows, and move back when it disconnects.")
                 }
-                Text("While being controlled, windows move to a \(String(model.settings.virtualDisplayWidth))×\(String(model.settings.virtualDisplayHeight)) pt virtual display rendered at 2×, so even a Mac mini without a display shows sharp windows. They move back afterwards.")
-                    .font(.callout).foregroundStyle(.secondary)
             }
             Section("Sound") {
                 Toggle("Play Sound from Other Macs", isOn: Binding(

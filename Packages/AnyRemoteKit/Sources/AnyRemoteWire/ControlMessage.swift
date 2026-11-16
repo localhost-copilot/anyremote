@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 17
+public let anyRemoteProtocolVersion: UInt16 = 18
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -268,6 +268,10 @@ public struct WindowControls: Codable, Equatable, Sendable {
 public enum WindowAction: String, Codable, Sendable {
     /// Presses the window's close button (the app may ask to save first).
     case close
+    /// The viewer's window went full screen by itself (green button, ⌃⌘F).
+    /// A host window on the virtual display for remote windows goes full
+    /// screen there too, filling it exactly; others are only resized.
+    case enterFullScreen
     /// The viewer left full screen while the host window was in it (see
     /// `HostWindowStateRequest.enterFullScreen`); the host window leaves too.
     case exitFullScreen
@@ -357,7 +361,9 @@ public enum DatagramKind {
 /// datagrams.
 public enum ControlMessage: Codable, Equatable, Sendable {
     // Session
-    case authenticate(viewerName: String, takeOver: Bool)
+    /// `screen`: the viewer's screen in use, which the host's
+    /// virtual display for remote windows takes (older viewers: nil).
+    case authenticate(viewerName: String, takeOver: Bool, screen: ViewerScreen? = nil)
     case welcome(HostWelcome)
     case rejected(reason: String)
     case ping(id: UInt32, viewerTime: UInt64)
@@ -405,7 +411,9 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     // Window control
     case resize(streamID: UInt16, size: CGSize)
     case resizeApplied(streamID: UInt16, size: CGSize)
-    case focus(streamID: UInt16)
+    /// `screen`: the viewer screen the window is on (older viewers: nil);
+    /// the host window moves to that screen's virtual display.
+    case focus(streamID: UInt16, screen: ViewerScreen? = nil)
     case input(streamID: UInt16, InputEvent)
     case cursor(CursorImage)
     case windowControls(streamID: UInt16, WindowControls)
@@ -483,6 +491,27 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     /// Viewer → host: choose the item at `path` in the open menu, or close
     /// the menu (nil).
     case performStatusItemMenu(id: String, path: [Int]?)
+}
+
+/// One of the viewer's screens. The host keeps a virtual display for remote
+/// windows per screen, the screen's size, so a window can be as large as the
+/// screen its mirror is on and fills it exactly in full screen.
+public struct ViewerScreen: Codable, Equatable, Hashable, Sendable {
+    /// The viewer's display ID, telling its screens apart.
+    public var id: UInt32
+    /// In points.
+    public var size: CGSize
+
+    public init(id: UInt32, size: CGSize) {
+        self.id = id
+        self.size = size
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(size.width)
+        hasher.combine(size.height)
+    }
 }
 
 public enum ControlCoding {

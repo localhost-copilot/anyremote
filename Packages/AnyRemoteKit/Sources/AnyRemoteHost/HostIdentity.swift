@@ -13,8 +13,11 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// with `ANYREMOTE_HOME`). A file rather than the Keychain so a headless
 /// Mac mini never blocks on a Keychain prompt and ad-hoc builds keep access.
 public struct HostSettings: Codable, Equatable, Sendable {
+    /// Remote windows on virtual displays matching the viewer's screens
+    /// (see `RemoteDisplays`), or on this Mac's screens (`never`). Settings
+    /// shows it as one switch; `always` (a fixed-size display, from an
+    /// earlier version) is taken as `automatic`.
     public enum VirtualDisplayMode: String, Codable, Sendable, CaseIterable {
-        /// Create a HiDPI virtual display only when no display renders at 2x.
         case automatic
         case always
         case never
@@ -25,7 +28,8 @@ public struct HostSettings: Codable, Equatable, Sendable {
     public var isEnabled: Bool
     public var port: UInt16
     public var virtualDisplay: VirtualDisplayMode
-    /// Virtual display size in points (rendered at 2x).
+    /// Virtual display size in points (rendered at 2x) for viewers that
+    /// don't tell their screens.
     public var virtualDisplayWidth: Int
     public var virtualDisplayHeight: Int
     /// Optional so settings saved before it existed still decode.

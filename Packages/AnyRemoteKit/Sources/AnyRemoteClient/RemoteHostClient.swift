@@ -66,6 +66,8 @@ public final class RemoteHostClient: @unchecked Sendable {
     public let clock = RemoteClock()
     private let code: PairingCode
     private let viewerName: String
+    /// The screen being worked on, told to the host when connecting.
+    public var screen: ViewerScreen?
     private let queue = DispatchQueue(label: "anyremote.client", qos: .userInteractive)
     private let socketQueue = DispatchQueue(label: "anyremote.client.udp", qos: .userInteractive)
 
@@ -130,7 +132,8 @@ public final class RemoteHostClient: @unchecked Sendable {
                                                 role: .viewer(code: code, viewerName: viewerName), queue: queue)
                 control.onSecured = { [weak self, weak control] info in
                     self?.secured(info)
-                    control?.send(.authenticate(viewerName: self?.viewerName ?? "", takeOver: takeOver))
+                    control?.send(.authenticate(viewerName: self?.viewerName ?? "", takeOver: takeOver,
+                                                screen: self?.screen))
                 }
                 control.onMessage = { [weak self] message in self?.handle(message) }
                 control.onClose = { [weak self] error in

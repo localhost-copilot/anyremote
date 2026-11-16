@@ -51,6 +51,24 @@ public enum SharingIndicatorConcealer {
         }
     }
 
+    /// Repeats the second pixel row over the first. A full-screen app's
+    /// hidden toolbar sits just above the display, and its edge shows as a
+    /// line along the display's top on the host's virtual display; in full
+    /// screen the top row is the hidden menu bar's place anyway.
+    public static func coverTopRow(in pixelBuffer: CVPixelBuffer) {
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else { return }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        let planes = CVPixelBufferIsPlanar(pixelBuffer) ? Array(0..<CVPixelBufferGetPlaneCount(pixelBuffer)) : [-1]
+        for plane in planes {
+            let base = plane < 0 ? CVPixelBufferGetBaseAddress(pixelBuffer) : CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, plane)
+            let height = plane < 0 ? CVPixelBufferGetHeight(pixelBuffer) : CVPixelBufferGetHeightOfPlane(pixelBuffer, plane)
+            let bytesPerRow = plane < 0 ? CVPixelBufferGetBytesPerRow(pixelBuffer)
+                : CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, plane)
+            guard let base, height > 1 else { continue }
+            base.copyMemory(from: base + bytesPerRow, byteCount: bytesPerRow)
+        }
+    }
+
     static func fill(_ rect: CGRect, base: UnsafeMutablePointer<UInt8>, width: Int, height: Int,
                      bytesPerRow: Int, bytesPerPixel: Int) {
         let clipped = rect.integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))

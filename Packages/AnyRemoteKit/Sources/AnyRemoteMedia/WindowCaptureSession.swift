@@ -79,6 +79,8 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     /// The window's bounds at the last comparison, and since when they were so.
     private var boundsSince: (bounds: CGRect, nanos: UInt64)?
     private var switching = false
+    /// Queue-confined. The crop takes the whole display (the window fills it).
+    private var wholeDisplay = false
     /// Set in crop mode: the display the crop is relative to, and its scale.
     private var crop: (displayFrame: CGRect, scale: CGFloat)?
     /// The system's sharing indicator, in window points from the top-left
@@ -185,12 +187,23 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         switching = true
         Task {
             try? await old.stopCapture()
-            do {
-                try await startCrop()
-                log.notice("window \(self.windowID) is part of a group; capturing it cropped from its display")
-            } catch {
-                log.error("cropped capture failed: \(error.localizedDescription, privacy: .public)")
-                onStop?(error)
+            // Leaving full screen, the window is out of the on-screen list
+            // until its Space's animation is over (about a second): it is
+            // looked for again meanwhile rather than the capture given up.
+            var attempt = 0
+            while true {
+                do {
+                    try await startCrop()
+                    log.notice("window \(self.windowID) is captured from its display")
+                    return
+                } catch let error as SCStreamError where (error.code == .noWindowList || error.code == .noDisplayList) && attempt < 20 {
+                    attempt += 1
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                } catch {
+                    log.error("cropped capture failed: \(error.localizedDescription, privacy: .public)")
+                    onStop?(error)
+                    return
+                }
             }
         }
     }
@@ -202,9 +215,13 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
             throw SCStreamError(.noWindowList)
         }
-        let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        // The window server's frame: right after a window goes full screen,
+        // the shareable content can still have the one from before, which
+        // would crop the old place of a display showing something else now.
+        let frame = currentBounds() ?? window.frame
+        let center = CGPoint(x: frame.midX, y: frame.midY)
         guard let display = content.displays.first(where: { $0.frame.contains(center) })
-            ?? content.displays.first(where: { $0.frame.intersects(window.frame) }) else {
+            ?? content.displays.first(where: { $0.frame.intersects(frame) }) else {
             throw SCStreamError(.noDisplayList)
         }
         var included = [window]
@@ -218,18 +235,27 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
             let ownPID = ProcessInfo.processInfo.processIdentifier
             included += content.windows.filter {
                 ids.contains($0.windowID) && $0.owningApplication?.processID != ownPID
-                    && $0.frame.intersects(window.frame)
+                    && $0.frame.intersects(frame)
             }
         }
-        let filter = SCContentFilter(display: display, including: included)
+        // Full screen (Chrome's is a group, with its toolbar strips): a
+        // filter of chosen windows sends one frame of a full-screen Space and
+        // then nothing, while the whole display keeps coming, and shows only
+        // this window there anyway.
+        let whole = frame == display.frame && !backdrop
+        let filter = whole
+            ? SCContentFilter(display: display, excludingWindows: [])
+            : SCContentFilter(display: display, including: included)
+        if whole { log.notice("window \(self.windowID) fills display \(display.displayID); capturing all of it") }
         let scale = CGFloat(filter.pointPixelScale)
         let (configuration, size) = queue.sync { () -> (SCStreamConfiguration, (width: Int, height: Int)) in
             crop = (display.frame, scale)
-            windowFrame = window.frame
+            wholeDisplay = whole
+            windowFrame = frame
             shapeWindow = window
             shapeDisplay = display
-            shapeOthers = content.windows.filter { $0.windowID != window.windowID && $0.frame.intersects(window.frame) }
-            let size = Self.pixelSize(points: window.frame.size, scale: scale)
+            shapeOthers = content.windows.filter { $0.windowID != window.windowID && $0.frame.intersects(frame) }
+            let size = Self.pixelSize(points: frame.size, scale: scale)
             let configuration = makeConfiguration(width: size.width, height: size.height)
             configuration.sourceRect = cropRect
             return (configuration, size)
@@ -280,6 +306,13 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
             return false
         }
         checkedPoints = points
+        // Full screen on a display of its own (a virtual display for remote
+        // windows): the display shows only this window and what goes with
+        // it, toolbars and menus included, and its capture keeps coming.
+        if !backdrop, Self.displayBounds().contains(bounds) {
+            log.notice("window \(self.windowID) fills its display")
+            return true
+        }
         guard points.width > bounds.width + 0.5 || points.height > bounds.height + 0.5 else { return false }
         log.notice("window \(self.windowID) captured as \(points.debugDescription) but is \(bounds.size.debugDescription)")
         return true
@@ -337,6 +370,21 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     /// Queue-confined. Follows the window with the crop (and its size).
     private func requestCrop() {
         guard let stream, let crop, !switching else { return }
+        // Moved to another display (remote windows follow the viewer's
+        // screens): the crop of the old one would point outside it, and the
+        // picture would stop. The capture starts again on the new one.
+        let center = CGPoint(x: windowFrame.midX, y: windowFrame.midY)
+        guard crop.displayFrame.contains(center) || !Self.anyOtherDisplay(contains: center, than: crop.displayFrame) else {
+            log.notice("window \(self.windowID) moved to another display; capturing it from there")
+            switchToCrop()
+            return
+        }
+        // Out of full screen: the display has other windows on it again.
+        guard !wholeDisplay || windowFrame == crop.displayFrame else {
+            log.notice("window \(self.windowID) no longer fills its display")
+            switchToCrop()
+            return
+        }
         guard !reconfiguring else {
             pendingPixelSize = configuredPixelSize
             return
@@ -365,6 +413,21 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
                 }
             }
         }
+    }
+
+    /// The bounds of every active display.
+    static func displayBounds() -> [CGRect] {
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &ids, &count)
+        return ids.prefix(Int(count)).map { CGDisplayBounds($0) }
+    }
+
+    /// Whether a display other than the one at `frame` holds `point` (a
+    /// window parked off every display stays captured where it was).
+    private static func anyOtherDisplay(contains point: CGPoint, than frame: CGRect) -> Bool {
+        displayBounds().contains { $0 != frame && $0.contains(point) }
     }
 
     private func makeConfiguration(width: Int, height: Int) -> SCStreamConfiguration {
@@ -424,6 +487,7 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
                   CVPixelBufferGetHeight(pixelBuffer) == configuredPixelSize.height,
                   cropIsOnWindow() else { return }
             conceal(in: pixelBuffer, scale: crop.scale)
+            if wholeDisplay { SharingIndicatorConcealer.coverTopRow(in: pixelBuffer) }
             let frame = CapturedFrame(
                 pixelBuffer: pixelBuffer,
                 captureTimeNanos: Self.displayTime(of: sampleBuffer),

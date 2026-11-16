@@ -9,7 +9,6 @@
 "Add by Address…" = "按地址添加…";
 "Address" = "地址";
 "Allow Other Macs to Control This Mac" = "允许其他 Mac 控制这台 Mac";
-"Always" = "始终";
 "Another Mac took over control." = "另一台 Mac 接管了控制。";
 "AnyRemote Settings" = "AnyRemote 设置";
 "Being controlled" = "正在被控制";
@@ -43,7 +42,6 @@
 "Full Desktop" = "完整桌面";
 "General" = "通用";
 "Grant it in AnyRemote › Settings on that Mac." = "在那台 Mac 上打开 AnyRemote › 设置 授权。";
-"HiDPI Virtual Display" = "HiDPI 虚拟显示器";
 "Hide AnyRemote" = "隐藏 AnyRemote";
 "In use by someone else" = "正被他人控制";
 "Install and open AnyRemote on the other Mac and it appears under “Nearby” on the left.\nIf it isn’t on the same network, add it by IP address." = "在另一台 Mac 上安装并打开 AnyRemote，它会出现在左侧「附近」里。\n不在同一网络时，可以按 IP 地址添加。";
@@ -57,7 +55,6 @@
 "Name" = "名称";
 "Nearby" = "附近";
 "Needs pairing" = "需要配对";
-"Never" = "从不";
 "No Windows to Share" = "没有可共享的窗口";
 "No other Macs found" = "没有发现其他 Mac";
 "No paired Macs yet" = "还没有配对的 Mac";
@@ -125,8 +122,6 @@
 "Try Anyway" = "仍然尝试连接";
 "Undo" = "撤销";
 "Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Find the pairing code on that Mac under the AnyRemote menu bar icon › ⋯ › Show Pairing Code." = "不在同一局域网、或者「附近」里找不到时使用。配对码在那台 Mac 的菜单栏 AnyRemote 图标 › ⋯ › 显示配对码。";
-"When No Retina Display Is Connected" = "没有 Retina 显示器时";
-"While being controlled, windows move to a %@×%@ pt virtual display rendered at 2×, so even a Mac mini without a display shows sharp windows. They move back afterwards." = "被控制时，窗口移到一块 %@×%@ pt、2 倍渲染的虚拟显示器上，所以没接显示器的 Mac mini 也能显示清晰的窗口。结束后窗口移回原处。";
 "Window" = "窗口";
 "Wrong pairing code" = "配对码错误";
 "“%@” has no open windows." = "「%@」上没有打开的窗口。";
@@ -255,3 +250,6 @@
 
 /* Drag and drop */
 "Untitled" = "未命名";
+"Match the Other Mac's Screens" = "匹配另一台 Mac 的屏幕";
+"Windows controlled from another Mac move to virtual displays the size of its screens, out of the way of yours. They can be as large as those screens and go full screen without moving your windows, and move back when it disconnects." = "被另一台 Mac 控制的窗口会移到与它的屏幕一样大的虚拟显示器上，不占用你的屏幕。窗口可以和那些屏幕一样大，全屏时也不会挪动你的窗口，它断开连接后窗口会移回原处。";
+"Windows controlled from another Mac stay on this Mac's screens and can be no larger than them. When one goes full screen, your other windows move aside." = "被另一台 Mac 控制的窗口留在这台 Mac 的屏幕上，大小不能超过这些屏幕。其中一个窗口全屏时，你的其他窗口会被移开。";

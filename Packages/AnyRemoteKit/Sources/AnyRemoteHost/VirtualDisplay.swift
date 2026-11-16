@@ -13,6 +13,7 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// process exits.
 public final class VirtualDisplay: @unchecked Sendable {
     public let displayID: CGDirectDisplayID
+    public let productID: UInt32
     /// "AR": the vendor of every display this app makes.
     public static let vendorID: UInt32 = 0x4152
     public private(set) var pointSize: CGSize
@@ -57,6 +58,7 @@ public final class VirtualDisplay: @unchecked Sendable {
         }
         self.display = display
         self.displayID = display.displayID
+        self.productID = productID
         self.pointSize = pointSize
         self.refreshRate = refreshRate
         log.info("virtual display \(display.displayID) \(Int(pointSize.width))x\(Int(pointSize.height))pt @2x")
@@ -92,6 +94,21 @@ public final class VirtualDisplay: @unchecked Sendable {
         CGConfigureDisplayOrigin(config, displayID, Int32(mainBounds.maxX), Int32(mainBounds.minY))
         let result = CGCompleteDisplayConfiguration(config, .forSession)
         log.info("virtual display made extended (was mirrored: \(mirrored)): \(result.rawValue)")
+        return result == .success
+    }
+
+    /// Moves the display to the bottom-right corner of `anchors` (by
+    /// default every other display), which is as little as macOS lets it
+    /// touch them (it snaps displays together): the pointer can't drift onto
+    /// it across a shared edge.
+    @discardableResult
+    public func placeAtCorner(of anchors: [CGDirectDisplayID]? = nil) -> Bool {
+        guard let corner = Self.corner(of: anchors ?? Self.onlineDisplays().filter { $0 != displayID }) else { return false }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success, let config else { return false }
+        CGConfigureDisplayOrigin(config, displayID, Int32(corner.x), Int32(corner.y))
+        let result = CGCompleteDisplayConfiguration(config, .forSession)
+        log.info("virtual display placed at \(self.bounds.debugDescription, privacy: .public): \(result.rawValue)")
         return result == .success
     }
 
@@ -161,6 +178,18 @@ public final class VirtualDisplay: @unchecked Sendable {
 
     /// The new mode list takes a moment after `apply`; until then setting a
     /// mode fails.
+    /// The bottom-right corner of the area `displays` cover, mirrors aside.
+    public static func corner(of displays: [CGDirectDisplayID]) -> CGPoint? {
+        let bounds = displays.filter { CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay }.map { CGDisplayBounds($0) }
+        guard let first = bounds.first else { return nil }
+        let union = bounds.dropFirst().reduce(first) { $0.union($1) }
+        return CGPoint(x: union.maxX, y: union.maxY)
+    }
+
+    /// Sets the display to its 2x mode: a new display may come up in a 1x
+    /// mode of its pixel size (a 1512×982 pt display showed as 3024×1964 pt).
+    public func useHiDPIMode() { selectHiDPIMode() }
+
     private func selectHiDPIMode() {
         for attempt in 0..<10 {
             if attempt > 0 { usleep(50_000) }
