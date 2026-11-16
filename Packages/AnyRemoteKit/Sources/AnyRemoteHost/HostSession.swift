@@ -939,9 +939,25 @@ final class HostSession: @unchecked Sendable {
         guard let service, let target = service.remoteWindowTarget(for: viewerScreen),
               let ax = stream.axWindow, let origin = ax.position else { return }
         stream.virtualDisplayID = target.displayID
+        stream.originalOrigin = homeOrigin(from: origin, size: ax.size)
         guard !target.frame.contains(CGPoint(x: origin.x + 1, y: origin.y + 1)) else { return }
-        stream.originalOrigin = origin
         Self.move(ax, into: target.frame)
+    }
+
+    /// Where the window goes back to once the viewer stops showing it:
+    /// `origin` if it is on this Mac's own screens, else (a window the app
+    /// opened on a virtual display, like a second Finder window opened with
+    /// ⌘N) the middle of this Mac's main screen, where this Mac's user can
+    /// find it.
+    private func homeOrigin(from origin: CGPoint, size: CGSize?) -> CGPoint {
+        let point = CGPoint(x: origin.x + 1, y: origin.y + 1)
+        let virtual = service?.virtualDisplayIDs ?? []
+        guard virtual.contains(where: { CGDisplayBounds($0).contains(point) }) else { return origin }
+        let main = CGDisplayBounds(CGMainDisplayID())
+        let frame = service?.visibleFrame(containing: CGPoint(x: main.midX, y: main.midY)) ?? main
+        let size = size ?? .zero
+        return CGPoint(x: (frame.midX - min(size.width, frame.width) / 2).rounded(),
+                       y: max(frame.minY, (frame.midY - min(size.height, frame.height) / 2).rounded()))
     }
 
     /// The viewer's window is on `screen`: the host window moves to that
@@ -957,7 +973,9 @@ final class HostSession: @unchecked Sendable {
         // The click that focused the mirror may be pressed still; this move
         // isn't a drag of the window to undo (see `keepInPlace`).
         stream.pressFrame = nil
-        if stream.originalOrigin == nil { stream.originalOrigin = ax.position }
+        if stream.originalOrigin == nil, let origin = ax.position {
+            stream.originalOrigin = homeOrigin(from: origin, size: ax.size)
+        }
         Self.move(ax, into: target.frame)
     }
 
@@ -1021,7 +1039,14 @@ final class HostSession: @unchecked Sendable {
                 ax.setFullScreen(false)
                 return true
             } then: { [queue] wasFullScreen in
-                queue.asyncAfter(deadline: .now() + (wasFullScreen ? 1.5 : 0)) { try? ax.setPosition(origin) }
+                queue.asyncAfter(deadline: .now() + (wasFullScreen ? 1.5 : 0)) { [weak self] in
+                    try? ax.setPosition(origin)
+                    // It may have grown to the viewer's screen meanwhile.
+                    if let frame = self?.service?.visibleFrame(containing: CGPoint(x: origin.x + 1, y: origin.y + 1)) {
+                        Self.move(ax, into: CGRect(origin: origin, size: CGSize(width: frame.maxX - origin.x,
+                                                                                height: frame.maxY - origin.y)))
+                    }
+                }
             }
         }
         if let standIn = stream.standIn {
