@@ -3,14 +3,83 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 19
+public let anyRemoteProtocolVersion: UInt16 = 20
 
 /// Cleartext handshake exchanged before the session keys exist.
+///
+/// Since protocol 20 the handshake is frozen: later protocols may add
+/// optional fields and cases, but never change these, so that Macs on
+/// different protocols can still tell each other their versions and one can
+/// ask the other to update itself (`purpose: .update`).
 public enum HandshakeMessage: Codable, Equatable, Sendable {
-    case clientHello(version: UInt16, nonce: Data, viewerName: String)
+    case clientHello(version: UInt16, nonce: Data, viewerName: String,
+                     appVersion: String? = nil, purpose: HandshakePurpose? = nil)
     case serverHello(version: UInt16, nonce: Data, hostID: String, hostName: String, sessionID: UInt32)
     /// Sent instead of `serverHello`, or in reply to an unauthenticated frame.
-    case failure(reason: String)
+    /// `host` tells a viewer on another protocol which AnyRemote that Mac runs.
+    case failure(reason: String, host: AppVersionInfo? = nil)
+    /// The host's answer to an update hello: prove the pairing code over the
+    /// two nonces with `updateRequest`.
+    case updateChallenge(nonce: Data, host: AppVersionInfo)
+    case updateRequest(proof: Data)
+    /// The host downloaded and checked `version` and is about to relaunch with it.
+    case updateStarted(version: String)
+}
+
+/// Why a viewer connects: to control the host, or only to ask it to update.
+public enum HandshakePurpose: String, Codable, Sendable {
+    case session
+    case update
+}
+
+/// Which AnyRemote a Mac runs. Part of the frozen handshake.
+public struct AppVersionInfo: Codable, Equatable, Sendable {
+    public var appVersion: String
+    public var protocolVersion: UInt16
+    /// Whether it accepts an update request from a paired Mac.
+    public var canUpdateRemotely: Bool
+
+    public init(appVersion: String, protocolVersion: UInt16 = anyRemoteProtocolVersion, canUpdateRemotely: Bool) {
+        self.appVersion = appVersion
+        self.protocolVersion = protocolVersion
+        self.canUpdateRemotely = canUpdateRemotely
+    }
+
+    /// The running app's version (`CFBundleShortVersionString`).
+    public static var runningAppVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+}
+
+/// A dotted version such as `0.26.0`, compared numerically part by part.
+public struct AppVersion: Comparable, Hashable, Sendable, CustomStringConvertible {
+    public let parts: [Int]
+
+    public init?(_ text: String) {
+        let trimmed = text.hasPrefix("v") ? String(text.dropFirst()) : text
+        let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard !parts.isEmpty, parts.allSatisfy({ $0 != nil && $0! >= 0 }) else { return nil }
+        self.parts = parts.map { $0! }
+    }
+
+    public var description: String { parts.map(String.init).joined(separator: ".") }
+
+    public static func < (lhs: AppVersion, rhs: AppVersion) -> Bool {
+        for index in 0..<max(lhs.parts.count, rhs.parts.count) {
+            let left = index < lhs.parts.count ? lhs.parts[index] : 0
+            let right = index < rhs.parts.count ? rhs.parts[index] : 0
+            if left != right { return left < right }
+        }
+        return false
+    }
+
+    public static func == (lhs: AppVersion, rhs: AppVersion) -> Bool { !(lhs < rhs) && !(rhs < lhs) }
+
+    public func hash(into hasher: inout Hasher) {
+        var parts = parts
+        while parts.last == 0 { parts.removeLast() }
+        hasher.combine(parts)
+    }
 }
 
 /// A window on the host, in host global points (top-left origin, like
@@ -113,14 +182,17 @@ public struct HostWelcome: Codable, Equatable, Sendable {
     public var displays: [DisplaySummary]
     /// Missing host permissions, e.g. "screen-recording", "accessibility".
     public var missingPermissions: [String]
+    /// The host's AnyRemote, so a newer viewer can offer to update it.
+    public var version: AppVersionInfo?
 
     public init(hostID: String, hostName: String, datagramPort: UInt16, displays: [DisplaySummary],
-                missingPermissions: [String]) {
+                missingPermissions: [String], version: AppVersionInfo? = nil) {
         self.hostID = hostID
         self.hostName = hostName
         self.datagramPort = datagramPort
         self.displays = displays
         self.missingPermissions = missingPermissions
+        self.version = version
     }
 }
 

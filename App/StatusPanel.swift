@@ -677,6 +677,17 @@ private struct SharingFooter: View {
             Divider()
             Button("Open AnyRemote Window") { model.showPicker(for: model.target) }
             Button("Settings…") { model.actions.dismiss(); model.actions.showSettings() }
+            if case .ready(let staged) = SoftwareUpdate.shared.state {
+                Button("Install AnyRemote \(staged.manifest.version)…") {
+                    model.actions.dismiss()
+                    Task { await SoftwareUpdate.shared.check(userInitiated: true) }
+                }
+            } else if SoftwareUpdate.shared.isSupported {
+                Button("Check for Updates…") {
+                    model.actions.dismiss()
+                    Task { await SoftwareUpdate.shared.check(userInitiated: true) }
+                }
+            }
             Divider()
             Button("Quit AnyRemote") { NSApp.terminate(nil) }
         } label: {

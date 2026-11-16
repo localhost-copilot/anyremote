@@ -77,6 +77,19 @@ public final class HostService: @unchecked Sendable {
     /// address it connected from. Called on the main queue.
     public var onPeerPairing: (@MainActor @Sendable (PeerPairing, _ address: String?) -> Void)?
 
+    private var storedUpdateHandler: RemoteUpdateHandler?
+    /// Updates this Mac when a paired Mac asks (see `ControlConnection`).
+    /// Without one, this Mac tells other Macs it can't be updated remotely.
+    public var updateHandler: RemoteUpdateHandler? {
+        get { lock.withLock { storedUpdateHandler } }
+        set { lock.withLock { storedUpdateHandler = newValue } }
+    }
+
+    /// This Mac's AnyRemote, as told to viewers.
+    public var versionInfo: AppVersionInfo {
+        AppVersionInfo(appVersion: AppVersionInfo.runningAppVersion, canUpdateRemotely: updateHandler != nil)
+    }
+
     public init(settings: HostSettingsStore = HostSettingsStore(), options: Options = Options()) {
         self.settingsStore = settings
         self.options = options
@@ -201,6 +214,8 @@ public final class HostService: @unchecked Sendable {
                         hostID: store.settings.hostID, hostName: ComputerName.current, sessionID: sessionID),
             queue: queue
         )
+        control.localVersion = versionInfo
+        control.updateHandler = updateHandler
         let session = HostSession(sessionID: sessionID, connection: control, queue: queue, service: self)
         control.onSecured = { [weak session] info in session?.secured(info) }
         control.onMessage = { [weak session] message in session?.handle(message) }

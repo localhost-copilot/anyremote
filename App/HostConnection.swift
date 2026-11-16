@@ -53,6 +53,11 @@ final class HostConnection {
 
     let target: HostTarget
     private(set) var state: State = .connecting
+    /// The connection failed because the two Macs speak different protocols.
+    /// `host` is the other Mac's AnyRemote; nil when it's from before
+    /// protocol 20 and doesn't say.
+    private(set) var versionMismatch: VersionMismatch?
+    struct VersionMismatch { var host: AppVersionInfo? }
     private(set) var welcome: HostWelcome?
     private(set) var listing: WindowListing?
     /// The host's apps, loaded when the picker shows them.
@@ -114,6 +119,10 @@ final class HostConnection {
     }
 
     var hostName: String { welcome?.hostName ?? target.name }
+
+    /// The other Mac's AnyRemote, once it said: in the welcome, or when it
+    /// refused another protocol.
+    var hostVersion: AppVersionInfo? { welcome?.version ?? versionMismatch?.host }
     var openMirrors: [MirrorWindowController] { Array(mirrors.values) }
     var openDesktops: [DesktopWindowController] { Array(desktops.values) }
 
@@ -187,6 +196,7 @@ final class HostConnection {
             startAudioReports()
             await refresh()
         } catch {
+            if case .incompatible(let host)? = error as? ConnectionError { versionMismatch = VersionMismatch(host: host) }
             state = .failed(error.localizedDescription)
             throw error
         }

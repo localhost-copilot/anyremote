@@ -305,6 +305,15 @@ enum DevelopmentLaunch {
             }
             model.selection = target.id
             app.showHosts()
+            if arguments.contains("--update-host") {
+                let before = model.connection(for: target)?.hostVersion
+                print("dev: host runs \(before.map { "\($0.appVersion) (protocol \($0.protocolVersion))" } ?? "unknown")")
+                await model.updateHost(target, code: value("--code").flatMap(PairingCode.init))
+                let after = model.connection(for: target)
+                print("dev: update \(model.remoteUpdates[target.id].map { "\($0)" } ?? "done"), "
+                      + "host runs \(after?.hostVersion?.appVersion ?? "unknown"), state \(String(describing: after?.state))")
+                return
+            }
             guard let connection = model.connection(for: target), connection.state == .connected else {
                 print("dev: connect failed: \(model.lastError ?? "unknown")"); return
             }

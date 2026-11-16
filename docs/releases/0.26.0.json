@@ -1,0 +1,12 @@
+{
+  "en": [
+    "AnyRemote updates itself: new versions download in the background and install when you choose, or when AnyRemote quits.",
+    "Update the other Macs from this one: a Mac with an older AnyRemote gets an Update button and reconnects once it is back.",
+    "Every Mac needs 0.26.0 (protocol v20). Update each one by hand this once; after that, updates install from the app."
+  ],
+  "zh-Hans": [
+    "AnyRemote 可以自动更新：新版本在后台下载，在你选择时或退出 AnyRemote 时安装。",
+    "可以从这台 Mac 更新其他 Mac：对方的 AnyRemote 较旧时会显示“更新”按钮，它重启后会自动重新连接。",
+    "所有 Mac 都需要 0.26.0（协议 v20）。这一次请在每台 Mac 上手动更新，之后就可以在 App 内更新了。"
+  ]
+}

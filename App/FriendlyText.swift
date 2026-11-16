@@ -16,6 +16,11 @@ enum FriendlyText {
             ("did not respond", String(localized: "That Mac didn’t respond. Make sure it’s on, AnyRemote is running, and it’s on the same network.")),
             ("Connection refused", String(localized: "Can’t connect: AnyRemote isn’t running on that Mac, or a firewall is blocking the port.")),
             ("connection was closed", String(localized: "The connection was closed.")),
+            ("already runs the latest AnyRemote", String(localized: "That Mac already runs the latest released AnyRemote.")),
+            ("development build of AnyRemote", String(localized: "That Mac runs a development build of AnyRemote, which doesn’t update.")),
+            ("can't replace itself", String(localized: "AnyRemote on that Mac can’t replace itself where it’s installed. Move it to the Applications folder there.")),
+            ("couldn't download the update", String(localized: "That Mac couldn’t download the update. Check its internet connection.")),
+            ("can't be updated from another Mac", String(localized: "That Mac’s AnyRemote can’t be updated from here. Install the new version on it by hand.")),
             ("window is no longer available", String(localized: "This window has been closed.")),
         ]
         for (needle, text) in table where raw.localizedCaseInsensitiveContains(needle) {

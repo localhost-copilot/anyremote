@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "AnyRemoteNetwork", targets: ["AnyRemoteNetwork"]),
         .library(name: "AnyRemoteHost", targets: ["AnyRemoteHost"]),
         .library(name: "AnyRemoteClient", targets: ["AnyRemoteClient"]),
+        .library(name: "AnyRemoteUpdate", targets: ["AnyRemoteUpdate"]),
         .executable(name: "anyremote-bench", targets: ["anyremote-bench"]),
     ],
     targets: [
@@ -33,6 +34,8 @@ let package = Package(
         ),
         // Viewer side of a host connection (UI-free).
         .target(name: "AnyRemoteClient", dependencies: ["AnyRemoteWire", "AnyRemoteMedia", "AnyRemoteNetwork"]),
+        // Software update: release manifest, download, signature checks, install.
+        .target(name: "AnyRemoteUpdate", dependencies: ["AnyRemoteWire"]),
         // Reproducible workloads for latency measurements.
         .target(name: "AnyRemoteDiagnostics"),
         .executableTarget(
@@ -43,6 +46,7 @@ let package = Package(
         .testTarget(name: "AnyRemoteWireTests", dependencies: ["AnyRemoteWire"]),
         .testTarget(name: "AnyRemoteWindowControlTests", dependencies: ["AnyRemoteWindowControl", "AnyRemoteWire"]),
         .testTarget(name: "AnyRemoteMediaTests", dependencies: ["AnyRemoteMedia", "AnyRemoteWire"]),
+        .testTarget(name: "AnyRemoteUpdateTests", dependencies: ["AnyRemoteUpdate", "AnyRemoteWire"]),
         .testTarget(name: "AnyRemoteNetworkTests",
                     dependencies: ["AnyRemoteNetwork", "AnyRemoteWire", "AnyRemoteHost", "AnyRemoteClient"]),
     ]

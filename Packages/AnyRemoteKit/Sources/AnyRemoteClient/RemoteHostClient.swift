@@ -138,7 +138,8 @@ public final class RemoteHostClient: @unchecked Sendable {
                 }
                 control.onMessage = { [weak self] message in self?.handle(message) }
                 control.onClose = { [weak self] error in
-                    self?.finish(error.map(Self.describe) ?? "The host closed the connection.")
+                    self?.finish(error.map(Self.describe) ?? "The host closed the connection.",
+                                 error: error as? ConnectionError)
                 }
                 self.control = control
                 control.start()
@@ -251,7 +252,9 @@ public final class RemoteHostClient: @unchecked Sendable {
         }
     }
 
-    private func finish(_ reason: String?) {
+    /// `error` replaces the generic rejection for the connect call when it
+    /// says more (another protocol, with the host's version).
+    private func finish(_ reason: String?, error connectError: ConnectionError? = nil) {
         guard !finished else { return }
         finished = true
         transfer?.close()
@@ -261,7 +264,11 @@ public final class RemoteHostClient: @unchecked Sendable {
         socket?.cancel()
         socket = nil
         let error = ConnectionError.rejected(reason ?? "Disconnected.")
-        connectContinuation?.resume(throwing: error)
+        if case .incompatible? = connectError {
+            connectContinuation?.resume(throwing: connectError!)
+        } else {
+            connectContinuation?.resume(throwing: error)
+        }
         connectContinuation = nil
         listings.values.forEach { $0.resume(throwing: error) }
         applicationListings.values.forEach { $0.resume(throwing: error) }

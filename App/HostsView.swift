@@ -57,6 +57,12 @@ private struct Sidebar: View {
                             if model.connection(for: target)?.state == .connected {
                                 Button("Disconnect") { model.disconnect(target) }
                             }
+                            if model.canUpdate(target) {
+                                Button("Update “\(target.name)” to AnyRemote \(AppVersionInfo.runningAppVersion)") {
+                                    model.selection = target.id
+                                    Task { await model.updateHost(target) }
+                                }
+                            }
                             if target.kind != .thisMac {
                                 Toggle("Let “\(target.name)” Control This Mac", isOn: Binding(
                                     get: { model.sharesBack(target) },
@@ -130,6 +136,8 @@ private struct HostRow: View {
         case .connecting?:
             return (String(localized: "Connecting…"), .orange)
         case .failed(let message)?:
+            if connection?.versionMismatch != nil { return (String(localized: "Needs an update"), .orange) }
+            if model.remoteUpdates[target.id] != nil { return (String(localized: "Updating…"), .orange) }
             if FriendlyText.isBusy(message) { return (String(localized: "In use by someone else"), .orange) }
             if FriendlyText.isPairingFailure(message) { return (String(localized: "Wrong pairing code"), .red) }
             return (String(localized: "Couldn’t connect"), .red)
@@ -179,8 +187,10 @@ struct HostDetailView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let connection, connection.state == .connected {
+        if let connection, connection.state == .connected, model.remoteUpdates[target.id] == nil {
             WindowPicker(connection: connection, model: model, target: target)
+        } else if let update = model.remoteUpdates[target.id] {
+            RemoteUpdatePane(target: target, model: model, state: update)
         } else if working || connection?.state == .connecting {
             VStack(spacing: 12) {
                 ProgressView()
@@ -189,6 +199,8 @@ struct HostDetailView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.code(for: target) == nil || isFailure(FriendlyText.isPairingFailure) {
             PairingPane(target: target, model: model, error: failureMessage.map(FriendlyText.message))
+        } else if failureMessage != nil, let mismatch = connection?.versionMismatch {
+            VersionMismatchPane(target: target, model: model, host: mismatch.host) { Task { await connect() } }
         } else if isFailure(FriendlyText.isBusy) {
             StatusPane(symbol: "person.2.fill", title: FriendlyText.message(failureMessage ?? ""),
                        detail: String(localized: "Only one Mac can control it at a time. Taking over disconnects the other one.")) {
@@ -222,6 +234,92 @@ struct HostDetailView: View {
         working = true
         await model.connect(target, takeOver: takeOver)
         working = false
+    }
+}
+
+/// The two Macs speak different protocols: update the older one.
+private struct VersionMismatchPane: View {
+    let target: HostTarget
+    let model: ViewerModel
+    let host: AppVersionInfo?
+    let retry: () -> Void
+
+    static let releasesURL = URL(string: "https://github.com/localhost-copilot/anyremote/releases/latest")!
+    private var mine: String { AppVersionInfo.runningAppVersion }
+
+    var body: some View {
+        if let host {
+            if isOlder(host) {
+                StatusPane(symbol: "arrow.down.circle", title: String(localized: "“\(target.name)” runs AnyRemote \(host.appVersion)"),
+                           detail: host.canUpdateRemotely
+                            ? String(localized: "This Mac runs \(mine), and both need the same version. Update “\(target.name)” from here: it takes about a minute and reconnects by itself.")
+                            : String(localized: "This Mac runs \(mine), and both need the same version. That copy can’t be updated from here: install AnyRemote \(mine) on it.")) {
+                    if host.canUpdateRemotely {
+                        Button("Update “\(target.name)”") { Task { await model.updateHost(target) } }
+                            .keyboardShortcut(.defaultAction)
+                    } else {
+                        Button("Download Page") { NSWorkspace.shared.open(Self.releasesURL) }
+                    }
+                    Button("Try Again", action: retry)
+                }
+            } else {
+                StatusPane(symbol: "arrow.down.circle", title: String(localized: "“\(target.name)” runs a newer AnyRemote (\(host.appVersion))"),
+                           detail: String(localized: "This Mac runs \(mine), and both need the same version. Update this Mac to connect.")) {
+                    if SoftwareUpdate.shared.isSupported {
+                        Button("Update This Mac") { Task { await SoftwareUpdate.shared.check(userInitiated: true) } }
+                            .keyboardShortcut(.defaultAction)
+                    } else {
+                        Button("Download Page") { NSWorkspace.shared.open(Self.releasesURL) }
+                    }
+                    Button("Try Again", action: retry)
+                }
+            }
+        } else {
+            StatusPane(symbol: "arrow.down.circle", title: String(localized: "“\(target.name)” runs an older AnyRemote"),
+                       detail: String(localized: "Install AnyRemote \(mine) on “\(target.name)” by hand this once. Versions from 0.26 on can be updated from here.")) {
+                Button("Download Page") { NSWorkspace.shared.open(Self.releasesURL) }
+                Button("Try Again", action: retry)
+            }
+        }
+    }
+
+    private func isOlder(_ host: AppVersionInfo) -> Bool {
+        if host.protocolVersion != anyRemoteProtocolVersion { return host.protocolVersion < anyRemoteProtocolVersion }
+        return (AppVersion(host.appVersion) ?? AppVersion("0")!) < (AppVersion(mine) ?? AppVersion("0")!)
+    }
+}
+
+/// An update of the other Mac asked for from here.
+private struct RemoteUpdatePane: View {
+    let target: HostTarget
+    let model: ViewerModel
+    let state: ViewerModel.RemoteUpdateState
+
+    var body: some View {
+        switch state {
+        case .asking:
+            progress(String(localized: "Updating “\(target.name)”…"),
+                     String(localized: "That Mac downloads and checks the new version, then relaunches. This takes about a minute."))
+        case .relaunching(let version):
+            progress(String(localized: "“\(target.name)” is relaunching with AnyRemote \(version)…"),
+                     String(localized: "It reconnects as soon as it’s back."))
+        case .failed(let message):
+            StatusPane(symbol: "exclamationmark.triangle", title: String(localized: "Couldn’t update “\(target.name)”"),
+                       detail: message) {
+                Button("OK") { model.dismissRemoteUpdate(target) }
+                Button("Try Again") { Task { await model.updateHost(target) } }.keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+
+    private func progress(_ title: String, _ detail: String) -> some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text(verbatim: title).font(.headline)
+            Text(verbatim: detail).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

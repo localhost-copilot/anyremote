@@ -210,6 +210,63 @@ final class ViewerModel {
         connections.removeValue(forKey: target.id)?.disconnect()
     }
 
+    // MARK: Updating other Macs
+
+    enum RemoteUpdateState: Equatable {
+        /// Waiting for the other Mac to download and check the update.
+        case asking
+        case relaunching(version: String)
+        case failed(String)
+    }
+
+    /// Updates of other Macs asked for from here, by target.
+    private(set) var remoteUpdates: [String: RemoteUpdateState] = [:]
+
+    /// Asks the Mac to update its AnyRemote, then reconnects once it is back.
+    func updateHost(_ target: HostTarget, code providedCode: PairingCode? = nil) async {
+        guard let code = providedCode ?? code(for: target), remoteUpdates[target.id] != .asking else { return }
+        remoteUpdates[target.id] = .asking
+        let version: String
+        do {
+            version = try await RemoteUpdateRequest.send(to: target.endpoint, code: code,
+                                                         viewerName: ComputerNameProvider.name)
+        } catch {
+            log.error("updating \(target.name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            remoteUpdates[target.id] = .failed(FriendlyText.message(error.localizedDescription))
+            return
+        }
+        log.notice("\(target.name, privacy: .public) is relaunching with \(version, privacy: .public)")
+        remoteUpdates[target.id] = .relaunching(version: version)
+        // Its windows here close as it quits; the session ends either way.
+        connections.removeValue(forKey: target.id)?.disconnect()
+        try? await Task.sleep(for: .seconds(5))
+        for _ in 0..<36 {
+            await connect(target, code: providedCode)
+            let connection = connections[target.id]
+            if connection?.state == .connected { break }
+            // Back, but still on another protocol: say so instead of retrying.
+            if let host = connection?.versionMismatch?.host, host.appVersion == version { break }
+            try? await Task.sleep(for: .seconds(5))
+        }
+        if connections[target.id]?.state == .connected || connections[target.id]?.versionMismatch != nil {
+            remoteUpdates[target.id] = nil
+        } else {
+            remoteUpdates[target.id] = .failed(String(localized: "“\(target.name)” didn’t come back after updating. Check that AnyRemote is running on it."))
+        }
+    }
+
+    func dismissRemoteUpdate(_ target: HostTarget) { remoteUpdates[target.id] = nil }
+
+    /// A connected Mac on the same protocol with an older AnyRemote that
+    /// can update itself.
+    func canUpdate(_ target: HostTarget) -> Bool {
+        guard target.kind != .thisMac, let connection = connections[target.id], connection.state == .connected,
+              let host = connection.hostVersion, host.canUpdateRemotely,
+              let theirs = AppVersion(host.appVersion), let mine = AppVersion(AppVersionInfo.runningAppVersion)
+        else { return false }
+        return theirs < mine
+    }
+
     func addManualHost(name: String, address: String, code: PairingCode) async -> Bool {
         guard let endpoint = HostTarget.endpoint(fromAddress: address) else {
             lastError = String(localized: "Enter an address like mac-mini.local or 192.168.1.20:47800.")

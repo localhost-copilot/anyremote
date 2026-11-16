@@ -242,6 +242,7 @@ struct HostSettingsView: View {
                 Text("Recommended on a Mac mini that is controlled remotely, so it’s ready after a restart.")
                     .font(.callout).foregroundStyle(.secondary)
             }
+            UpdateSettingsSection(update: .shared)
         }
         .formStyle(.grouped)
         .frame(width: 540)
@@ -376,6 +377,58 @@ struct HostSettingsView: View {
             } else {
                 Button("Turn On…") { PermissionGuide.shared.start(permission) }
             }
+        }
+    }
+}
+
+/// Settings › Updates.
+private struct UpdateSettingsSection: View {
+    @Bindable var update: SoftwareUpdate
+
+    var body: some View {
+        Section("Updates") {
+            if update.isSupported {
+                Toggle("Check for Updates Automatically", isOn: $update.automaticallyChecks)
+                Text("New versions download in the background and install when you choose, or when AnyRemote quits. Other Macs you control can be updated from this one.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("AnyRemote \(update.currentVersion)")
+                    Text(status).font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if case .ready = update.state {
+                    Button("Install and Relaunch…") { Task { await update.check(userInitiated: true) } }
+                } else if update.isSupported {
+                    Button("Check Now") { Task { await update.check(userInitiated: true) } }
+                        .disabled(isBusy)
+                }
+            }
+        }
+    }
+
+    private var isBusy: Bool {
+        switch update.state {
+        case .checking, .downloading, .installing: true
+        default: false
+        }
+    }
+
+    private var status: String {
+        guard update.isSupported else {
+            return String(localized: "This build isn’t signed for updates (a development build).")
+        }
+        switch update.state {
+        case .idle:
+            return update.lastChecked.map { String(localized: "Last checked \($0.formatted(.relative(presentation: .named)))") }
+                ?? String(localized: "Not checked yet")
+        case .checking: return String(localized: "Checking…")
+        case .upToDate: return String(localized: "Up to date")
+        case .downloading(let version, _): return String(localized: "Downloading \(version)…")
+        case .ready(let staged): return String(localized: "\(staged.manifest.version) is ready to install")
+        case .installing(let version): return String(localized: "Installing \(version)…")
+        case .failed(let message): return message
         }
     }
 }

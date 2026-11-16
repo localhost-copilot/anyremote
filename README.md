@@ -61,6 +61,23 @@ Requires macOS 15 or later, Apple silicon or Intel.
    The controlling Mac asks for *Microphone* access the first time an app
    on the other Mac records.
 
+### Updates
+
+From 0.26.0 on, AnyRemote updates itself. It checks its GitHub releases
+shortly after launch and then daily, downloads a new version in the
+background and offers **Install and Relaunch**; one put off with *Later*
+installs when AnyRemote quits. Settings → Updates turns the checks off;
+AnyRemote › *Check for Updates…* checks right away. An update is installed
+only if it is signed with the same certificate as the running app, so
+privacy permissions stay granted.
+
+Macs connected to each other must run the same protocol. When the other Mac
+runs an older AnyRemote, connecting to it offers **Update “…”**: that Mac
+downloads and checks the release itself, relaunches, and this Mac
+reconnects. A connected Mac with an older version on the same protocol can
+be updated from its context menu in the sidebar. Macs on 0.25 or earlier
+have to be updated by hand once.
+
 ## Getting started
 
 1. On the Mac to be controlled, the menu bar panel shows whether it can be
@@ -633,6 +650,8 @@ App/                        AppKit + SwiftUI app
   SoundSharing              the viewer's "Play Sound from Other Macs" setting
   MicrophoneSharing         the viewer's microphone setting; notice when macOS denies it
   MicrophoneDriverInstaller installs/updates/removes the AnyRemote Microphone (administrator prompt)
+  SoftwareUpdate            checks, downloads and installs releases; updates this Mac for a paired Mac
+  UpdateView                Software Update window
   DevelopmentLaunch         test/measurement launch modes
 DockProxy/                  stand-in app behind each remote app's Dock icon
 MicrophoneDriver/           AnyRemote Microphone: Core Audio server plug-in (C), bundled in the app
@@ -644,7 +663,8 @@ Packages/AnyRemoteKit/
   AnyRemoteWindowControl    AX window geometry/focus, menu bar reader, text caret
   AnyRemoteHost             host service + sessions, input, cursor, virtual display, process audio taps,
                             keyboard layout while a viewer types, the viewers' microphone
-  AnyRemoteClient           viewer-side connection and microphone, paired-host store
+  AnyRemoteClient           viewer-side connection and microphone, paired-host store, update requests
+  AnyRemoteUpdate           release manifest, download, checksum and signature checks, install script
   CGVirtualDisplayPrivate   private CGVirtualDisplay declarations
   AnyRemoteDiagnostics      synthetic workload window
   anyremote-bench           headless benchmark (loopback, --network, --host, --connect, --tiles, --microphone)
@@ -661,7 +681,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 94 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 104 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -692,7 +712,32 @@ redraws both icons into `App/Assets.xcassets`.
 ```sh
 scripts/release.sh             # build/dist/AnyRemote-<version>.zip (universal)
 scripts/release.sh --install   # also replace /Applications/AnyRemote.app and restart it
+scripts/publish-release.sh     # dry run: checks, builds, writes build/dist/AnyRemote-update.json
+GH=<gh> scripts/publish-release.sh --publish   # tags v<version>, pushes the tag, creates the GitHub release
 ```
+
+Publishing needs `docs/releases/<version>.md` (the release page) and
+`docs/releases/<version>.json` (the few lines the update window shows, by
+language: `{"en": […], "zh-Hans": […]}`), a clean tree and the release commit
+on `origin/main`. The release carries the zip and `AnyRemote-update.json`
+(version, protocol, minimum macOS, zip URL, size, SHA-256, notes). The app
+reads the latest one from
+`https://github.com/localhost-copilot/anyremote/releases/latest/download/AnyRemote-update.json`,
+which isn't the GitHub API and so has no rate limit.
+
+The app installs a download only after checking its size and SHA-256, its
+bundle identifier and version, and that its signature (every architecture
+and nested helper) satisfies the running app's designated requirement:
+`identifier … and certificate leaf = H"…"`, which only the release Mac's
+identity can meet. Ad-hoc signed development builds have no such
+requirement and don't update. A small script replaces the bundle after the
+app quits and opens the new one.
+
+To try an update without publishing, build two Debug copies with
+`MARKETING_VERSION=<old|new> ENABLE_DEBUG_DYLIB=NO` (a separate debug dylib
+fails library validation once re-signed), sign both like `release.sh`
+does, serve the new one's zip and a manifest from 127.0.0.1 and start the
+old one with `ANYREMOTE_HOME` and `ANYREMOTE_UPDATE_FEED`.
 
 The version is `MARKETING_VERSION` in `project.yml`. Screen Recording and
 Accessibility are keyed by the app's signature, and an ad-hoc signature
@@ -759,6 +804,8 @@ against this Mac's own host service unless `--connect` is given.
   Mac's menu bar icon here and logs the choice
 - `--notification-test` — posts a notification on this Mac (from Script
   Editor) and prints what the viewer receives, and the Dock badges
+- `--connect <address> --code <code> --update-host` — asks that Mac to
+  update itself, waits for it to come back and prints its version
 - `--discovery-test`, `--exit-after <seconds>`
 
 Environment:
@@ -773,6 +820,9 @@ Environment:
   frames shown a refresh late although sent on time).
 - `ANYREMOTE_STATS=1` starts with the statistics panel on (the switch then can't turn it off).
 - `ANYREMOTE_HOME=<dir>` uses a separate settings directory.
+- `ANYREMOTE_UPDATE_FEED=<url>` reads the update manifest from there (plain
+  HTTP is allowed from 127.0.0.1). Development builds only update when
+  signed with the release identity; see the Releases section.
 - `ANYREMOTE_DROP=0.02` drops that share of the datagrams (video and sound)
   arriving at the viewer (simulated loss).
 - `ANYREMOTE_AUDIO_BUFFER_MS=20` on the viewer starts the sound's jitter

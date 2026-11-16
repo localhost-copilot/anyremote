@@ -456,7 +456,7 @@ final class HostSession: @unchecked Sendable {
             let missing = Self.missingPermissions()
             let welcome = HostWelcome(hostID: service?.settings.hostID ?? "", hostName: ComputerName.current,
                                       datagramPort: service?.datagramPort ?? 0, displays: displays,
-                                      missingPermissions: missing)
+                                      missingPermissions: missing, version: service?.versionInfo)
             self.connection.send(.welcome(welcome))
         }
     }

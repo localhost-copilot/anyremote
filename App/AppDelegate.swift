@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private let connectionSeparator = NSMenuItem.separator()
     private var hostsWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var updateWindow: NSWindow?
     private var diagnosticWindows: [NSWindow] = []
     private var statusMenu: StatusMenuController?
     private var dockProxies: DockProxies?
@@ -46,6 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
         PermissionGuide.cleanUpStaleEntries()
+        let update = SoftwareUpdate.shared
+        update.showWindow = { [weak self] in self?.showUpdateWindow() }
+        update.activityDescription = { [weak self] in self?.relaunchConsequences() ?? [] }
+        if update.isSupported { hostService.updateHandler = SoftwareUpdate.remoteRequestHandler() }
+        update.start()
         if hostService.settingsStore.settings.isEnabled {
             do { try hostService.start() } catch {
                 log.error("host failed to start: \(error.localizedDescription, privacy: .public)")
@@ -105,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         inputSourceShortcuts?.release()
         dockProxies?.quitAll()
         hostService.stop()
+        SoftwareUpdate.shared.installOnQuit()
         // The sessions end asynchronously, too late for a quitting app.
         HostService.restoreDefaultInput()
     }
@@ -159,6 +166,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         NSApp.activate()
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func checkForUpdates(_ sender: Any?) {
+        Task { await SoftwareUpdate.shared.check(userInitiated: true) }
+    }
+
+    private func showUpdateWindow() {
+        if updateWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 200),
+                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = String(localized: "Software Update")
+            window.contentView = NSHostingView(rootView: UpdateView(update: .shared) { [weak window] in
+                window?.close()
+            })
+            window.isReleasedWhenClosed = false
+            window.center()
+            updateWindow = window
+        }
+        // A background check shouldn't take the keyboard from another app.
+        if NSApp.isActive {
+            updateWindow?.makeKeyAndOrderFront(nil)
+        } else {
+            updateWindow?.orderFrontRegardless()
+        }
+    }
+
+    /// What a relaunch now interrupts, for the update window.
+    private func relaunchConsequences() -> [String] {
+        var lines: [String] = []
+        if let names = hostService.currentStatus.viewerName {
+            lines.append(String(localized: "“\(names)” is controlling this Mac and is disconnected until AnyRemote is back."))
+        }
+        let open = viewer.connections.values.reduce(0) { $0 + $1.openMirrors.count + $1.openDesktops.count }
+        if open > 0 {
+            lines.append(String(localized: "Remote windows open here close; open them again afterwards."))
+        }
+        return lines
     }
 
     private var keyMirror: MirrorWindowController? {
@@ -223,6 +267,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return true
         case #selector(closeMirror(_:)):
             return keyMirror != nil || keyDesktop != nil
+        case #selector(checkForUpdates(_:)):
+            return SoftwareUpdate.shared.isSupported
         default:
             return true
         }
@@ -235,6 +281,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: String(localized: "About AnyRemote"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                        keyEquivalent: "")
+        appMenu.addItem(withTitle: String(localized: "Check for Updates…"), action: #selector(checkForUpdates(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: String(localized: "Settings…"), action: #selector(showSettings), keyEquivalent: ",")
