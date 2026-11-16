@@ -712,18 +712,31 @@ redraws both icons into `App/Assets.xcassets`.
 ```sh
 scripts/release.sh             # build/dist/AnyRemote-<version>.zip (universal)
 scripts/release.sh --install   # also replace /Applications/AnyRemote.app and restart it
-scripts/publish-release.sh     # dry run: checks, builds, writes build/dist/AnyRemote-update.json
-GH=<gh> scripts/publish-release.sh --publish   # tags v<version>, pushes the tag, creates the GitHub release
+scripts/publish-release.sh     # tag v<version> and push it: GitHub Actions publishes the release
 ```
 
-Publishing needs `docs/releases/<version>.md` (the release page) and
+Releases are built by GitHub Actions. `.github/workflows/ci.yml` tests and
+builds every push and pull request on the `xcode-27` runner.
+`publish-release.sh` checks the release (notes present, clean tree, commit
+on `origin/main`, new tag) and pushes the tag; `.github/workflows/release.yml`
+then waits for approval in the `release` environment (deployments from `v*`
+tags only, a required reviewer), the only place holding the signing
+identity (`SIGNING_P12`, `SIGNING_P12_PASSWORD`; put there by
+`scripts/upload-signing-secrets.sh`). It imports the identity into a
+keychain of its own, tests, builds with `scripts/release-assets.sh`, attests
+the zip's build provenance (`gh attestation verify <zip> -R
+localhost-copilot/anyremote`) and creates the release. `publish-release.sh
+--local` does the same on the Mac holding the identity.
+
+Every release needs `docs/releases/<version>.md` (the release page) and
 `docs/releases/<version>.json` (the few lines the update window shows, by
-language: `{"en": […], "zh-Hans": […]}`), a clean tree and the release commit
-on `origin/main`. The release carries the zip and `AnyRemote-update.json`
-(version, protocol, minimum macOS, zip URL, size, SHA-256, notes). The app
-reads the latest one from
+language: `{"en": […], "zh-Hans": […]}`). It carries the zip and
+`AnyRemote-update.json` (version, protocol, minimum macOS, zip URL, size,
+SHA-256, notes). The app reads the latest one from
 `https://github.com/localhost-copilot/anyremote/releases/latest/download/AnyRemote-update.json`,
-which isn't the GitHub API and so has no rate limit.
+which isn't the GitHub API and so has no rate limit. `release.sh` refuses a
+signature that doesn't match `scripts/designated-requirement.txt`, since
+installed copies would refuse it as an update.
 
 The app installs a download only after checking its size and SHA-256, its
 bundle identifier and version, and that its signature (every architecture
@@ -745,8 +758,8 @@ changes with every build. The script signs with a stable local identity
 instead (`scripts/signing-identity.sh` creates it once: a self-signed
 code-signing certificate in its own keychain under
 `~/Library/Application Support/AnyRemoteSigning`, never committed), so
-permissions survive updates. Releases must be built on the Mac that holds
-that identity.
+permissions survive updates. Only that identity can build releases: the one
+on the Mac that created it, and its copy in the `release` environment.
 
 Granting permissions: Settings → *Turn On…* asks macOS, which adds AnyRemote
 to the list switched off, then opens that list in System Settings with a

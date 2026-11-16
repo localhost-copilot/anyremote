@@ -1,0 +1,79 @@
+name: Release
+
+# Pushed by scripts/publish-release.sh. The job waits for approval in the
+# "release" environment, which alone holds the signing identity.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: write      # create the release
+      id-token: write      # sign the build provenance
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the tag
+        run: |
+          version=$(awk -F'"' '/MARKETING_VERSION: "/ { print $2; exit }' project.yml)
+          [[ "$GITHUB_REF_NAME" == "v$version" ]] || { echo "::error::tag $GITHUB_REF_NAME, but project.yml says $version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Tools
+        run: |
+          xcodebuild -version
+          brew install xcodegen
+
+      - name: Test
+        run: swift test --package-path Packages/AnyRemoteKit
+
+      # A keychain of this job's own, deleted at the end.
+      - name: Signing identity
+        env:
+          SIGNING_P12: ${{ secrets.SIGNING_P12 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf %s "$SIGNING_P12" | base64 -d > "$RUNNER_TEMP/identity.p12"
+          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$SIGNING_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          rm -f "$RUNNER_TEMP/identity.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk 'NR == 1 { print $2 }')
+          [[ -n "$identity" ]] || { echo "::error::no signing identity in SIGNING_P12"; exit 1; }
+          echo "ANYREMOTE_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "ANYREMOTE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      # Fails unless the signature matches scripts/designated-requirement.txt.
+      - name: Build, sign and package
+        run: scripts/release-assets.sh
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: build/dist/AnyRemote-${{ env.VERSION }}.zip
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "build/dist/AnyRemote-$VERSION.zip" build/dist/AnyRemote-update.json \
+            --verify-tag --latest --title "AnyRemote $VERSION" --notes-file "build/dist/release-notes-$VERSION.md"
+
+      - name: Remove the keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

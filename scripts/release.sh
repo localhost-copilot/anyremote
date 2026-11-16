@@ -1,7 +1,12 @@
 #!/bin/zsh
-# Builds the universal Release app, signs it with the stable local identity
+# Builds the universal Release app, signs it with the stable identity
 # (scripts/signing-identity.sh) so privacy permissions survive updates, and
 # zips it to build/dist/AnyRemote-<version>.zip.
+#
+# CI passes the identity in ANYREMOTE_SIGNING_KEYCHAIN and
+# ANYREMOTE_SIGNING_IDENTITY (its SHA-1) instead. Either way the signature
+# must match scripts/designated-requirement.txt: the installed apps' updater
+# only accepts releases that do.
 #
 #   scripts/release.sh            build, sign, zip
 #   scripts/release.sh --install  also replace /Applications/AnyRemote.app and restart it
@@ -10,14 +15,19 @@ cd "${0:A:h}/.."
 
 VERSION=$(awk -F'"' '/MARKETING_VERSION: "/ { print $2; exit }' project.yml)
 APP=build/dd-release/Build/Products/Release/AnyRemote.app
-KEYCHAIN="$HOME/Library/Application Support/AnyRemoteSigning/signing.keychain-db"
 
 xcodegen generate >/dev/null
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Release \
     -derivedDataPath build/dd-release CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
     ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO -quiet build
 
-IDENTITY=$(scripts/signing-identity.sh)
+if [[ -n "${ANYREMOTE_SIGNING_IDENTITY:-}" ]]; then
+    KEYCHAIN=$ANYREMOTE_SIGNING_KEYCHAIN
+    IDENTITY=$ANYREMOTE_SIGNING_IDENTITY
+else
+    KEYCHAIN="$HOME/Library/Application Support/AnyRemoteSigning/signing.keychain-db"
+    IDENTITY=$(scripts/signing-identity.sh)
+fi
 sign() {
     codesign --force --options runtime --timestamp=none --keychain "$KEYCHAIN" --sign "$IDENTITY" "$@"
 }
@@ -27,7 +37,12 @@ sign "$APP/Contents/MacOS/AnyRemoteDockProxy"
 sign "$APP/Contents/Resources/AnyRemote Microphone.driver"
 sign --entitlements App/AnyRemote.entitlements "$APP"
 codesign --verify --strict --deep "$APP"
-echo "signed: $(codesign -dr - "$APP" 2>&1 | sed -n 's/^designated => //p')"
+REQUIREMENT=$(codesign -dr - "$APP" 2>&1 | sed -n 's/^designated => //p')
+echo "signed: $REQUIREMENT"
+if [[ "$REQUIREMENT" != "$(<scripts/designated-requirement.txt)" ]]; then
+    echo "error: not signed with the release identity; installed copies would refuse this update" >&2
+    exit 1
+fi
 
 mkdir -p build/dist
 rm -f "build/dist/AnyRemote-$VERSION.zip"

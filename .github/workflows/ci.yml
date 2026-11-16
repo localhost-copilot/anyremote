@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # The toolchain the app is developed with (Xcode 27 on macOS 27).
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tools
+        run: |
+          xcodebuild -version
+          brew install xcodegen
+      - name: Test
+        run: swift test --package-path Packages/AnyRemoteKit
+      - name: Build
+        run: |
+          xcodegen generate -q
+          xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
+            -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+            -quiet build

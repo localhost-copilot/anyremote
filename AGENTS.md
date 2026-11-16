@@ -86,11 +86,16 @@ swift test --package-path Packages/AnyRemoteKit
   `… (v0.9.0)`, and with the protocol when that changes:
   `(v0.8.0, protocol v8)`.
 - `scripts/release.sh` builds the universal Release app, signs it with the
-  stable local identity from `scripts/signing-identity.sh` and writes
-  `build/dist/AnyRemote-<version>.zip`. Only the Mac holding that identity
-  can build releases that keep users' privacy grants; never sign releases
-  ad hoc, and never commit the identity, its keychain or its password.
-- A GitHub release is tagged `v<version>` and carries that zip.
+  stable identity from `scripts/signing-identity.sh` and writes
+  `build/dist/AnyRemote-<version>.zip`. Only that identity (on the Mac that
+  created it, and as secrets of the GitHub `release` environment) builds
+  releases that keep users' privacy grants and that installed copies accept
+  as updates; never sign releases ad hoc, and never commit the identity, its
+  keychain or its password.
+- A GitHub release is tagged `v<version>` and carries that zip and
+  `AnyRemote-update.json`. Write `docs/releases/<version>.md` and `.json`,
+  then `scripts/publish-release.sh` pushes the tag and the Release workflow
+  publishes it after approval.
 
 ## Never
 
