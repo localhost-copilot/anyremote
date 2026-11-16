@@ -111,8 +111,12 @@ display. Its title bar buttons act on it: close closes the host window (a
 save sheet appears as usual), minimize minimizes the mirror only, green
 enters full screen on this Mac (the host window is resized to this screen)
 and ⌥-green zooms. ⌘M and ⌃⌘F act on the mirror too. If the host window gets
-minimized or goes full screen on the host, the host undoes it and the mirror
-does it instead.
+minimized on the host, the host undoes it and the mirror minimizes instead.
+If the host app makes its window full screen itself (a web page's video in
+Chrome, which ends when the window leaves full screen), it stays so and the
+mirror follows it in and out; leaving full screen on the mirror takes the
+host window out too. Meanwhile the host's other windows are on another
+Space, so their mirrors keep their last picture.
 
 These are the mirror's own, native buttons, drawn where the host window has
 its buttons: macOS covers a shared window's buttons with a purple sharing

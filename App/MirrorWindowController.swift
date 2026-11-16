@@ -35,6 +35,11 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     private var pressedControl: Control?
     private var adoptingRemoteSize = false
     private var inFullScreenTransition = false
+    /// The host window is in full screen (the app's own, such as a web page's
+    /// video), and this window is following it.
+    private var hostFullScreen = false
+    /// This window's full screen began with the host window's.
+    private var enteredForHost = false
 
     private enum Control { case close, minimize, zoom, fullScreen, letterbox }
     private var statisticsTimer: Timer?
@@ -432,15 +437,20 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         return false
     }
 
-    /// The host app minimized or went full screen by itself (menu, title bar
-    /// double-click); the host has already undone it on its side.
+    /// The host app minimized (the host has already undone it on its side),
+    /// or its window went in or out of full screen, which this window follows.
     func applyHostStateRequest(_ request: HostWindowStateRequest) {
         guard let window else { return }
         switch request {
         case .minimize:
             if !window.isMiniaturized { window.miniaturize(nil) }
         case .enterFullScreen:
-            if !isFullScreen { window.toggleFullScreen(nil) }
+            hostFullScreen = true
+            enteredForHost = true
+            if !isFullScreen, !inFullScreenTransition { window.toggleFullScreen(nil) }
+        case .exitFullScreen:
+            hostFullScreen = false
+            if isFullScreen, !inFullScreenTransition { window.toggleFullScreen(nil) }
         }
     }
 
@@ -548,6 +558,8 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     }
 
     // Full screen: the host window takes the screen's size, so it stays 1:1.
+    // A host window in full screen of its own already has its screen's size;
+    // the picture fits this screen however the two differ.
     func windowWillEnterFullScreen(_ notification: Notification) {
         inFullScreenTransition = true
         layoutWindowButtons()
@@ -563,13 +575,22 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         revealsButtonsInFullScreen = false
         updateVideoGravity()
         layoutWindowButtons()
-        requestHostResize(surface.bounds.size)
+        // The host window left full screen while this one was going in.
+        if !hostFullScreen, enteredForHost { window?.toggleFullScreen(nil); return }
+        if !hostFullScreen { requestHostResize(surface.bounds.size) }
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
         inFullScreenTransition = false
+        enteredForHost = false
         updateVideoGravity()
         layoutWindowButtons()
+        if hostFullScreen {
+            // Left here (green button, ⌃⌘F): the host window leaves too, and
+            // then takes this window's size again.
+            hostFullScreen = false
+            connection.client.send(.windowAction(streamID: streamID, action: .exitFullScreen))
+        }
         requestHostResize(surface.bounds.size)
     }
 

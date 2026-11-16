@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 16
+public let anyRemoteProtocolVersion: UInt16 = 17
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -268,15 +268,21 @@ public struct WindowControls: Codable, Equatable, Sendable {
 public enum WindowAction: String, Codable, Sendable {
     /// Presses the window's close button (the app may ask to save first).
     case close
+    /// The viewer left full screen while the host window was in it (see
+    /// `HostWindowStateRequest.enterFullScreen`); the host window leaves too.
+    case exitFullScreen
 }
 
-/// Window state changes the host app attempted (menu item, shortcut, title
-/// bar double-click). The host undoes them on its side, because a minimized
-/// or full-screen host window can't be streamed into a local window, and the
-/// viewer applies them to the local window instead.
+/// Window state changes the host app made (menu item, shortcut, title bar
+/// double-click, a web page's video). A minimized host window can't be
+/// streamed, so the host undoes that and the viewer minimizes its local
+/// window instead. Full screen stays on the host, since apps tie their own
+/// state to it (Chrome's video full screen ends with the window's), and the
+/// viewer's local window follows it in and out.
 public enum HostWindowStateRequest: String, Codable, Sendable {
     case minimize
     case enterFullScreen
+    case exitFullScreen
 }
 
 /// A node of the host application's menu bar, read through Accessibility.

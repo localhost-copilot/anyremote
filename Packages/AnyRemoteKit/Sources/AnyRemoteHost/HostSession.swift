@@ -30,6 +30,11 @@ final class HostStream: @unchecked Sendable {
     var offScreenSince: UInt64?
     /// Main windows: minimized on the host, as Accessibility last answered.
     var minimizedOnHost = false
+    /// Main windows: in full screen on the host, as Accessibility last answered.
+    var fullScreenOnHost = false
+    /// Main windows: the size the viewer asked for while the window was in
+    /// full screen, applied once it leaves.
+    var sizeAfterFullScreen: CGSize?
     /// Display streams: the display's backing scale.
     var displayScale: CGFloat = 0
     /// Display streams: the display captured now (a virtual display standing
@@ -155,10 +160,10 @@ final class HostSession: @unchecked Sendable {
     /// New windows that may still turn out to be standard windows, by first sighting.
     private var newWindowCandidates: [CGWindowID: UInt64] = [:]
     private var lastCandidateCheck: UInt64 = 0
-    /// When a streamed window last went full screen on the host. Its move to
-    /// a Space of its own takes every other window off the screen, and they
-    /// come back when it is put back: neither is the window closing or a
-    /// new window opening.
+    /// When a streamed window last went in or out of full screen on the host.
+    /// Its move to a Space of its own takes every other window off the
+    /// screen, and they come back when it leaves: neither is a window closing
+    /// or a new window opening.
     private var lastHostFullScreen: UInt64 = 0
     /// Tracked windows that recently left the screen, by when they left.
     private var departedWindows: [CGWindowID: UInt64] = [:]
@@ -1157,6 +1162,8 @@ final class HostSession: @unchecked Sendable {
         }
         guard now - since >= Self.offScreenGrace else { return }
         if stream.minimizedOnHost || now - lastHostFullScreen < Self.spaceSwitchInterval { return }
+        // Off the screen because another streamed window has a full-screen Space.
+        if streams.values.contains(where: { $0.fullScreenOnHost && $0.offScreenSince == nil }) { return }
         if stream.description.role == .display {
             log.notice("display \(stream.windowID) went away; ending its stream")
             for session in stream.audience?.sessions ?? [self] {
@@ -1226,12 +1233,16 @@ final class HostSession: @unchecked Sendable {
         switch action {
         case .close:
             if stream.axWindow?.pressCloseButton() != true { log.notice("close button press failed") }
+        case .exitFullScreen:
+            guard stream.fullScreenOnHost, let window = stream.axWindow else { return }
+            poller.run("exit full screen \(streamID)", pid: stream.pid, reply: queue) { window.setFullScreen(false) } then: { _ in }
         }
     }
 
-    /// A streamed window that got minimized or went full screen on the host
-    /// (Window › Minimize, ⌘M, ⌃⌘F, a title bar double-click) is put back and
-    /// the viewer does it to its local window instead.
+    /// A streamed window that got minimized on the host (Window › Minimize,
+    /// ⌘M, a title bar double-click) is put back and the viewer minimizes its
+    /// local window instead. Full screen stays (see `HostWindowStateRequest`):
+    /// the viewer's window follows the host window in and out.
     private func checkWindowStates(_ mains: [HostStream]) {
         let now = HostClock.nowNanos()
         guard now - lastStateCheck >= 150_000_000 else { return }
@@ -1247,10 +1258,15 @@ final class HostSession: @unchecked Sendable {
                 if state.minimized {
                     poller.run("restore \(streamID)", pid: stream.pid, reply: queue) { window.setMinimized(false) } then: { _ in }
                     connection.send(.windowStateRequest(streamID: streamID, .minimize))
-                } else if state.fullScreen {
+                } else if state.fullScreen != stream.fullScreenOnHost {
+                    stream.fullScreenOnHost = state.fullScreen
                     lastHostFullScreen = HostClock.nowNanos()
-                    poller.run("restore \(streamID)", pid: stream.pid, reply: queue) { window.setFullScreen(false) } then: { _ in }
-                    connection.send(.windowStateRequest(streamID: streamID, .enterFullScreen))
+                    log.notice("window \(stream.windowID) \(state.fullScreen ? "entered" : "left", privacy: .public) full screen")
+                    connection.send(.windowStateRequest(streamID: streamID, state.fullScreen ? .enterFullScreen : .exitFullScreen))
+                    if !state.fullScreen, let size = stream.sizeAfterFullScreen {
+                        stream.sizeAfterFullScreen = nil
+                        scheduleResize(streamID: streamID, size: size)
+                    }
                 }
             }
         }
@@ -1266,7 +1282,8 @@ final class HostSession: @unchecked Sendable {
         let current = Self.trackedWindowIDs(onScreen)
         if let known = knownWindows {
             for id in known.subtracting(current) { departedWindows[id] = now }
-            departedWindows = departedWindows.filter { now - $0.value < Self.spaceSwitchInterval }
+            // Kept for as long as the full screen lasts, until they are back.
+            departedWindows = departedWindows.filter { now - max($0.value, lastHostFullScreen) < Self.spaceSwitchInterval }
             let recentInput = now - lastInputTime < Self.causedWindowInterval
             let launchPID = pendingLaunch?.pid
             let successorPID = awaitingSuccessor?.pid
@@ -1281,12 +1298,15 @@ final class HostSession: @unchecked Sendable {
         knownWindows = current
         guard !newWindowCandidates.isEmpty, now - lastCandidateCheck >= 100_000_000 else { return }
         lastCandidateCheck = now
-        let streamed = Set(streams.values.map(\.windowID))
+        let streamed = Set(streams.values.filter { $0.description.role == .window }.map(\.windowID))
         // A new window is often listed before it has its final size and
-        // before Accessibility knows it, so look again for a moment.
+        // before Accessibility knows it, so look again for a moment. Until
+        // then it may have been taken for a child of the app's other window
+        // (Chrome's browser window, opened from its profile picker); it then
+        // becomes a window of its own, which outlives the other one.
         for window in onScreen {
             guard let seen = newWindowCandidates[window.id] else { continue }
-            if streamed.contains(window.id) || now - seen > 1_500_000_000 {
+            if streamed.contains(window.id) || now - seen > 3_000_000_000 {
                 newWindowCandidates[window.id] = nil
                 continue
             }
@@ -1296,6 +1316,10 @@ final class HostSession: @unchecked Sendable {
             newWindowCandidates[window.id] = nil
             if window.pid == pendingLaunch?.pid { pendingLaunch = nil }
             if window.pid == awaitingSuccessor?.pid { awaitingSuccessor = nil }
+            for main in streams.values where main.description.role == .window {
+                guard let childID = main.children.removeValue(forKey: window.id), childID != 0 else { continue }
+                endStream(childID, reason: "Child window closed.")
+            }
             log.notice("opening new window \(window.id) of \(window.ownerName, privacy: .public)")
             openWindow(window.id)
         }
@@ -1345,8 +1369,11 @@ final class HostSession: @unchecked Sendable {
         }
         if needsStandardIDs {
             // Until the app has said which are its own windows, none of its
-            // layer-0 windows is taken for a child.
-            let standard = standardWindowIDs(pid: main.pid)
+            // layer-0 windows is taken for a child; nor, for a window that
+            // just appeared, before the app has answered since.
+            let newest = candidates.lazy.filter { $0.layer == 0 && $0.pid == main.pid }
+                .compactMap { self.newWindowCandidates[$0.id] }.max() ?? 0
+            let standard = standardWindowIDs(pid: main.pid, after: newest)
             candidates.removeAll { $0.layer == 0 && $0.pid == main.pid && standard?.contains($0.id) != false }
         }
         let wanted = Set(candidates.prefix(Self.maximumChildren).map(\.id))
@@ -1713,6 +1740,7 @@ final class HostSession: @unchecked Sendable {
     private func keepInPlace(streamID: UInt16, final: Bool) {
         guard let stream = streams[streamID], !injector.isPressed, let pressFrame = stream.pressFrame else { return }
         if final { stream.pressFrame = nil }
+        guard !stream.fullScreenOnHost else { return }
         if stream.axWindow == nil { stream.axWindow = try? AXWindow(pid: stream.pid, windowID: stream.windowID) }
         // A resize from the left or top edge moves the origin too; that stays.
         guard let ax = stream.axWindow, let origin = ax.position, let size = ax.size,
@@ -1761,7 +1789,9 @@ final class HostSession: @unchecked Sendable {
     private func applyResize(streamID: UInt16, size requested: CGSize) {
         guard let stream = streams[streamID] else { return }
         if stream.axWindow == nil { stream.axWindow = try? AXWindow(pid: stream.pid, windowID: stream.windowID) }
-        guard let ax = stream.axWindow else {
+        guard let ax = stream.axWindow, !stream.fullScreenOnHost else {
+            // A full-screen window keeps the screen's size until it leaves.
+            if stream.fullScreenOnHost { stream.sizeAfterFullScreen = requested }
             connection.send(.resizeApplied(streamID: streamID, size: stream.description.frame.size))
             return
         }
