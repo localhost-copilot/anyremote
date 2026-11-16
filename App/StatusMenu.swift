@@ -31,7 +31,7 @@ final class StatusMenuController: NSObject, NSWindowDelegate {
         super.init()
         model.actions = .init(dismiss: { [weak self] in self?.closePanel() },
                               showPicker: actions.showPicker, showSettings: actions.showSettings,
-                              resize: { [weak self] size in self?.contentSize = size; self?.placePanel() })
+                              resize: { [weak self] size in self?.contentChanged(size) })
         item.button?.target = self
         item.button?.action = #selector(clicked(_:))
         item.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
@@ -64,14 +64,37 @@ final class StatusMenuController: NSObject, NSWindowDelegate {
     /// The SwiftUI content's own size, as it last reported it.
     private var contentSize = CGSize(width: 340, height: 420)
 
+    /// The panel's SwiftUI content, which sizes it.
+    private var hosting: NSView?
+
     func showPanel() {
         model.willShow()
+        _ = panel
+        // Sized to what it will show before it appears: content that changed
+        // while it was hidden (a window opened, a Mac paired) would otherwise
+        // only resize it once on screen.
+        if let hosting {
+            hosting.layoutSubtreeIfNeeded()
+            let fitting = hosting.fittingSize
+            if fitting.height > 0 { contentSize = CGSize(width: 340, height: fitting.height) }
+        }
         placePanel()
         panel.makeKeyAndOrderFront(nil)
         item.button?.highlight(true)
     }
 
     var panelFrame: NSRect? { panel.isVisible ? panel.frame : nil }
+
+    /// The content reports its size during SwiftUI's layout pass; resizing
+    /// the window right there can leave its content view at the old size
+    /// (the window grows, the content stays put and is cut off), so the
+    /// frame changes once that pass is over.
+    private func contentChanged(_ size: CGSize) {
+        contentSize = size
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.placePanel() }
+        }
+    }
 
     /// Hangs the panel just below the icon, inside the screen, sized to its content.
     private func placePanel() {
@@ -83,6 +106,12 @@ final class StatusMenuController: NSObject, NSWindowDelegate {
         origin.x = min(max(origin.x, screen.minX + 8), screen.maxX - size.width - 8)
         let frame = NSRect(origin: origin, size: size).integral
         if frame != panel.frame { panel.setFrame(frame, display: true) }
+        // The content view always fills the window.
+        if let content = panel.contentView, content.frame.size != frame.size {
+            content.frame = NSRect(origin: .zero, size: frame.size)
+        }
+        // The shadow follows the rounded shape at the new size.
+        panel.invalidateShadow()
     }
 
     func closePanel() {
@@ -104,9 +133,10 @@ final class StatusMenuController: NSObject, NSWindowDelegate {
         effect.material = .popover
         effect.state = .active
         effect.blendingMode = .behindWindow
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 12
-        effect.layer?.masksToBounds = true
+        // Rounded with the effect view's own mask, which also cuts the blurred
+        // backdrop; a layer corner radius leaves it square under the corners,
+        // a light fringe around them.
+        effect.maskImage = Self.roundedMask(radius: 12)
         let hosting = NSHostingView(rootView: StatusPanelView(model: model))
         hosting.sizingOptions = []
         hosting.translatesAutoresizingMaskIntoConstraints = false
@@ -118,7 +148,21 @@ final class StatusMenuController: NSObject, NSWindowDelegate {
             hosting.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
         ])
         panel.contentView = effect
+        self.hosting = hosting
         return panel
+    }
+
+    /// A stretchable rounded rectangle: the corners stay, the middle stretches.
+    private static func roundedMask(radius: CGFloat) -> NSImage {
+        let edge = radius * 2 + 1
+        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
     }
 
     private func showClassicMenu() {
