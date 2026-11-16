@@ -43,9 +43,12 @@ public struct CapturedFrame: @unchecked Sendable {
 /// showing the previous frame meanwhile.
 ///
 /// A window attached to another (a sheet) is captured together with its
-/// parent, shrunk into the buffer. When the first frame shows more than the
-/// window, the session switches to a display capture that includes only this
-/// window, cropped to its frame (`windowFrameChanged` keeps the crop on it).
+/// parent, shrunk into the buffer, and a window that others are attached to
+/// is captured with them (Chrome's link status bubble, one point left of the
+/// window, added a black column down its left edge). When a frame shows more
+/// than the window, the session switches to a display capture that includes
+/// only this window, cropped to its frame (`windowFrameChanged` keeps the
+/// crop on it).
 ///
 /// Menus, popovers and alerts (`backdrop`) have glass that blurs what lies
 /// behind them, which a capture of the window alone leaves out: macOS
@@ -71,7 +74,10 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     private var lastLoggedGeometry = ""
     /// The window's frame in global points (top-left origin).
     private var windowFrame: CGRect
-    private var checkedGroup = false
+    /// The captured size last compared with the window's own.
+    private var checkedPoints: CGSize?
+    /// The window's bounds at the last comparison, and since when they were so.
+    private var boundsSince: (bounds: CGRect, nanos: UInt64)?
     private var switching = false
     /// Set in crop mode: the display the crop is relative to, and its scale.
     private var crop: (displayFrame: CGRect, scale: CGFloat)?
@@ -252,15 +258,40 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     /// are dropped: a window's content rarely changes while it is dragged,
     /// and the viewer moves its own window meanwhile.
     private func cropIsOnWindow() -> Bool {
-        var values: [UnsafeRawPointer?] = [UnsafeRawPointer(bitPattern: UInt(windowID))]
-        guard let ids = CFArrayCreate(nil, &values, 1, nil),
-              let info = (CGWindowListCreateDescriptionFromArray(ids) as? [[CFString: Any]])?.first,
-              let bounds = info[kCGWindowBounds] as? NSDictionary,
-              let frame = CGRect(dictionaryRepresentation: bounds) else { return true }
+        guard let frame = currentBounds() else { return true }
         guard frame != windowFrame else { return !reconfiguring }
         windowFrame = frame
         requestCrop()
         return false
+    }
+
+    /// Queue-confined. Whether a frame of this size shows more than the
+    /// window: the windows attached to it, or that it is attached to. The
+    /// size is compared with the window's bounds now, and after the first
+    /// frame only once they have held for a moment: while a window shrinks,
+    /// its frames can still show the larger size.
+    private func isGrouped(_ points: CGSize) -> Bool {
+        let now = HostClock.nowNanos()
+        let first = boundsSince == nil
+        guard let bounds = currentBounds() else { return false }
+        if boundsSince?.bounds != bounds { boundsSince = (bounds, now) }
+        guard first || now - (boundsSince?.nanos ?? now) >= 300_000_000 else {
+            checkedPoints = nil // looks again at the next frame
+            return false
+        }
+        checkedPoints = points
+        guard points.width > bounds.width + 0.5 || points.height > bounds.height + 0.5 else { return false }
+        log.notice("window \(self.windowID) captured as \(points.debugDescription) but is \(bounds.size.debugDescription)")
+        return true
+    }
+
+    /// The window's frame as the window server has it now.
+    private func currentBounds() -> CGRect? {
+        var values: [UnsafeRawPointer?] = [UnsafeRawPointer(bitPattern: UInt(windowID))]
+        guard let ids = CFArrayCreate(nil, &values, 1, nil),
+              let info = (CGWindowListCreateDescriptionFromArray(ids) as? [[CFString: Any]])?.first,
+              let bounds = info[kCGWindowBounds] as? NSDictionary else { return nil }
+        return CGRect(dictionaryRepresentation: bounds)
     }
 
     /// Queue-confined. Captures the window alone once, for its shape at this
@@ -423,14 +454,9 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
             lastLoggedGeometry = geometry
             log.debug("capture geometry \(geometry, privacy: .public)")
         }
-        if !checkedGroup {
-            checkedGroup = true
-            // More than the window itself: it was captured with the windows it's attached to.
-            if windowPoints.width > windowFrame.width + 8 || windowPoints.height > windowFrame.height + 8 {
-                log.notice("window \(self.windowID) captured as \(windowPoints.debugDescription) but is \(self.windowFrame.size.debugDescription)")
-                switchToCrop()
-                return
-            }
+        if windowPoints != checkedPoints, isGrouped(windowPoints) {
+            switchToCrop()
+            return
         }
 
         guard wanted == configuredPixelSize, abs(contentScale - 1) < 0.001 else {
