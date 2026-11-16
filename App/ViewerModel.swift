@@ -248,7 +248,10 @@ final class ViewerModel {
 
     func forget(_ target: HostTarget) {
         disconnect(target)
-        if let id = target.savedID ?? target.hostID { pairedStore.remove(id: id) }
+        if let id = target.savedID ?? target.hostID {
+            pairedStore.remove(id: id)
+            RemoteAppBundles.remove(hostID: id)
+        }
         saved = pairedStore.all
     }
 

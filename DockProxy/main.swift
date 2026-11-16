@@ -6,8 +6,14 @@ import AppKit
 /// name come from the bundle) and talks to it with distributed notifications
 /// named `<AnyRemote bundle ID>.dock.<event>`, the object being the proxy ID:
 ///
-///   to AnyRemote: ready, activate, focus {window}, closeAll
+///   to AnyRemote: ready, open {host, application, bundle}, activate,
+///                 focus {window}, closeAll
 ///   to the proxy: update {windows: [[id, title]], badge, closeAllTitle}, quit
+///
+/// AnyRemote launches it with `-AnyRemoteLaunched` for windows it shows.
+/// Launched without it, the person opened it (Spotlight, the Apps launcher,
+/// a Dock icon kept in the Dock): it starts AnyRemote if needed and asks it
+/// to open the app on its Mac.
 @MainActor
 final class DockProxy: NSObject, NSApplicationDelegate {
     private let id: String
@@ -17,6 +23,8 @@ final class DockProxy: NSObject, NSApplicationDelegate {
     private var closeAllTitle = "Close All on This Mac"
     private var quitByParent = false
     private var parentWatch: DispatchSourceProcess?
+    /// AnyRemote answered the open request (or told this to quit).
+    private var answered = false
 
     init(id: String, parentBundleID: String) {
         self.id = id
@@ -34,20 +42,54 @@ final class DockProxy: NSObject, NSApplicationDelegate {
                            suspensionBehavior: .deliverImmediately)
         center.addObserver(self, selector: #selector(quit(_:)), name: name("quit"), object: id,
                            suspensionBehavior: .deliverImmediately)
-        // Leave with AnyRemote, however it ends.
-        if let parent = NSRunningApplication.runningApplications(withBundleIdentifier: parentBundleID).first {
-            let source = DispatchSource.makeProcessSource(identifier: parent.processIdentifier, eventMask: .exit,
-                                                          queue: .main)
-            source.setEventHandler { exit(0) }
-            source.resume()
-            parentWatch = source
+        if CommandLine.arguments.contains("-AnyRemoteLaunched") {
+            guard watchParent() else { exit(0) }
+            post("ready")
         } else {
-            exit(0)
+            requestOpen()
         }
-        post("ready")
+    }
+
+    /// Leave with AnyRemote, however it ends.
+    private func watchParent() -> Bool {
+        guard parentWatch == nil else { return true }
+        guard let parent = NSRunningApplication.runningApplications(withBundleIdentifier: parentBundleID).first
+        else { return false }
+        let source = DispatchSource.makeProcessSource(identifier: parent.processIdentifier, eventMask: .exit,
+                                                      queue: .main)
+        source.setEventHandler { exit(0) }
+        source.resume()
+        parentWatch = source
+        return true
+    }
+
+    /// Opens AnyRemote if needed (without its window picker), then asks it
+    /// once a second until it answers: it may still be starting.
+    private func requestOpen() {
+        let info = Bundle.main.infoDictionary ?? [:]
+        var request: [String: String] = [:]
+        request["host"] = info["AnyRemoteHostID"] as? String
+        request["application"] = info["AnyRemoteApplication"] as? String
+        request["bundle"] = info["AnyRemoteApplicationBundleID"] as? String
+        if NSRunningApplication.runningApplications(withBundleIdentifier: parentBundleID).isEmpty {
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: parentBundleID) else { exit(0) }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            configuration.arguments = ["-AnyRemoteOpenedForApp", "YES"]
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        }
+        Task { @MainActor in
+            for _ in 0..<30 {
+                if answered { return }
+                if watchParent() { post("open", request) }
+                try? await Task.sleep(for: .seconds(1))
+            }
+            if !answered { exit(0) }
+        }
     }
 
     @objc private func update(_ note: Notification) {
+        answered = true
         let list = note.userInfo?["windows"] as? [[Any]] ?? []
         windows = list.compactMap { entry in
             guard entry.count == 2, let id = entry[0] as? Int, let title = entry[1] as? String else { return nil }
@@ -62,6 +104,7 @@ final class DockProxy: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit(_ note: Notification) {
+        answered = true
         quitByParent = true
         NSApp.terminate(nil)
     }

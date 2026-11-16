@@ -1,8 +1,6 @@
 import AppKit
 import CryptoKit
-import ImageIO
 import OSLog
-import UniformTypeIdentifiers
 
 private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category: "Dock")
 
@@ -15,10 +13,12 @@ extension Notification.Name {
 /// app switcher entry, like Parallels' Coherence mode.
 ///
 /// macOS gives a process one Dock tile, so each remote app gets a small
-/// stand-in app (`DockProxy/main.swift`) in a bundle generated under
-/// Application Support with the app's icon (badged) and name. Clicking it, or
-/// choosing it with ⌘Tab, brings that app's mirrors forward; its Dock menu
-/// lists them; Quit closes them on this Mac only.
+/// stand-in app (`DockProxy/main.swift`) with the app's icon (badged) and
+/// name, kept in the Applications folder (`RemoteAppBundles`). Clicking it,
+/// or choosing it with ⌘Tab, brings that app's mirrors forward; its Dock
+/// menu lists them; Quit closes them on this Mac only. Opened from
+/// Spotlight, the Apps launcher or a Dock icon kept in the Dock, it asks for
+/// the app to be opened on its Mac.
 @MainActor
 final class DockProxies {
     static let enabledKey = "ShowsRemoteAppsInDock"
@@ -27,6 +27,7 @@ final class DockProxies {
         get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
         set {
             UserDefaults.standard.set(newValue, forKey: enabledKey)
+            if !newValue { RemoteAppBundles.removeAll() }
             NotificationCenter.default.post(name: .mirrorsChanged, object: nil)
         }
     }
@@ -38,6 +39,9 @@ final class DockProxies {
         var mirrors: [MirrorWindowController] = []
         /// The badge the app shows on its Dock icon on the other Mac.
         var badge = ""
+        /// Opened by the person (Spotlight, a Dock icon) and waiting for its
+        /// app's window: kept running until then, without windows.
+        var waitingUntil: Date?
         init(id: String) { self.id = id }
     }
 
@@ -64,6 +68,17 @@ final class DockProxies {
                 }
             }
         }
+        center.addObserver(forName: name("open"), object: nil, queue: .main) { [weak self] note in
+            let id = note.object as? String
+            let host = note.userInfo?["host"] as? String
+            let application = note.userInfo?["application"] as? String
+            let bundle = note.userInfo?["bundle"] as? String
+            MainActor.assumeIsolated {
+                guard let id, let host, let application else { return }
+                self?.open(id: id, hostID: host, application: application, bundleIdentifier: bundle)
+            }
+        }
+        RemoteAppBundles.removeLegacyBundles()
     }
 
     private func name(_ event: String) -> Notification.Name { .init("\(parentID).dock.\(event)") }
@@ -94,14 +109,15 @@ final class DockProxies {
         guard Self.isEnabled else { return quitAll() }
         var groups: [String: (connection: HostConnection, application: String, mirrors: [MirrorWindowController])] = [:]
         for connection in viewer().connections.values {
-            let host = connection.target.hostID ?? connection.target.id
+            let host = Self.hostID(of: connection)
             for mirror in connection.openMirrors {
                 let application = mirror.stream.applicationName
                 let id = Self.proxyID(host: host, application: application)
                 groups[id, default: (connection, application, [])].mirrors.append(mirror)
             }
         }
-        for (id, _) in proxies where groups[id] == nil {
+        for (id, proxy) in proxies where groups[id] == nil {
+            if let waitingUntil = proxy.waitingUntil, waitingUntil > Date() { continue }
             post("quit", to: id)
             proxies[id] = nil
         }
@@ -111,6 +127,7 @@ final class DockProxies {
             if let proxy = proxies[id] {
                 proxy.mirrors = mirrors
                 proxy.badge = badge
+                proxy.waitingUntil = nil
                 sendUpdate(proxy)
                 continue
             }
@@ -128,8 +145,18 @@ final class DockProxies {
             proxy.mirrors = mirrors
             proxy.badge = badge
             proxies[id] = proxy
-            launch(proxy, name: "\(group.application) (\(group.connection.hostName))", icon: icon)
+            let bundle = group.connection.listing?.windows.first { $0.applicationName == group.application }?
+                .bundleIdentifier
+            launch(proxy, identity: .init(id: id, hostID: Self.hostID(of: group.connection),
+                                          hostName: group.connection.hostName, application: group.application,
+                                          bundleIdentifier: bundle), icon: icon)
         }
+    }
+
+    /// The Mac's own ID once connected, so the stand-ins of a Mac added by
+    /// address are the same as when it is found nearby.
+    private static func hostID(of connection: HostConnection) -> String {
+        connection.welcome?.hostID ?? connection.target.hostID ?? connection.target.id
     }
 
     private static func proxyID(host: String, application: String) -> String {
@@ -184,6 +211,64 @@ final class DockProxies {
         }
     }
 
+    // MARK: Opening from the Applications folder
+
+    /// A stand-in was opened by the person: open its app on its Mac, or
+    /// bring its windows forward when they are here already.
+    private func open(id: String, hostID: String, application: String, bundleIdentifier: String?) {
+        log.notice("stand-in opened for \(application, privacy: .public)")
+        if let proxy = proxies[id], !proxy.mirrors.isEmpty {
+            sendUpdate(proxy)
+            Self.bringForward(proxy.mirrors)
+            return
+        }
+        let proxy = proxies[id] ?? Proxy(id: id)
+        proxy.waitingUntil = Date().addingTimeInterval(30)
+        proxies[id] = proxy
+        // Answers the stand-in, which stops asking.
+        sendUpdate(proxy)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 31) { [weak self] in
+            MainActor.assumeIsolated { self?.schedule() }
+        }
+        Task { await openRemote(id: id, hostID: hostID, application: application, bundleIdentifier: bundleIdentifier) }
+    }
+
+    private func openRemote(id: String, hostID: String, application: String, bundleIdentifier: String?) async {
+        let model = viewer()
+        let saved = model.saved.first { $0.id == hostID }
+        let hostName = saved?.name ?? hostID
+        guard let target = model.myMacs.first(where: { $0.hostID == hostID || $0.savedID == hostID }) else {
+            return failOpening(id: id, application: application, hostName: hostName,
+                               reason: String(localized: "This Mac is no longer paired with it."))
+        }
+        if model.connection(for: target)?.state != .connected { await model.connect(target) }
+        guard let connection = model.connection(for: target), connection.state == .connected else {
+            return failOpening(id: id, application: application, hostName: target.name,
+                               reason: FriendlyText.message(model.lastError ?? "Couldn't connect."))
+        }
+        let open = connection.openMirrors.filter { $0.stream.applicationName == application }
+        guard open.isEmpty else { return Self.bringForward(open) }
+        await connection.loadApplications()
+        let applications = connection.offeredApplications
+        guard let match = applications.first(where: { bundleIdentifier != nil && $0.bundleIdentifier == bundleIdentifier })
+                ?? applications.first(where: { $0.name == application }) else {
+            return failOpening(id: id, application: application, hostName: connection.hostName,
+                               reason: String(localized: "The app isn’t installed there anymore."))
+        }
+        model.launch(match, on: connection, keepPicker: false)
+    }
+
+    private func failOpening(id: String, application: String, hostName: String, reason: String) {
+        log.error("stand-in for \(application, privacy: .public) couldn't open: \(reason, privacy: .public)")
+        post("quit", to: id)
+        proxies[id] = nil
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Couldn’t open “\(application)” on “\(hostName)”")
+        alert.informativeText = reason
+        alert.runModal()
+    }
+
     /// Shows the mirrors in their current order, the frontmost one key.
     static func bringForward(_ mirrors: [MirrorWindowController]) {
         let windows = mirrors.compactMap(\.window)
@@ -202,10 +287,10 @@ final class DockProxies {
 
     // MARK: Bundles
 
-    private func launch(_ proxy: Proxy, name: String, icon: Data?) {
+    private func launch(_ proxy: Proxy, identity: RemoteAppBundles.Identity, icon: Data?) {
         let url: URL
         do {
-            url = try makeBundle(id: proxy.id, name: name, icon: icon)
+            url = try RemoteAppBundles.make(identity, icon: icon)
         } catch {
             log.error("dock proxy bundle failed: \(error.localizedDescription, privacy: .public)")
             return
@@ -214,6 +299,8 @@ final class DockProxies {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = false
         configuration.addsToRecentItems = false
+        // Not opened by the person: nothing to open on the other Mac.
+        configuration.arguments = ["-AnyRemoteLaunched"]
         let id = proxy.id
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] application, error in
             if let error { log.error("dock proxy launch failed: \(error.localizedDescription, privacy: .public)") }
@@ -229,109 +316,4 @@ final class DockProxies {
         }
     }
 
-    /// `<Application Support>/<bundle ID>/Dock/<id>/<name>.app`, rebuilt when
-    /// its name, icon or the helper changed.
-    private func makeBundle(id: String, name: String, icon: Data?) throws -> URL {
-        guard let helper = Bundle.main.url(forAuxiliaryExecutable: "AnyRemoteDockProxy") else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-        let fileManager = FileManager.default
-        let helperAttributes = try fileManager.attributesOfItem(atPath: helper.path)
-        let helperStamp = "\(helperAttributes[.size] ?? 0)-\((helperAttributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)"
-        let iconStamp = icon.map { SHA256.hash(data: $0).prefix(6).map { String(format: "%02x", $0) }.joined() } ?? "-"
-        // `badge2`: the badge moved inside the icon shape; bump it whenever the drawing changes.
-        let stamp = "\(helperStamp)|\(iconStamp)|badge2|\(name)"
-
-        let base = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil,
-                                       create: true)
-            .appendingPathComponent(parentID).appendingPathComponent("Dock").appendingPathComponent(id)
-        let fileName = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-        let bundle = base.appendingPathComponent("\(fileName).app")
-        let infoURL = bundle.appendingPathComponent("Contents/Info.plist")
-        if let info = NSDictionary(contentsOf: infoURL), info["AnyRemoteStamp"] as? String == stamp { return bundle }
-
-        try? fileManager.removeItem(at: base)
-        let macOS = bundle.appendingPathComponent("Contents/MacOS")
-        let resources = bundle.appendingPathComponent("Contents/Resources")
-        try fileManager.createDirectory(at: macOS, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: resources, withIntermediateDirectories: true)
-        try fileManager.copyItem(at: helper, to: macOS.appendingPathComponent("AnyRemoteDockProxy"))
-        let info: [String: Any] = [
-            "CFBundleExecutable": "AnyRemoteDockProxy",
-            "CFBundleIdentifier": "\(parentID).dock.\(id)",
-            "CFBundleName": name,
-            "CFBundleDisplayName": name,
-            "CFBundlePackageType": "APPL",
-            "CFBundleIconFile": "AppIcon",
-            "CFBundleShortVersionString": "1.0",
-            "CFBundleVersion": "1",
-            "LSMinimumSystemVersion": "15.0",
-            "NSHighResolutionCapable": true,
-            "NSPrincipalClass": "NSApplication",
-            "AnyRemoteProxyID": id,
-            "AnyRemoteParentBundleID": parentID,
-            "AnyRemoteStamp": stamp,
-        ]
-        let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
-        try data.write(to: infoURL)
-        try Self.writeIcon(icon, to: resources.appendingPathComponent("AppIcon.icns"))
-        // The copied executable's signature names the helper's Info.plist; sign the bundle as itself.
-        let codesign = Process()
-        codesign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        codesign.arguments = ["--force", "--sign", "-", bundle.path]
-        codesign.standardError = FileHandle.nullDevice
-        try codesign.run()
-        codesign.waitUntilExit()
-        if codesign.terminationStatus != 0 { log.error("dock proxy signing failed") }
-        return bundle
-    }
-
-    /// The app's icon with a small display badge, so it isn't mistaken for a local app.
-    ///
-    /// The badge stays inside the icon's own outline: since macOS 26 the Dock
-    /// shrinks any icon whose shape isn't the standard rounded square into a
-    /// grey tile, and a badge poking past the corner is enough to trigger it.
-    private static func writeIcon(_ data: Data?, to url: URL) throws {
-        let source = data.flatMap(NSImage.init(data:)) ?? NSApp.applicationIconImage ?? NSImage()
-        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.icns.identifier as CFString, 3, nil)
-        else { throw CocoaError(.fileWriteUnknown) }
-        for pixels in [128, 256, 512] {
-            guard let image = badged(source, pixels: pixels) else { continue }
-            CGImageDestinationAddImage(destination, image, nil)
-        }
-        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
-    }
-
-    private static func badged(_ icon: NSImage, pixels: Int) -> CGImage? {
-        let size = CGFloat(pixels)
-        guard let context = CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        context.interpolationQuality = .high
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
-        icon.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
-        // Just inside the bottom-right corner of the standard icon shape
-        // (a rounded square inset 9.4 % with an 18 % corner radius), and
-        // drawn source-atop so nothing lands outside the icon's alpha.
-        let radius = size * 0.15
-        let center = NSPoint(x: size * 0.715, y: size * 0.285)
-        let badge = NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
-        NSGraphicsContext.current?.compositingOperation = .sourceAtop
-        NSColor.black.withAlphaComponent(0.25).setFill()
-        NSBezierPath(ovalIn: badge.offsetBy(dx: 0, dy: -size * 0.01)).fill()
-        NSColor.controlAccentColor.usingColorSpace(.sRGB)?.setFill()
-        NSBezierPath(ovalIn: badge).fill()
-        let configuration = NSImage.SymbolConfiguration(pointSize: size * 0.14, weight: .semibold)
-            .applying(.init(paletteColors: [.white]))
-        if let symbol = NSImage(systemSymbolName: "display", accessibilityDescription: nil)?
-            .withSymbolConfiguration(configuration) {
-            let symbolSize = symbol.size
-            symbol.draw(in: NSRect(x: badge.midX - symbolSize.width / 2, y: badge.midY - symbolSize.height / 2,
-                                   width: symbolSize.width, height: symbolSize.height),
-                        from: .zero, operation: .sourceAtop, fraction: 1)
-        }
-        NSGraphicsContext.restoreGraphicsState()
-        return context.makeImage()
-    }
 }

@@ -212,7 +212,7 @@ struct HostSettingsView: View {
                     .font(.callout).foregroundStyle(.secondary)
                 Toggle("Show Remote Apps in the Dock", isOn: Binding(
                     get: { model.showsRemoteAppsInDock }, set: { model.setShowsRemoteAppsInDock($0) }))
-                Text("Each app with windows open here gets its own Dock icon and ⌘Tab entry, with its badge. Quitting it closes its windows on this Mac only.")
+                Text("Each app with windows open here gets its own Dock icon and ⌘Tab entry, with its badge. Quitting it closes its windows on this Mac only. It stays in Applications › AnyRemote, so Spotlight finds it and its icon can be kept in the Dock.")
                     .font(.callout).foregroundStyle(.secondary)
                 Toggle("Show Notifications from Other Macs", isOn: Binding(
                     get: { model.showsRemoteNotifications }, set: { model.setShowsRemoteNotifications($0) }))

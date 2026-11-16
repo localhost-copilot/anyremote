@@ -77,13 +77,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             }
         }
         isDevelopmentLaunch = DevelopmentLaunch.run(arguments: ProcessInfo.processInfo.arguments, app: self)
-        if !isDevelopmentLaunch {
+        // Opened by a remote app's stand-in (from Spotlight or the Dock): its
+        // window is all the person asked for.
+        let openedForApp = UserDefaults.standard.bool(forKey: "AnyRemoteOpenedForApp")
+        if !isDevelopmentLaunch, !openedForApp {
             showHosts()
             // A Mac that can't be controlled yet: show what's missing instead of
             // firing every system prompt at once.
             if hostService.settingsStore.settings.isEnabled, !HostService.permissions.allGranted { showSettings() }
         }
-        NSApp.activate()
+        if !openedForApp { NSApp.activate() }
     }
 
     /// The AnyRemote Dock icon always brings the main window back; remote

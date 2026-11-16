@@ -9,7 +9,8 @@ menu bar becomes the viewer's native menu bar. The host's whole desktop is
 one click away too.
 
 - **Windows, not screens** — each remote window is a real local window with
-  its own Dock icon, ⌘Tab entry and menu bar.
+  its own Dock icon, ⌘Tab entry and menu bar; remote apps are in Spotlight
+  and can be kept in the Dock.
 - **Full desktop** — the whole screen, sized to your window (dynamic
   resolution) or scaled, with system shortcuts forwarded.
 - **Low latency, sharp text** — HEVC 4:4:4, hardware encode and decode,
@@ -138,6 +139,14 @@ like Parallels' Coherence mode: a small stand-in app (`DockProxy/`) named
 forward, its Dock menu lists them, and Quit closes them on this Mac only
 (Settings → General → *Show Remote Apps in the Dock*). Its icon carries the
 badge the app shows in the other Mac's Dock (unread mail, messages).
+
+These stand-ins are real apps in `~/Applications/AnyRemote/<Mac>/`, kept
+after their windows close, so a remote app you have used is an app like any
+other here: type its name in Spotlight ("Xcode (Mac mini)"), find it in the
+Apps launcher, or choose *Options › Keep in Dock* on its Dock icon. Opening
+it starts AnyRemote if needed (without the window picker), connects to that
+Mac, opens the app there and brings its window here. Forgetting a Mac
+removes its apps; turning *Show Remote Apps in the Dock* off removes all.
 
 ### Notifications
 
@@ -682,6 +691,9 @@ against this Mac's own host service unless `--connect` is given.
 - `--open <app> --gesture-test` — hands the mirror pinch, rotate and smart
   zoom events made as the window server makes them; the host app gets them
   (use a scratch app that logs `magnify(with:)`)
+- A stand-in opened outside AnyRemote (no `-AnyRemoteLaunched`) starts the
+  app found by its `AnyRemoteParentBundleID` with `-AnyRemoteOpenedForApp YES`
+  and posts `open` until answered.
 - `--notification-test` — posts a notification on this Mac (from Script
   Editor) and prints what the viewer receives, and the Dock badges
 - `--discovery-test`, `--exit-after <seconds>`

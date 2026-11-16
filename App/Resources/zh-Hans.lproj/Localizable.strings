@@ -148,7 +148,10 @@
 "Running" = "正在运行";
 "Close All on This Mac" = "只在本机关闭全部窗口";
 "Show Remote Apps in the Dock" = "在程序坞中显示远程 App";
-"Each app with windows open here gets its own Dock icon and ⌘Tab entry, with its badge. Quitting it closes its windows on this Mac only." = "每个在本机打开了窗口的远程 App 都有自己的程序坞图标（带角标）和 ⌘Tab 项。退出它只会关闭本机上的窗口。";
+"Each app with windows open here gets its own Dock icon and ⌘Tab entry, with its badge. Quitting it closes its windows on this Mac only. It stays in Applications › AnyRemote, so Spotlight finds it and its icon can be kept in the Dock." = "每个在本机打开了窗口的远程 App 都有自己的程序坞图标（带角标）和 ⌘Tab 项。退出它只会关闭本机上的窗口。它会保留在“应用程序 › AnyRemote”中，可以用聚焦搜索找到，也可以把图标保留在程序坞中。";
+"Couldn’t open “%@” on “%@”" = "无法在“%2$@”上打开“%1$@”";
+"This Mac is no longer paired with it." = "本机已不再与那台 Mac 配对。";
+"The app isn’t installed there anymore." = "那台 Mac 上已经没有这个 App 了。";
 "Show Notifications from Other Macs" = "显示其他 Mac 的通知";
 "Notifications are turned off for AnyRemote in System Settings." = "已在“系统设置”中关闭 AnyRemote 的通知。";
 "Open Notification Settings…" = "打开通知设置…";
