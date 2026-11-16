@@ -24,6 +24,8 @@ jobs:
           xcodebuild -version
           brew install xcodegen
       - name: Test
+        # The tests take a couple of minutes; a hang fails the run instead.
+        timeout-minutes: 10
         run: swift test --package-path Packages/AnyRemoteKit
       - name: Build
         run: |

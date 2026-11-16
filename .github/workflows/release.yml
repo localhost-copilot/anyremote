@@ -20,6 +20,7 @@ jobs:
     environment: release
     permissions:
       contents: write      # create the release
+      actions: read        # see that CI passed
       id-token: write      # sign the build provenance
       attestations: write
     steps:
@@ -31,13 +32,19 @@ jobs:
           [[ "$GITHUB_REF_NAME" == "v$version" ]] || { echo "::error::tag $GITHUB_REF_NAME, but project.yml says $version"; exit 1; }
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
+      # CI has already tested this commit; a release only builds what passed.
+      # (Testing again here once hung while the test runner started.)
+      - name: Check that CI passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success" --jq '.total_count')
+          [[ "$conclusion" -gt 0 ]] || { echo "::error::CI hasn't passed for $GITHUB_SHA; wait for it, then re-run this job"; exit 1; }
+
       - name: Tools
         run: |
           xcodebuild -version
           brew install xcodegen
-
-      - name: Test
-        run: swift test --package-path Packages/AnyRemoteKit
 
       # A keychain of this job's own, deleted at the end.
       - name: Signing identity

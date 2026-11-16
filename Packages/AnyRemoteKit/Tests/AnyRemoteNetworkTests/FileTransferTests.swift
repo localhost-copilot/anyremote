@@ -5,7 +5,7 @@ import Network
 import Testing
 
 /// Dragged items over a real sealed connection pair on 127.0.0.1.
-@Suite(.serialized) struct FileTransferTests {
+@Suite(.serialized, .timeLimit(.minutes(2))) struct FileTransferTests {
     final class Pair: @unchecked Sendable {
         let listener: ControlListener
         var host: FileTransferChannel?
@@ -27,7 +27,9 @@ import Testing
                 control.start()
             }
             listener.start()
-            ready.wait()
+            // A listener that never gets ready (a CI machine refusing local
+            // connections) fails the test instead of hanging the run.
+            guard ready.wait(timeout: .now() + 10) == .success else { throw ListenerNotReady() }
             let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: listener.port!)!)
             let control = ControlConnection(connection: NWConnection(to: endpoint, using: ControlConnection.parameters(bulk: true)),
                                             role: .viewer(code: code, viewerName: "Viewer"),

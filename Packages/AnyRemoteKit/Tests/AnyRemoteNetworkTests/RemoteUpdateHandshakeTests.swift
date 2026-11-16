@@ -6,7 +6,7 @@ import Network
 import Testing
 
 /// Version reporting and remote update requests over real connections on 127.0.0.1.
-@Suite(.serialized) struct RemoteUpdateHandshakeTests {
+@Suite(.serialized, .timeLimit(.minutes(2))) struct RemoteUpdateHandshakeTests {
     final class Host: @unchecked Sendable {
         let listener: ControlListener
         let code = PairingCode.generate()
@@ -37,7 +37,9 @@ import Testing
                 control.start()
             }
             listener.start()
-            ready.wait()
+            // A listener that never gets ready (a CI machine refusing local
+            // connections) fails the test instead of hanging the run.
+            guard ready.wait(timeout: .now() + 10) == .success else { throw ListenerNotReady() }
         }
 
         var endpoint: NWEndpoint { .hostPort(host: "127.0.0.1", port: .init(rawValue: listener.port!)!) }
@@ -104,3 +106,5 @@ import Testing
             == ["version", "nonce", "viewerName", "appVersion", "purpose"])
     }
 }
+
+struct ListenerNotReady: Error {}
