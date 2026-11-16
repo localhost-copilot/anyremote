@@ -46,6 +46,12 @@ public struct CapturedFrame: @unchecked Sendable {
 /// parent, shrunk into the buffer. When the first frame shows more than the
 /// window, the session switches to a display capture that includes only this
 /// window, cropped to its frame (`windowFrameChanged` keeps the crop on it).
+///
+/// Menus, popovers and alerts (`backdrop`) have glass that blurs what lies
+/// behind them, which a capture of the window alone leaves out: macOS
+/// renders their glass over nothing then, a flat dark gray. They are captured from the display
+/// with the windows beneath them, cropped to their frame, with the corners
+/// outside their rounded shape cut out again (`WindowShapeMask`).
 public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     public static let pixelFormat = kCVPixelFormatType_444YpCbCr8BiPlanarFullRange
 
@@ -54,6 +60,7 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     private let handler: @Sendable (CapturedFrame) -> Void
     private let frameRate: Int
     private let pixelFormat: OSType
+    private let backdrop: Bool
     private var stream: SCStream?
     private var filter: SCContentFilter?
 
@@ -78,22 +85,36 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     /// fewer for SCK's small pool.
     private var unconcealedFrame: CapturedFrame?
     private var firstFrameNanos: UInt64 = 0
+    /// Backdrop mode: the window's shape at the configured size, and the
+    /// latest frame while it isn't known yet (SCK sends nothing more while
+    /// the screen there doesn't change).
+    private var mask: WindowShapeMask?
+    private var unmaskedFrame: CapturedFrame?
+    private var shapeWindow: SCWindow?
+    private var shapeDisplay: SCDisplay?
+    private var shapeOthers: [SCWindow] = []
 
     public var onStop: (@Sendable (Error?) -> Void)?
 
-    /// `alpha` captures premultiplied BGRA instead of `444f`.
-    public init(window: SCWindow, frameRate: Int = 60, alpha: Bool = false,
+    /// `alpha` captures premultiplied BGRA instead of `444f`; `backdrop`
+    /// (which needs `alpha`) captures the window with what lies beneath it.
+    public init(window: SCWindow, frameRate: Int = 60, alpha: Bool = false, backdrop: Bool = false,
                 handler: @escaping @Sendable (CapturedFrame) -> Void) {
         self.windowID = window.windowID
         self.windowFrame = window.frame
         self.frameRate = frameRate
         self.pixelFormat = alpha ? kCVPixelFormatType_32BGRA : Self.pixelFormat
+        self.backdrop = alpha && backdrop
         self.handler = handler
         super.init()
         self.filter = SCContentFilter(desktopIndependentWindow: window)
     }
 
     public func start() async throws {
+        if backdrop {
+            try await startCrop()
+            return
+        }
         guard let filter else { return }
         let scale = CGFloat(filter.pointPixelScale)
         let size = Self.pixelSize(points: filter.contentRect.size, scale: scale)
@@ -159,38 +180,119 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         Task {
             try? await old.stopCapture()
             do {
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
-                    throw SCStreamError(.noWindowList)
-                }
-                let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
-                guard let display = content.displays.first(where: { $0.frame.contains(center) })
-                    ?? content.displays.first(where: { $0.frame.intersects(window.frame) }) else {
-                    throw SCStreamError(.noDisplayList)
-                }
-                let filter = SCContentFilter(display: display, including: [window])
-                let scale = CGFloat(filter.pointPixelScale)
-                let (configuration, size) = queue.sync { () -> (SCStreamConfiguration, (width: Int, height: Int)) in
-                    crop = (display.frame, scale)
-                    windowFrame = window.frame
-                    let size = Self.pixelSize(points: window.frame.size, scale: scale)
-                    let configuration = makeConfiguration(width: size.width, height: size.height)
-                    configuration.sourceRect = cropRect
-                    return (configuration, size)
-                }
-                let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
-                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
-                queue.sync {
-                    configuredPixelSize = size
-                    self.stream = stream
-                    self.filter = filter
-                    switching = false
-                }
-                try await stream.startCapture()
+                try await startCrop()
                 log.notice("window \(self.windowID) is part of a group; capturing it cropped from its display")
             } catch {
                 log.error("cropped capture failed: \(error.localizedDescription, privacy: .public)")
                 onStop?(error)
+            }
+        }
+    }
+
+    /// Captures the window from its display, cropped to its frame: alone, or
+    /// in backdrop mode with the windows beneath it.
+    private func startCrop() async throws {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
+            throw SCStreamError(.noWindowList)
+        }
+        let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        guard let display = content.displays.first(where: { $0.frame.contains(center) })
+            ?? content.displays.first(where: { $0.frame.intersects(window.frame) }) else {
+            throw SCStreamError(.noDisplayList)
+        }
+        var included = [window]
+        if backdrop {
+            // Only what is beneath: whatever covers the window on the host
+            // isn't part of it. The viewer's own windows (in loopback) aren't
+            // the host's.
+            let below = (CGWindowListCopyWindowInfo([.optionOnScreenBelowWindow], windowID) as? [[CFString: Any]] ?? [])
+                .compactMap { $0[kCGWindowNumber] as? CGWindowID }
+            let ids = Set(below)
+            let ownPID = ProcessInfo.processInfo.processIdentifier
+            included += content.windows.filter {
+                ids.contains($0.windowID) && $0.owningApplication?.processID != ownPID
+                    && $0.frame.intersects(window.frame)
+            }
+        }
+        let filter = SCContentFilter(display: display, including: included)
+        let scale = CGFloat(filter.pointPixelScale)
+        let (configuration, size) = queue.sync { () -> (SCStreamConfiguration, (width: Int, height: Int)) in
+            crop = (display.frame, scale)
+            windowFrame = window.frame
+            shapeWindow = window
+            shapeDisplay = display
+            shapeOthers = content.windows.filter { $0.windowID != window.windowID && $0.frame.intersects(window.frame) }
+            let size = Self.pixelSize(points: window.frame.size, scale: scale)
+            let configuration = makeConfiguration(width: size.width, height: size.height)
+            configuration.sourceRect = cropRect
+            return (configuration, size)
+        }
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        queue.sync {
+            configuredPixelSize = size
+            self.stream = stream
+            self.filter = filter
+            switching = false
+        }
+        // The shape is captured while the stream starts: a menu should
+        // appear no later than it did when captured alone.
+        if backdrop { queue.async { [self] in refreshMask(size: size) } }
+        try await stream.startCapture()
+        if backdrop {
+            log.info("capture started window=\(self.windowID) size=\(size.width)x\(size.height) with its backdrop")
+        }
+    }
+
+    /// Queue-confined. Whether the window is still where the crop is. The
+    /// crop follows a moved window only after an asynchronous reconfigure;
+    /// frames cut from the old place would show it shifted and its corners
+    /// cut in the wrong place, which made dragged alerts shake. Those frames
+    /// are dropped: a window's content rarely changes while it is dragged,
+    /// and the viewer moves its own window meanwhile.
+    private func cropIsOnWindow() -> Bool {
+        var values: [UnsafeRawPointer?] = [UnsafeRawPointer(bitPattern: UInt(windowID))]
+        guard let ids = CFArrayCreate(nil, &values, 1, nil),
+              let info = (CGWindowListCreateDescriptionFromArray(ids) as? [[CFString: Any]])?.first,
+              let bounds = info[kCGWindowBounds] as? NSDictionary,
+              let frame = CGRect(dictionaryRepresentation: bounds) else { return true }
+        guard frame != windowFrame else { return !reconfiguring }
+        windowFrame = frame
+        requestCrop()
+        return false
+    }
+
+    /// Queue-confined. Captures the window alone once, for its shape at this
+    /// pixel size: from its display, every other window there excluded, and
+    /// cropped like the stream. A desktop-independent capture would show a
+    /// menu or sheet together with the window it belongs to, shrunk to its
+    /// size, and including only the window still brings that one along.
+    private func refreshMask(size: (width: Int, height: Int)) {
+        guard backdrop, shapeWindow != nil, let display = shapeDisplay else { return }
+        let others = shapeOthers
+        let configuration = makeConfiguration(width: size.width, height: size.height)
+        configuration.sourceRect = cropRect
+        Task {
+            do {
+                let image = try await SCScreenshotManager.captureImage(
+                    contentFilter: SCContentFilter(display: display, excludingWindows: others), configuration: configuration)
+                guard let mask = WindowShapeMask(image: image) else { return }
+                queue.async { [self] in
+                    guard mask.width == configuredPixelSize.width, mask.height == configuredPixelSize.height else {
+                        log.debug("shape of window \(self.windowID) is \(mask.width)x\(mask.height), not the crop's size")
+                        return
+                    }
+                    self.mask = mask
+                    guard let frame = unmaskedFrame, mask.fits(frame.pixelBuffer) else { return }
+                    unmaskedFrame = nil
+                    mask.apply(to: frame.pixelBuffer)
+                    let now = HostClock.nowNanos()
+                    deliver(CapturedFrame(pixelBuffer: frame.pixelBuffer, captureTimeNanos: now, deliveredTimeNanos: now,
+                                          pointSize: frame.pointSize, scale: frame.scale))
+                }
+            } catch {
+                log.error("shape capture of window \(self.windowID) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
@@ -219,7 +321,12 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
                 if let error {
                     log.error("crop reconfigure failed: \(error.localizedDescription, privacy: .public)")
                 } else {
+                    let resized = size != self.configuredPixelSize
                     self.configuredPixelSize = size
+                    if resized, self.backdrop {
+                        self.mask = nil
+                        self.refreshMask(size: size)
+                    }
                 }
                 if self.pendingPixelSize != nil {
                     self.pendingPixelSize = nil
@@ -283,16 +390,27 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         if let crop {
             // Display capture: the buffer is the crop, at the display's scale.
             guard CVPixelBufferGetWidth(pixelBuffer) == configuredPixelSize.width,
-                  CVPixelBufferGetHeight(pixelBuffer) == configuredPixelSize.height else { return }
+                  CVPixelBufferGetHeight(pixelBuffer) == configuredPixelSize.height,
+                  cropIsOnWindow() else { return }
             conceal(in: pixelBuffer, scale: crop.scale)
-            deliver(CapturedFrame(
+            let frame = CapturedFrame(
                 pixelBuffer: pixelBuffer,
                 captureTimeNanos: Self.displayTime(of: sampleBuffer),
                 deliveredTimeNanos: HostClock.nowNanos(),
                 pointSize: CGSize(width: CGFloat(configuredPixelSize.width) / crop.scale,
                                   height: CGFloat(configuredPixelSize.height) / crop.scale),
                 scale: crop.scale
-            ))
+            )
+            if backdrop {
+                // Without its shape the frame would show square corners.
+                guard let mask, mask.fits(pixelBuffer) else {
+                    unmaskedFrame = frame
+                    return
+                }
+                unmaskedFrame = nil
+                mask.apply(to: pixelBuffer)
+            }
+            deliver(frame)
             return
         }
 
@@ -373,3 +491,4 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         onStop?(error)
     }
 }
+

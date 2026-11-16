@@ -422,6 +422,13 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
   looks for same-process windows on menu/popup layers, or non-standard
   layer-0 windows near the main window (sheets, popovers). Each streams as
   HEVC with alpha and is shown as a borderless, non-activating child window.
+  Their glass blurs what lies behind them, and a window captured alone comes
+  out flat gray, so they are captured from the display together with the
+  windows beneath them, cropped to their frame. Their rounded shape is cut
+  back out with a mask from one capture of the display with every other
+  window excluded (capturing a menu or sheet alone brings its parent along).
+  The Accessibility queries this polls run off the host's queue, one queue
+  per app, so a busy app can't stall the sessions.
 - **Menu bar** — read through AX as a `MenuNode` tree, rebuilt as native
   `NSMenu`s while the mirror is key; choosing an item presses it on the host.
 - **Dynamic resolution** — `desktopSize` asks for a desktop of the viewer
@@ -534,7 +541,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 73 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 75 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips

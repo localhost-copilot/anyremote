@@ -28,6 +28,8 @@ final class HostStream: @unchecked Sendable {
     var pressFrame: CGRect?
     /// When the window left the screen (closed, hidden), while it stays off.
     var offScreenSince: UInt64?
+    /// Main windows: minimized on the host, as Accessibility last answered.
+    var minimizedOnHost = false
     /// Display streams: the display's backing scale.
     var displayScale: CGFloat = 0
     /// Display streams: the display captured now (a virtual display standing
@@ -137,7 +139,10 @@ final class HostSession: @unchecked Sendable {
     private var reportTimer: DispatchSourceTimer?
     private var cursor: CursorMonitor?
     private var pendingResizes: [UInt16: CGSize] = [:]
-    private var standardWindowCache: [pid_t: (ids: Set<CGWindowID>, time: UInt64)] = [:]
+    /// Apps' standard window IDs as last answered, and when that was asked.
+    private var standardWindowCache: [pid_t: (ids: Set<CGWindowID>?, asked: UInt64)] = [:]
+    /// Accessibility queries the tracking polls for; none runs on `queue`.
+    private let poller = AccessibilityPoller()
     private var lastFocusCheck: UInt64 = 0
     private var lastStateCheck: UInt64 = 0
     /// Layer-0 windows on screen at the last tracking pass; nil until the first stream.
@@ -836,9 +841,12 @@ final class HostSession: @unchecked Sendable {
                                             title: title, applicationName: applicationName)
         let configuration = HEVCEncoder.Configuration(averageBitRate: role == .window ? Self.initialBitRate : 12_000_000,
                                                       alpha: role == .child)
+        // Menus, popovers and alerts have glass that blurs what's behind
+        // them; captured alone, it turns gray.
+        let backdrop = role == .child
         let sender = WindowStreamSender(
             window: window, streamID: streamID, configuration: configuration,
-            maximumDatagramSize: 1400 - DatagramEnvelope.overhead
+            maximumDatagramSize: 1400 - DatagramEnvelope.overhead, backdrop: backdrop
         ) { [weak self] datagrams in
             self?.send(datagrams: datagrams)
         }
@@ -1105,7 +1113,7 @@ final class HostSession: @unchecked Sendable {
             return
         }
         guard now - since >= Self.offScreenGrace else { return }
-        if stream.axWindow?.isMinimized == true { return }
+        if stream.minimizedOnHost { return }
         if stream.description.role == .display {
             log.notice("display \(stream.windowID) went away; ending its stream")
             for session in stream.audience?.sessions ?? [self] {
@@ -1184,12 +1192,19 @@ final class HostSession: @unchecked Sendable {
         lastStateCheck = now
         for stream in mains {
             guard let window = stream.axWindow else { continue }
-            if window.isMinimized {
-                window.setMinimized(false)
-                connection.send(.windowStateRequest(streamID: stream.streamID, .minimize))
-            } else if window.isFullScreen {
-                window.setFullScreen(false)
-                connection.send(.windowStateRequest(streamID: stream.streamID, .enterFullScreen))
+            let streamID = stream.streamID
+            poller.run("state \(streamID)", pid: stream.pid, reply: queue) {
+                (minimized: window.isMinimized, fullScreen: window.isFullScreen)
+            } then: { [weak self] state in
+                guard let self, let stream = streams[streamID] else { return }
+                stream.minimizedOnHost = state.minimized
+                if state.minimized {
+                    poller.run("restore \(streamID)", pid: stream.pid, reply: queue) { window.setMinimized(false) } then: { _ in }
+                    connection.send(.windowStateRequest(streamID: streamID, .minimize))
+                } else if state.fullScreen {
+                    poller.run("restore \(streamID)", pid: stream.pid, reply: queue) { window.setFullScreen(false) } then: { _ in }
+                    connection.send(.windowStateRequest(streamID: streamID, .enterFullScreen))
+                }
             }
         }
     }
@@ -1224,7 +1239,7 @@ final class HostSession: @unchecked Sendable {
             }
             guard window.frame.width >= 160, window.frame.height >= 100, window.alpha > 0.01,
                   !Self.panelServiceNames.contains(where: { window.ownerName.contains($0) }),
-                  AXWindow.standardWindowIDs(pid: window.pid).contains(window.id) else { continue }
+                  standardWindowIDs(pid: window.pid, after: seen)?.contains(window.id) == true else { continue }
             newWindowCandidates[window.id] = nil
             if window.pid == pendingLaunch?.pid { pendingLaunch = nil }
             log.notice("opening new window \(window.id) of \(window.ownerName, privacy: .public)")
@@ -1271,8 +1286,10 @@ final class HostSession: @unchecked Sendable {
             }
         }
         if needsStandardIDs {
+            // Until the app has said which are its own windows, none of its
+            // layer-0 windows is taken for a child.
             let standard = standardWindowIDs(pid: main.pid)
-            candidates.removeAll { $0.layer == 0 && $0.pid == main.pid && standard.contains($0.id) }
+            candidates.removeAll { $0.layer == 0 && $0.pid == main.pid && standard?.contains($0.id) != false }
         }
         let wanted = Set(candidates.prefix(Self.maximumChildren).map(\.id))
 
@@ -1281,6 +1298,9 @@ final class HostSession: @unchecked Sendable {
         }
         let missing = candidates.prefix(Self.maximumChildren).filter { main.children[$0.id] == nil }
         guard !missing.isEmpty else { return }
+        for window in missing {
+            log.notice("child window \(window.id) of \(main.windowID): layer \(window.layer) pid \(window.pid) \(window.frame.debugDescription, privacy: .public)")
+        }
         for window in missing { main.children[window.id] = 0 } // reserved while SCK looks it up
         let mainID = main.streamID
         Task { [self] in
@@ -1297,12 +1317,24 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
-    private func standardWindowIDs(pid: pid_t) -> Set<CGWindowID> {
+    /// The app's standard window IDs as last answered, asked again in the
+    /// background when older than half a second (or than `after`, a window's
+    /// first sighting). Nil while the app hasn't answered since `after`.
+    private func standardWindowIDs(pid: pid_t, after: UInt64 = 0) -> Set<CGWindowID>? {
         let now = HostClock.nowNanos()
-        if let cached = standardWindowCache[pid], now - cached.time < 500_000_000 { return cached.ids }
-        let ids = AXWindow.standardWindowIDs(pid: pid)
-        standardWindowCache[pid] = (ids, now)
-        return ids
+        let cached = standardWindowCache[pid]
+        if cached == nil || now - cached!.asked >= 500_000_000 || cached!.asked < after {
+            poller.run("standard \(pid)", pid: pid, reply: queue) {
+                AXWindow.standardWindowIDsIfAnswered(pid: pid)
+            } then: { [weak self] ids in
+                guard let self else { return }
+                // A busy app that didn't answer keeps its last known windows.
+                standardWindowCache[pid] = (ids ?? standardWindowCache[pid]?.ids, now)
+                if standardWindowCache.count > 64 { standardWindowCache = standardWindowCache.filter { $0.key == pid } }
+            }
+        }
+        guard let cached, cached.asked >= after else { return nil }
+        return cached.ids
     }
 
     // MARK: Input
@@ -1529,11 +1561,19 @@ final class HostSession: @unchecked Sendable {
         if let known = textEditorWindows[window.id], known.holdsFocus || now - known.checked < 300_000_000 {
             return known.holdsFocus
         }
-        let holds = caretLocator.focusedElementFrame(pid: window.pid)
-            .map { window.frame.insetBy(dx: -2, dy: -2).contains($0) } ?? false
-        textEditorWindows[window.id] = (holds, now)
-        if textEditorWindows.count > 64 { textEditorWindows = textEditorWindows.filter { now - $0.value.checked < 10_000_000_000 } }
-        return holds
+        let locator = caretLocator
+        let windowID = window.id, frame = window.frame
+        poller.run("focus \(windowID)", pid: window.pid, reply: queue) {
+            locator.focusedElementFrame(pid: window.pid)
+        } then: { [weak self] focused in
+            guard let self else { return }
+            let holds = focused.map { frame.insetBy(dx: -2, dy: -2).contains($0) } ?? false
+            textEditorWindows[windowID] = (holds, now)
+            if textEditorWindows.count > 64 {
+                textEditorWindows = textEditorWindows.filter { now - $0.value.checked < 10_000_000_000 }
+            }
+        }
+        return textEditorWindows[window.id]?.holdsFocus ?? false
     }
 
     /// The host window never moves for the viewer: dragging a mirror by its
@@ -1571,7 +1611,8 @@ final class HostSession: @unchecked Sendable {
         // The app's own fields and panels over it (Finder's rename field, its
         // little helper windows) are part of it: raising the window would end
         // what happens in them. Only another real window needs it raised.
-        if !force, let front, front.pid == stream.pid, !standardWindowIDs(pid: stream.pid).contains(front.id) { return }
+        if !force, let front, front.pid == stream.pid,
+           standardWindowIDs(pid: stream.pid)?.contains(front.id) != true { return }
         if stream.axWindow == nil { stream.axWindow = try? AXWindow(pid: stream.pid, windowID: stream.windowID) }
         stream.axWindow?.focus()
         if front?.id != stream.windowID { usleep(20_000) }

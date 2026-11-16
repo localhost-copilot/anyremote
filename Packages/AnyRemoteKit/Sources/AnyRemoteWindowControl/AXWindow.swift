@@ -210,17 +210,24 @@ extension AXWindow {
 
     /// The application's standard (top-level document) window IDs.
     public static func standardWindowIDs(pid: pid_t) -> Set<CGWindowID> {
+        standardWindowIDsIfAnswered(pid: pid) ?? []
+    }
+
+    /// The application's standard window IDs, or nil when it didn't answer
+    /// (busy, hung): an empty set would claim it has none.
+    public static func standardWindowIDsIfAnswered(pid: pid_t) -> Set<CGWindowID>? {
         OwnProcessAX.perform(for: pid) { standardWindowIDsDirect(pid: pid) }
     }
 
-    private static func standardWindowIDsDirect(pid: pid_t) -> Set<CGWindowID> {
+    private static func standardWindowIDsDirect(pid: pid_t) -> Set<CGWindowID>? {
         let application = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(application, 0.25)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement] else { return [] }
+              let windows = value as? [AXUIElement] else { return nil }
         var result = Set<CGWindowID>()
         for window in windows {
+            AXUIElementSetMessagingTimeout(window, 0.25)
             var subrole: CFTypeRef?
             AXUIElementCopyAttributeValue(window, kAXSubroleAttribute as CFString, &subrole)
             guard (subrole as? String) == (kAXStandardWindowSubrole as String) else { continue }

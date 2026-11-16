@@ -29,13 +29,14 @@ public final class WindowStreamSender: @unchecked Sendable {
         streamID: UInt16,
         configuration: HEVCEncoder.Configuration = .init(),
         maximumDatagramSize: Int = 1200,
+        backdrop: Bool = false,
         stats: PipelineStats = PipelineStats(),
         send: @escaping @Sendable ([Data]) -> Void
     ) {
         self.init(streamID: streamID, configuration: configuration, maximumDatagramSize: maximumDatagramSize,
                   stats: stats, send: send) { encode in
             WindowCaptureSession(window: window, frameRate: configuration.expectedFrameRate,
-                                 alpha: configuration.alpha, handler: encode)
+                                 alpha: configuration.alpha, backdrop: backdrop, handler: encode)
         }
     }
 
