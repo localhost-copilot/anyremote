@@ -24,7 +24,9 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
     let surface = RemoteSurfaceView()
     let stats = PipelineStats()
     /// Drawn into the video frames (a view on top of the video made full screen stutter on every update).
-    private var showsStatistics = ProcessInfo.processInfo.environment["ANYREMOTE_STATS"] == "1"
+    private lazy var statisticsHUD = StatisticsHUD(layer: surface.frameLayer) { [weak self] in
+        self?.window?.backingScaleFactor ?? 2
+    }
     private var noticeView: NSView?
     /// Host title bar buttons (relative to the host window's top-left).
     var controls: WindowControls? { didSet { layoutWindowButtons() } }
@@ -475,11 +477,6 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
 
     // MARK: Statistics
 
-    func toggleStatistics() {
-        showsStatistics.toggle()
-        if !showsStatistics { surface.frameLayer.overlayText = nil }
-    }
-
     private func updateStatistics() {
         let summary = stats.drain()
         let backing = window?.backingScaleFactor ?? 0
@@ -497,7 +494,6 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         let rtt = connection.client.roundTripMilliseconds.map { String(format: "%.2f ms", $0) } ?? "–"
         let pacing = surface.frameLayer.pacingDescription
         if !pacing.isEmpty { lines.append(pacing) }
-        if showsStatistics, let audio = connection.audioReport { lines.append(audio.description) }
         lines.append("""
         host \(Int(remotePointSize.width))×\(Int(remotePointSize.height))pt @\(remoteScale)x · \
         local \(Int(viewPixels.width))×\(Int(viewPixels.height))px @\(Int(backing))x · \
@@ -508,7 +504,9 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
                                     in: content)
         }
         let text = lines.joined(separator: "\n")
-        if showsStatistics { surface.frameLayer.overlayText = text }
+        statisticsHUD.update(.init(title: connection.hostName, viewer: summary, host: hostReport,
+                                   roundTrip: connection.client.roundTripMilliseconds,
+                                   videoBlocked: udp.received == 0 || hostReport?.videoDestination == "none"))
         if ProcessInfo.processInfo.environment["ANYREMOTE_STATS_STDOUT"] == "1" {
             print(text.replacingOccurrences(of: "\n", with: " | "))
         }

@@ -136,6 +136,7 @@ final class ViewerModel {
         connection.onOpenedDesktop = { [weak self] desktop in self?.onOpenedDesktop?(desktop) }
         connections[target.id] = connection
         lastError = nil
+        connection.client.setMaximumBitRate(pairedHost(for: target)?.maximumBitRate)
         do {
             try await connection.connect(takeOver: takeOver)
             if target.kind != .thisMac, let welcome = connection.welcome,
@@ -150,7 +151,8 @@ final class ViewerModel {
                                       bonjourName: target.kind == .discovered ? target.name : existing?.bonjourName,
                                       pairingCode: code.canonical, lastConnected: Date(),
                                       fromPeer: existing?.fromPeer ?? false,
-                                      sharesBack: sharesBack ?? existing?.sharesBack ?? true)
+                                      sharesBack: sharesBack ?? existing?.sharesBack ?? true,
+                                      maximumBitRate: existing?.maximumBitRate)
                 pairedStore.save(host, replacing: previous)
                 saved = pairedStore.all
                 offerPairing(to: host, over: connection)
@@ -182,6 +184,17 @@ final class ViewerModel {
         if let connection = connections[target.id], connection.state == .connected {
             offerPairing(to: host, over: connection)
         }
+    }
+
+    func maximumBitRate(_ target: HostTarget) -> Int? { pairedHost(for: target)?.maximumBitRate }
+
+    /// Caps the video from that Mac (nil: automatic), on the open windows too.
+    func setMaximumBitRate(_ target: HostTarget, _ bitRate: Int?) {
+        guard var host = pairedHost(for: target), host.maximumBitRate != bitRate else { return }
+        host.maximumBitRate = bitRate
+        pairedStore.save(host, replacing: host.id)
+        saved = pairedStore.all
+        connections[target.id]?.client.setMaximumBitRate(bitRate)
     }
 
     /// Another Mac paired with this one and offered the way back.

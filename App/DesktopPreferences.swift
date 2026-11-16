@@ -34,8 +34,25 @@ enum DesktopPreferences {
     }
 }
 
+/// Whether remote windows and desktops show the statistics panel; one
+/// switch for all of them, kept across launches.
+@MainActor
+enum StatisticsPreferences {
+    private static let key = "ShowsStatistics"
+
+    /// Off unless turned on (development: also `ANYREMOTE_STATS=1`).
+    static var isShown: Bool {
+        get { UserDefaults.standard.bool(forKey: key) || ProcessInfo.processInfo.environment["ANYREMOTE_STATS"] == "1" }
+        set {
+            UserDefaults.standard.set(newValue, forKey: key)
+            NotificationCenter.default.post(name: .statisticsPreferenceChanged, object: nil)
+        }
+    }
+}
+
 extension Notification.Name {
     static let desktopPreferencesChanged = Notification.Name("AnyRemoteDesktopPreferencesChanged")
+    static let statisticsPreferenceChanged = Notification.Name("AnyRemoteStatisticsPreferenceChanged")
 }
 
 /// Turns this Mac's system shortcuts off while a desktop window is key, so

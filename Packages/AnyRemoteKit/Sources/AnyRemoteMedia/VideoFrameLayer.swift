@@ -222,7 +222,7 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
     /// How long a host frame's strips wait for the rest before showing without them.
     private static let gatherTimeout: UInt64 = 10_000_000
     private var targetSize: CGSize?
-    private var overlay: (text: String, texture: MTLTexture)? // under `lock`
+    private var overlay: MTLTexture? // under `lock`
 
     /// When set, frames are scaled here to this drawable size (pixels),
     /// aspect-fitted and centered on black, with an area filter, instead of
@@ -270,59 +270,30 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         minificationFilter = .linear
     }
 
-    /// Text drawn over the bottom-left corner of every frame (statistics), or nil.
+    /// An image drawn over the top-right corner of every frame (the
+    /// statistics panel), or nil. Premultiplied, at the layer's scale.
     ///
     /// Drawn into the frame itself: a view over the video made the window
     /// server composite (rather than show the video directly) on every update
     /// in full screen, a stutter a second. Thread-safe.
-    public var overlayText: String? {
-        get { lock.lock(); defer { lock.unlock() }; return overlay?.text }
-        set {
-            lock.lock()
-            let unchanged = overlay?.text == newValue
-            lock.unlock()
-            guard !unchanged else { return }
-            let scale = contentsScale
-            let updated = newValue.flatMap { text in Self.overlayTexture(text, scale: scale).map { (text, $0) } }
-            lock.lock()
-            overlay = updated
-            lock.unlock()
-            redrawLastFrame()
-        }
+    public func setOverlay(_ image: CGImage?) {
+        let texture = image.flatMap(Self.overlayTexture)
+        lock.lock()
+        let had = overlay != nil
+        overlay = texture
+        lock.unlock()
+        if had || texture != nil { redrawLastFrame() }
     }
 
-    /// White monospaced lines on translucent black, premultiplied BGRA.
-    private static func overlayTexture(_ text: String, scale: CGFloat) -> MTLTexture? {
+    private static func overlayTexture(_ image: CGImage) -> MTLTexture? {
         guard let device = NV24MetalContext.shared?.device else { return nil }
-        let scale = max(1, scale)
-        let font = CTFontCreateWithName("Menlo" as CFString, 10 * scale, nil)
-        let attributes: [CFString: Any] = [
-            kCTFontAttributeName: font,
-            kCTForegroundColorAttributeName: CGColor(gray: 1, alpha: 1),
-        ]
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map {
-            CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, String($0) as CFString,
-                                                                      attributes as CFDictionary))
-        }
-        let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font)
-        let lineHeight = (ascent + descent + CTFontGetLeading(font)).rounded(.up)
-        let padding = (3 * scale).rounded()
-        let textWidth = lines.map { CGFloat(CTLineGetTypographicBounds($0, nil, nil, nil)) }.max() ?? 0
-        let width = min(8192, Int((textWidth + 2 * padding).rounded(.up)))
-        let height = min(8192, Int(lineHeight * CGFloat(lines.count) + 2 * padding))
+        let width = min(8192, image.width), height = min(8192, image.height)
         guard width > 0, height > 0,
               let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                                           | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
-        context.setFillColor(CGColor(gray: 0, alpha: 0.65))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        for (index, line) in lines.enumerated() {
-            // Core Graphics is bottom-up; the first line goes at the top.
-            context.textPosition = CGPoint(x: padding,
-                                           y: CGFloat(height) - padding - lineHeight * CGFloat(index + 1) + descent)
-            CTLineDraw(line, context)
-        }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width,
                                                                   height: height, mipmapped: false)
         descriptor.usage = .shaderRead
@@ -398,16 +369,16 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         commandBuffer.commit()
     }
 
-    /// The statistics overlay, bottom left, 8 points in (clipped to the drawable).
+    /// The statistics panel, top right, 10 points in (clipped to the drawable).
     private func drawOverlay(_ encoder: MTLRenderCommandEncoder, context: NV24MetalContext, target: MTLTexture) {
         lock.lock()
-        let overlayTexture = overlay?.texture
+        let overlayTexture = overlay
         lock.unlock()
         guard let overlayTexture else { return }
-        let margin = Double((8 * max(1, contentsScale)).rounded())
-        let x = margin, y = Double(target.height) - margin - Double(overlayTexture.height)
-        let visibleWidth = min(Double(overlayTexture.width), Double(target.width) - margin - x)
-        guard visibleWidth > 0, y >= 0 else { return }
+        let margin = Double((10 * max(1, contentsScale)).rounded())
+        let x = max(0, Double(target.width) - margin - Double(overlayTexture.width)), y = margin
+        let visibleWidth = min(Double(overlayTexture.width), Double(target.width) - x)
+        guard visibleWidth > 0, y + Double(overlayTexture.height) <= Double(target.height) else { return }
         encoder.setRenderPipelineState(context.overlayPipeline)
         encoder.setViewport(MTLViewport(originX: x, originY: y, width: Double(overlayTexture.width),
                                         height: Double(overlayTexture.height), znear: 0, zfar: 1))

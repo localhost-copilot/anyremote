@@ -199,6 +199,8 @@ final class HostSession: @unchecked Sendable {
     private var ended = false
     /// The viewer wants the sound of what it shows.
     private var audioRequested = false
+    /// The viewer's own cap on each stream's bit rate (nil: none).
+    private var bitRateLimit: Int?
     private var audio: (scope: AudioScope, tap: ProcessAudioTap)?
     private let menuQueue = DispatchQueue(label: "anyremote.menu", qos: .userInitiated)
     private let caretQueue = DispatchQueue(label: "anyremote.caret", qos: .userInitiated)
@@ -332,6 +334,8 @@ final class HostSession: @unchecked Sendable {
             performMenuItem(streamID: streamID, path: path)
         case let .windowAction(streamID, action):
             perform(action, streamID: streamID)
+        case let .maximumBitRate(limit):
+            setBitRateLimit(limit)
         case let .audio(enabled):
             audioRequested = enabled
             updateAudio()
@@ -737,7 +741,7 @@ final class HostSession: @unchecked Sendable {
                                             parentStreamID: nil, frame: geometry.frame, layer: 0,
                                             title: name, applicationName: ComputerName.current,
                                             tileStreamIDs: tileStreamIDs)
-        let configuration = HEVCEncoder.Configuration(averageBitRate: Self.displayInitialBitRate)
+        let configuration = HEVCEncoder.Configuration(averageBitRate: initialBitRate(for: .display))
         let audience = StreamAudience()
         audience.add(self)
         // Development: a viewer on this same Mac would see its own desktop
@@ -786,6 +790,9 @@ final class HostSession: @unchecked Sendable {
         }
         streams[streamID] = stream
         audience.add(self)
+        // This viewer's cap may be below what the others let the stream run at.
+        stream.viewerBitRates[sessionID] = (min(stream.bitRate, bitRateCeiling(for: .display)), 0)
+        applyLowestBitRate(stream)
         updateAudio()
         log.notice("\(self.viewerName, privacy: .public) joins display \(stream.windowID) (\(audience.sessions.count) watching)")
         connection.send(.streamStarted(stream.description))
@@ -947,7 +954,7 @@ final class HostSession: @unchecked Sendable {
         let description = StreamDescription(streamID: streamID, windowID: window.windowID, role: role,
                                             parentStreamID: parent, frame: window.frame, layer: layer,
                                             title: title, applicationName: applicationName)
-        let configuration = HEVCEncoder.Configuration(averageBitRate: role == .window ? Self.initialBitRate : 12_000_000,
+        let configuration = HEVCEncoder.Configuration(averageBitRate: initialBitRate(for: role),
                                                       alpha: role == .child || role == .popup)
         // Menus, popovers and alerts have glass that blurs what's behind
         // them; captured alone, it turns gray.
@@ -1190,15 +1197,11 @@ final class HostSession: @unchecked Sendable {
 
     private func adaptBitRate(streamID: UInt16, received: UInt32, dropped: UInt32) {
         guard let stream = streams[streamID] else { return }
-        let ceiling = switch stream.description.role {
-        case .window: Self.maximumBitRate
-        case .display: Self.displayMaximumBitRate
-        case .child, .popup: 20_000_000
-        }
+        let ceiling = bitRateCeiling(for: stream.description.role)
         // Each viewer adapts its own rate; the stream runs at the lowest.
-        var rate = stream.viewerBitRates[sessionID] ?? (stream.bitRate, 0)
+        var rate = stream.viewerBitRates[sessionID] ?? (min(stream.bitRate, ceiling), 0)
         if dropped > 0 {
-            rate.bitRate = max(Self.minimumBitRate, rate.bitRate * 3 / 4)
+            rate.bitRate = max(min(Self.minimumBitRate, ceiling), rate.bitRate * 3 / 4)
             rate.cleanReports = 0
         } else if received > 0 {
             rate.cleanReports += 1
@@ -1209,6 +1212,42 @@ final class HostSession: @unchecked Sendable {
         }
         stream.viewerBitRates[sessionID] = rate
         applyLowestBitRate(stream)
+    }
+
+    /// The most a stream of `role` may use for this viewer: the host's own
+    /// ceiling, or the viewer's cap when lower.
+    private func bitRateCeiling(for role: StreamDescription.Role) -> Int {
+        let ceiling = switch role {
+        case .window: Self.maximumBitRate
+        case .display: Self.displayMaximumBitRate
+        case .child, .popup: 20_000_000
+        }
+        return min(ceiling, bitRateLimit ?? .max)
+    }
+
+    private func initialBitRate(for role: StreamDescription.Role) -> Int {
+        let initial = switch role {
+        case .window: Self.initialBitRate
+        case .display: Self.displayInitialBitRate
+        case .child, .popup: 12_000_000
+        }
+        return min(initial, bitRateCeiling(for: role))
+    }
+
+    /// Applies a new cap to every stream this viewer watches right away: a
+    /// lower one cuts the rate at once; a higher one lifts it at least to
+    /// where a new stream would start, rather than climbing 10% at a time.
+    private func setBitRateLimit(_ limit: Int?) {
+        let raised = (limit ?? .max) > (bitRateLimit ?? .max)
+        bitRateLimit = limit.map { max(Self.minimumBitRate, $0) }
+        log.notice("\(self.viewerName, privacy: .public) caps video at \(self.bitRateLimit.map { "\($0 / 1_000_000) Mbps" } ?? "automatic", privacy: .public)")
+        for stream in streams.values {
+            let role = stream.description.role
+            let current = stream.viewerBitRates[sessionID]?.bitRate ?? stream.bitRate
+            let bitRate = min(raised ? max(current, initialBitRate(for: role)) : current, bitRateCeiling(for: role))
+            stream.viewerBitRates[sessionID] = (bitRate, 0)
+            applyLowestBitRate(stream)
+        }
     }
 
     private func applyLowestBitRate(_ stream: HostStream) {

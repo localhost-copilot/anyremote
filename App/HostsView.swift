@@ -43,6 +43,7 @@ private struct Sidebar: View {
     @Binding var addingHost: Bool
     @State private var renaming: HostTarget?
     @State private var editingAddress: HostTarget?
+    @State private var choosingQuality: HostTarget?
 
     var body: some View {
         List(selection: $model.selection) {
@@ -62,6 +63,9 @@ private struct Sidebar: View {
                                     set: { model.setSharesBack(target, $0) }))
                                 Button("Rename…") { renaming = target }
                                 Button("Edit Address…") { editingAddress = target }
+                                if model.pairedHost(for: target) != nil {
+                                    Button("Video Quality…") { choosingQuality = target }
+                                }
                                 Divider()
                                 Button("Forget This Mac", role: .destructive) { model.forget(target) }
                             }
@@ -89,6 +93,7 @@ private struct Sidebar: View {
         }
         .sheet(item: $renaming) { target in RenameSheet(target: target, model: model) }
         .sheet(item: $editingAddress) { target in AddressSheet(target: target, model: model) }
+        .sheet(item: $choosingQuality) { target in VideoQualityView(target: target, model: model, showsDone: true) }
     }
 }
 
@@ -358,6 +363,7 @@ private struct WindowPicker: View {
     /// Until the user picks a window, the selection follows the first match.
     @State private var userSelected = false
     @State private var columns = 3
+    @State private var showsVideoQuality = false
     @FocusState private var searchFocused: Bool
     @FocusState private var gridFocused: Bool
 
@@ -508,6 +514,15 @@ private struct WindowPicker: View {
             Button { Task { await connection.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .help("Refresh the window list")
             FullDesktopButton(connection: connection)
+            if model.pairedHost(for: target) != nil {
+                Button { showsVideoQuality.toggle() } label: {
+                    Label("Video Quality", systemImage: "gauge.with.dots.needle.67percent")
+                }
+                .help("How much video this Mac may send")
+                .popover(isPresented: $showsVideoQuality, arrowEdge: .bottom) {
+                    VideoQualityView(target: target, model: model)
+                }
+            }
             Button { model.disconnect(target) } label: { Label("Disconnect", systemImage: "xmark.circle") }
                 .help("Disconnect from this Mac and close all of its windows")
         }

@@ -169,9 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.keyWindow?.windowController as? DesktopWindowController
     }
 
+    /// One switch for every remote window and desktop.
     @objc private func toggleStatistics(_ sender: Any?) {
-        keyMirror?.toggleStatistics()
-        keyDesktop?.toggleStatistics()
+        StatisticsPreferences.isShown.toggle()
     }
 
     @objc private func closeMirror(_ sender: Any?) {
@@ -218,7 +218,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return shortcutCapture?.isAvailable ?? false
         case #selector(openFullDesktop(_:)):
             return keyMirror != nil || viewer.selectedConnection?.state == .connected
-        case #selector(toggleStatistics(_:)), #selector(closeMirror(_:)):
+        case #selector(toggleStatistics(_:)):
+            menuItem.state = StatisticsPreferences.isShown ? .on : .off
+            return true
+        case #selector(closeMirror(_:)):
             return keyMirror != nil || keyDesktop != nil
         default:
             return true

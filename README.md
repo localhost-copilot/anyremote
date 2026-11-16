@@ -227,7 +227,7 @@ the *remote* app). AnyRemote's own commands use ⌃⌥⌘:
 | ⌃⌥⌘R | Fit desktop to window |
 | ⌃⌥⌘K | Send system shortcuts to desktop |
 | ⌃⌥⌘W | Close on this Mac (the host window stays open) |
-| ⌃⌥⌘I | Statistics overlay |
+| ⌃⌥⌘I | Statistics panel on every remote window and desktop (also in **Video Quality**) |
 
 **Trackpad**: scrolling (with momentum), pinch to zoom, rotate, smart zoom
 (double-tap with two fingers) and two-finger swipes between pages act on the
@@ -330,9 +330,9 @@ nothing behind.
   picker say so until it is granted.
 - **"Couldn't connect" across subnets.** Use **Add by address** or **Edit
   Address…** with the other Mac's own IP (port 47800 by default).
-- **Connected but black.** The statistics overlay (⌃⌥⌘I) shows a line like
-  `udp in 0 · … · host sends video to none`: the video's UDP does not get
-  through (a firewall, or security software filtering local UDP), while the
+- **Connected but black.** The statistics panel (⌃⌥⌘I) shows *Video: Not
+  arriving* (`ANYREMOTE_STATS_STDOUT=1` prints `udp in 0 · … · host sends
+  video to none`): the video's UDP does not get through (a firewall, or security software filtering local UDP), while the
   TCP control connection does.
 - **"This Mac" is not in the list.** Controlling a Mac from itself feeds
   injected clicks back into the mirror; see Development for the loopback
@@ -460,6 +460,9 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
 - **Bitrate** — receiver reports every second; ×0.75 on loss, +10% after
   four clean seconds; windows 6–80 Mbps, desktops up to 120 Mbps, child
   windows ≤20 Mbps. A shared stream runs at its viewers' lowest rate.
+  **Video Quality** (the picker's toolbar, or a Mac's context menu) caps
+  each stream from that Mac, 6–120 Mbps, for slow or metered networks; it
+  is stored per paired Mac and applies to open windows at once.
 - **Input** — mouse, scroll and keys as `CGEvent`s posted at the HID tap, at
   points relative to the window's top-left (frozen during a press so
   title-bar drags work). Focus via AX `AXFrontmost` + `AXMain` + `AXRaise`.
@@ -618,7 +621,9 @@ App/                        AppKit + SwiftUI app
   Resources/*.lproj         string tables; keys are the English source strings
   HostConnection            one connection: mirrors, desktops, child windows, cursor
   DesktopWindowController   full desktop window: dynamic resolution, scaling, input mapping, stats
-  DesktopPreferences        desktop options; system shortcut capture
+  DesktopPreferences        desktop options; system shortcut capture; statistics switch
+  StatisticsHUD             statistics panel drawn into the video: latency breakdown, bitrate, loss, graph
+  VideoQualityView          per-Mac video bitrate cap, statistics switch
   MirrorWindowController    mirror window: geometry, input mapping, resize, stats
   ChildWindowController     menus/popovers/sheets as local child windows
   RemoteSurfaceView         Metal surface + mouse/scroll; KeyForwarder
@@ -656,7 +661,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 92 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 94 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -766,7 +771,7 @@ Environment:
   (`lead`: how far ahead of its display time SCK delivered a frame; `hold`:
   frame pacing; `capgap`/`pregap`: host and local frame intervals; `hitch`:
   frames shown a refresh late although sent on time).
-- `ANYREMOTE_STATS=1` starts with the statistics overlay on.
+- `ANYREMOTE_STATS=1` starts with the statistics panel on (the switch then can't turn it off).
 - `ANYREMOTE_HOME=<dir>` uses a separate settings directory.
 - `ANYREMOTE_DROP=0.02` drops that share of the datagrams (video and sound)
   arriving at the viewer (simulated loss).

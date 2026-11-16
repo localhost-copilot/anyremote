@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 18
+public let anyRemoteProtocolVersion: UInt16 = 19
 
 /// Cleartext handshake exchanged before the session keys exist.
 public enum HandshakeMessage: Codable, Equatable, Sendable {
@@ -408,6 +408,11 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case closeStream(streamID: UInt16)
     case requestKeyframe(streamID: UInt16)
     case receiverReport(streamID: UInt16, framesReceived: UInt32, framesDropped: UInt32)
+    /// Viewer → host: the most video each of this viewer's streams may use,
+    /// in bits per second; nil leaves it to the host's own ceilings. The
+    /// host still lowers the rate on loss. Sent once connected and on every
+    /// change, before any stream opens.
+    case maximumBitRate(Int?)
     case hostReport(streamID: UInt16, HostStreamReport)
 
     // Window control

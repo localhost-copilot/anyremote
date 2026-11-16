@@ -30,6 +30,8 @@ import AppKit
 ///     --notification-test                   post a notification on this Mac and print what the
 ///                                           viewer receives, the Dock badges, and an open request
 ///     --permission-guide                    show Settings and the permission guide card
+///     --video-caps <Mbps|auto,…>            after connecting, cap the video from the host at each
+///                                           value in turn, 8 s apart (needs a paired --connect host)
 ///     --exit-after <seconds>
 ///
 /// Set ANYREMOTE_STATS_STDOUT=1 to print pipeline statistics every second,
@@ -290,7 +292,10 @@ enum DevelopmentLaunch {
                       let code = value("--code").flatMap(PairingCode.init) else {
                     print("dev: --connect needs a valid address and --code"); return
                 }
-                target = HostTarget(id: "dev:\(connectAddress)", name: connectAddress, kind: .saved, endpoint: endpoint)
+                // A host paired at this address keeps its settings (such as the video cap).
+                let paired = model.pairedStore.all.first { $0.address == connectAddress }
+                target = HostTarget(id: "dev:\(connectAddress)", name: connectAddress, kind: .saved, endpoint: endpoint,
+                                    savedID: paired?.id)
                 await model.connect(target, code: code)
             } else {
                 model.showsThisMac = true
@@ -304,6 +309,16 @@ enum DevelopmentLaunch {
                 print("dev: connect failed: \(model.lastError ?? "unknown")"); return
             }
             print("dev: connected to \(connection.hostName)")
+            if let caps = value("--video-caps") {
+                let steps = caps.split(separator: ",").map { $0 == "auto" ? nil : Int($0).map { $0 * 1_000_000 } }
+                Task { @MainActor in
+                    for step in steps {
+                        try? await Task.sleep(for: .seconds(8))
+                        print("dev: video cap \(step.map { "\($0 / 1_000_000) Mbps" } ?? "automatic")")
+                        model.setMaximumBitRate(target, step)
+                    }
+                }
+            }
             if notificationTest {
                 await NotificationTest.run(connection)
                 return

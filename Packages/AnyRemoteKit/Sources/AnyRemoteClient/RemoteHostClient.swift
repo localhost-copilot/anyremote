@@ -96,6 +96,7 @@ public final class RemoteHostClient: @unchecked Sendable {
 
     // Queue-confined.
     private var wantsAudio = false
+    private var maximumBitRate: Int?
     private var offersMicrophone = false
     private var notices = NoticeSubscription(notifications: false, badges: false)
     private var microphone: ViewerMicrophone?
@@ -200,6 +201,8 @@ public final class RemoteHostClient: @unchecked Sendable {
         for index in 0..<6 {
             queue.asyncAfter(deadline: .now() + .milliseconds(index * 40)) { [weak self] in self?.ping() }
         }
+        // Ahead of any stream the viewer opens, so none starts above it.
+        if let maximumBitRate { control?.send(.maximumBitRate(maximumBitRate)) }
         if wantsAudio { control?.send(.audio(enabled: true)) }
         if offersMicrophone { control?.send(.microphone(enabled: true)) }
         if !notices.isEmpty { control?.send(.notices(notices)) }
@@ -468,6 +471,18 @@ public final class RemoteHostClient: @unchecked Sendable {
             guard subscription != notices else { return }
             notices = subscription
             if welcome != nil { control?.send(.notices(subscription)) }
+        }
+    }
+
+    // MARK: Video
+
+    /// Caps the bit rate of each stream from this host (nil: the host's own
+    /// ceilings). Takes effect on the open streams right away.
+    public func setMaximumBitRate(_ bitRate: Int?) {
+        queue.async { [self] in
+            guard bitRate != maximumBitRate else { return }
+            maximumBitRate = bitRate
+            if welcome != nil { control?.send(.maximumBitRate(bitRate)) }
         }
     }
 

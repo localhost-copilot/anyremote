@@ -18,6 +18,12 @@ import Testing
         }
     }
 
+    @Test func videoCapRoundTrips() throws {
+        for message: ControlMessage in [.maximumBitRate(30_000_000), .maximumBitRate(nil)] {
+            #expect(try ControlCoding.decode(ControlMessage.self, from: ControlCoding.encode(message)) == message)
+        }
+    }
+
     @Test func olderViewersDecodeWithoutScreens() throws {
         // What viewers before the screens send.
         let authenticate = Data(#"{"authenticate":{"viewerName":"mini","takeOver":true}}"#.utf8)

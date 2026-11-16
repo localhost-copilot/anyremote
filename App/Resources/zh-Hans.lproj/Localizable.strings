@@ -253,3 +253,31 @@
 "Match the Other Mac's Screens" = "匹配另一台 Mac 的屏幕";
 "Windows controlled from another Mac move to virtual displays the size of its screens, out of the way of yours. They can be as large as those screens and go full screen without moving your windows, and move back when it disconnects." = "被另一台 Mac 控制的窗口会移到与它的屏幕一样大的虚拟显示器上，不占用你的屏幕。窗口可以和那些屏幕一样大，全屏时也不会挪动你的窗口，它断开连接后窗口会移回原处。";
 "Windows controlled from another Mac stay on this Mac's screens and can be no larger than them. When one goes full screen, your other windows move aside." = "被另一台 Mac 控制的窗口留在这台 Mac 的屏幕上，大小不能超过这些屏幕。其中一个窗口全屏时，你的其他窗口会被移开。";
+
+/* Video quality */
+"Video Quality" = "视频画质";
+"Video Quality…" = "视频画质…";
+"How much video this Mac may send" = "这台 Mac 最多可发送多少视频数据";
+"Automatic" = "自动";
+"Limited" = "限制";
+"Maximum" = "上限";
+"%lld Mbps" = "%lld Mbps";
+"Up to 80 Mbps for each window and 120 Mbps for the full desktop, less whenever the network drops video." = "每个窗口最高 80 Mbps，完整桌面最高 120 Mbps；网络丢失画面时自动降低。";
+"Suits slow Wi-Fi and connections over the internet; small text blurs while things move." = "适合较慢的 Wi-Fi 和经由互联网的连接；画面变化时小字会变模糊。";
+"Suits most Wi-Fi networks." = "适合大多数 Wi-Fi 网络。";
+"Suits wired and fast Wi-Fi networks." = "适合有线网络和高速 Wi-Fi。";
+"%@ Each window and the full desktop use up to this much." = "%@每个窗口和完整桌面最多使用这么多。";
+"Done" = "完成";
+
+/* Statistics panel */
+"Show Statistics over Remote Windows" = "在远程窗口上显示统计信息";
+"Latency" = "延迟";
+"Other Mac" = "对方 Mac";
+"Network" = "网络";
+"This Mac" = "这台 Mac";
+"Bitrate" = "码率";
+"Target" = "目标";
+"Frame Loss" = "丢帧";
+"Stutters" = "卡顿";
+"Video" = "视频";
+"Not arriving" = "未收到";

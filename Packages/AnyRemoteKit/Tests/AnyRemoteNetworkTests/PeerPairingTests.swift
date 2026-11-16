@@ -62,6 +62,16 @@ struct PeerPairingTests {
     @Test func oldStoresDecodeWithDefaults() throws {
         let json = #"[{"id":"A","name":"Mac A","pairingCode":"\#(code)"}]"#
         let hosts = try JSONDecoder().decode([PairedHost].self, from: Data(json.utf8))
-        #expect(!hosts[0].fromPeer && hosts[0].sharesBack)
+        #expect(!hosts[0].fromPeer && hosts[0].sharesBack && hosts[0].maximumBitRate == nil)
+    }
+
+    @Test func videoCapIsKept() throws {
+        let host = PairedHost(id: "A", name: "Mac A", address: nil, bonjourName: "Mac A", pairingCode: code,
+                              maximumBitRate: 30_000_000)
+        let decoded = try JSONDecoder().decode(PairedHost.self, from: JSONEncoder().encode(host))
+        #expect(decoded.maximumBitRate == 30_000_000)
+        // A changed code from that Mac must not reset the cap.
+        let (hosts, _) = PairedHostStore.applying(offer(PairingCode.generate().canonical), address: nil, ownID: "B", to: [host])
+        #expect(hosts[0].maximumBitRate == 30_000_000)
     }
 }
