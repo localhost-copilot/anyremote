@@ -2,6 +2,7 @@ import AnyRemoteMedia
 import AnyRemoteNetwork
 import AnyRemoteWindowControl
 import AnyRemoteWire
+import AppKit
 import Foundation
 import Network
 import OSLog
@@ -218,6 +219,10 @@ final class HostSession: @unchecked Sendable {
     private var textEditorWindows: [CGWindowID: (holdsFocus: Bool, checked: UInt64)] = [:]
     /// The stream that last got a key or click: the one whose caret matters.
     private var lastInputStreamID: UInt16?
+    /// System prompts on screen, shown with the window in use.
+    private var promptWindowIDs: Set<CGWindowID> = []
+    /// System prompts brought over the window in use, at the size they had.
+    private var movedPrompts: [CGWindowID: CGSize] = [:]
     /// Whose input method composes; the viewer says once connected.
     private var textInput = TextInputSettings(composesOnViewer: true)
     /// Processes and whether they are input methods (their candidate windows
@@ -1319,6 +1324,11 @@ final class HostSession: @unchecked Sendable {
         followTabs(mains, onScreen: onScreen, byID: byID)
         openNewWindows(onScreen)
 
+        promptWindowIDs = Set(onScreen.lazy.filter { Self.systemPromptOwners.contains($0.ownerName) }.map(\.id))
+        // System prompts go with the window in use: the one last clicked
+        // or typed in, else any.
+        let promptHolder = lastInputStreamID.flatMap { id in mains.first { $0.streamID == id && byID[$0.windowID] != nil } }
+            ?? mains.first { byID[$0.windowID] != nil }
         for main in mains {
             guard let current = byID[main.windowID] else {
                 checkGone(main)
@@ -1327,7 +1337,7 @@ final class HostSession: @unchecked Sendable {
             main.offScreenSince = nil
             updateFrame(main, frame: current.frame, title: current.title)
             updateSharingIndicator(main, frame: current.frame, onScreen: onScreen)
-            trackChildren(of: main, mainFrame: current.frame, onScreen: onScreen)
+            trackChildren(of: main, mainFrame: current.frame, onScreen: onScreen, takesPrompts: main === promptHolder)
         }
         for stream in streams.values where stream.description.role == .child {
             if let current = byID[stream.windowID] { updateFrame(stream, frame: current.frame, title: current.title) }
@@ -1657,7 +1667,18 @@ final class HostSession: @unchecked Sendable {
 
     private static let panelServiceNames = ["OpenAndSavePanelService", "Open and Save Panel Service"]
 
-    private func trackChildren(of main: HostStream, mainFrame: CGRect, onScreen: [WindowServerWindow]) {
+    /// Processes that show macOS's own prompts: a keychain or administrator
+    /// password, Touch ID, a privacy permission, an app from the internet.
+    /// They belong to no opened window, so on their own they would never
+    /// reach the viewer, and they open where macOS likes, often on a virtual
+    /// display nobody looks at. They are brought over the window in use and
+    /// shown as its child, so they can be answered from the other Mac.
+    static let systemPromptOwners: Set<String> = [
+        "SecurityAgent", "coreautha", "UserNotificationCenter", "CoreServicesUIAgent", "universalAccessAuthWarn",
+    ]
+
+    private func trackChildren(of main: HostStream, mainFrame: CGRect, onScreen: [WindowServerWindow],
+                               takesPrompts: Bool) {
         let near = mainFrame.insetBy(dx: -400, dy: -400)
         var candidates: [WindowServerWindow] = []
         var needsStandardIDs = false
@@ -1689,6 +1710,13 @@ final class HostSession: @unchecked Sendable {
             // top of the page.
             if main.fullScreenOnHost, mainFrame.contains(window.frame) { continue }
             let samePID = window.pid == main.pid
+            if !samePID, Self.systemPromptOwners.contains(window.ownerName) {
+                if takesPrompts, window.frame.width >= 100, window.frame.height >= 50 {
+                    bringPrompt(window, over: mainFrame)
+                    candidates.append(window)
+                }
+                continue
+            }
             // An input method's candidates, next to the window being typed into.
             if !samePID, isInputMethodWindow(window) {
                 if window.frame.intersects(near) { candidates.append(window) }
@@ -1743,6 +1771,39 @@ final class HostSession: @unchecked Sendable {
                                 title: window.title, applicationName: window.ownerName)
                 }
             }
+        }
+    }
+
+    /// Moves a system prompt over the window in use: centred on it, a third
+    /// of the way down, inside its display. Again when it grows (it is first
+    /// seen small, while it animates open), but not otherwise, so it can be
+    /// dragged away. Its process has to be active for Accessibility to list
+    /// the prompt; it would take the focus anyway.
+    private func bringPrompt(_ window: WindowServerWindow, over mainFrame: CGRect) {
+        if let size = movedPrompts[window.id],
+           abs(size.width - window.frame.width) < 20, abs(size.height - window.frame.height) < 20 { return }
+        if movedPrompts.count > 64 { movedPrompts.removeAll() }
+        movedPrompts[window.id] = window.frame.size
+        let display = Self.displayBounds().first { $0.contains(CGPoint(x: mainFrame.midX, y: mainFrame.midY)) }
+        var target = CGPoint(x: mainFrame.midX - window.frame.width / 2,
+                             y: mainFrame.minY + max(0, (mainFrame.height - window.frame.height) / 3))
+        if let display {
+            target.x = min(max(target.x, display.minX), display.maxX - window.frame.width)
+            target.y = min(max(target.y, display.minY + 30), display.maxY - window.frame.height)
+        }
+        guard abs(target.x - window.frame.minX) > 2 || abs(target.y - window.frame.minY) > 2 else { return }
+        let (pid, windowID, owner, point) = (window.pid, window.id, window.ownerName, target)
+        poller.run("prompt \(windowID) \(Int(window.frame.width))x\(Int(window.frame.height))", pid: pid, reply: queue) {
+            var ax = try? AXWindow(pid: pid, windowID: windowID)
+            if ax == nil {
+                NSRunningApplication(processIdentifier: pid)?.activate()
+                usleep(300_000)
+                ax = try? AXWindow(pid: pid, windowID: windowID)
+            }
+            return (try? ax?.setPosition(point)) != nil
+        } then: { [weak self] moved in
+            if !moved { self?.movedPrompts[windowID] = nil }
+            log.notice("system prompt \(windowID) of \(owner, privacy: .public) \(moved ? "moved over the window in use" : "couldn't be moved")")
         }
     }
 
@@ -2100,6 +2161,10 @@ final class HostSession: @unchecked Sendable {
 
     private func focus(_ stream: HostStream, force: Bool) {
         guard !Self.skipsFocus else { return }
+        // A system prompt shown with this window has the focus, and must
+        // keep it: typing meant for a password field would otherwise go to
+        // the app.
+        if !force, stream.children.keys.contains(where: { promptWindowIDs.contains($0) }) { return }
         let now = HostClock.nowNanos()
         if !force, now - lastFocusCheck < 300_000_000 { return }
         lastFocusCheck = now

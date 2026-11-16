@@ -105,6 +105,13 @@ The picker connects to the last used Mac, groups windows by app and stays
 open behind a new window (the AnyRemote Dock icon or ⌃⌥⌘0 brings it back).
 An already open window is brought forward instead of opened twice.
 
+macOS's own prompts on the other Mac (a keychain or administrator password,
+Touch ID, a privacy permission, an app downloaded from the internet) belong
+to no opened window, and they often open on the virtual display nobody looks
+at. AnyRemote brings them over the window in use and shows them with it, so
+they can be answered from here; while one is open, clicks and typing in that
+window leave the focus with the prompt.
+
 ### Menu bar
 
 Clicking the menu bar icon opens a panel for the moments between remote

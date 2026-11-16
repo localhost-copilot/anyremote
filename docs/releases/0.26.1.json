@@ -1,0 +1,10 @@
+{
+  "en": [
+    "macOS's own prompts on the other Mac (passwords, Touch ID, permissions) now appear over the window you are using, so you can answer them from here.",
+    "While such a prompt is open, typing stays with it and never goes to the app instead."
+  ],
+  "zh-Hans": [
+    "对方 Mac 上 macOS 自己的提示（密码、触控 ID、权限请求）现在会显示在你正在用的窗口上，可以直接在这边回应。",
+    "提示打开时，键盘输入只会进入提示框，不会落到 App 里。"
+  ]
+}
