@@ -155,8 +155,20 @@ final class HostSession: @unchecked Sendable {
     /// New windows that may still turn out to be standard windows, by first sighting.
     private var newWindowCandidates: [CGWindowID: UInt64] = [:]
     private var lastCandidateCheck: UInt64 = 0
+    /// When a streamed window last went full screen on the host. Its move to
+    /// a Space of its own takes every other window off the screen, and they
+    /// come back when it is put back: neither is the window closing or a
+    /// new window opening.
+    private var lastHostFullScreen: UInt64 = 0
+    /// Tracked windows that recently left the screen, by when they left.
+    private var departedWindows: [CGWindowID: UInt64] = [:]
     /// An app the viewer asked to open; its first window opens on the viewer.
     private var pendingLaunch: (path: String, pid: pid_t?, deadline: UInt64)?
+    /// An app whose streamed window the viewer's input just closed. The
+    /// window that replaces it (Chrome's browser window after its profile
+    /// picker, an app's main window after a welcome window) opens on the
+    /// viewer too, even when the app takes a while to show it.
+    private var awaitingSuccessor: (pid: pid_t, deadline: UInt64)?
     private var ended = false
     /// The viewer wants the sound of what it shows.
     private var audioRequested = false
@@ -1097,9 +1109,14 @@ final class HostSession: @unchecked Sendable {
         trackPopups()
         let mains = streams.values.filter { $0.description.role == .window }
         if let launch = pendingLaunch, HostClock.nowNanos() > launch.deadline { pendingLaunch = nil }
+        if let successor = awaitingSuccessor, HostClock.nowNanos() > successor.deadline { awaitingSuccessor = nil }
         guard !mains.isEmpty else {
             // Nothing to follow, but an app opened from the viewer may still bring its window.
-            if pendingLaunch != nil { openNewWindows(WindowServerWindow.onScreen()) } else { knownWindows = nil }
+            if pendingLaunch != nil || awaitingSuccessor != nil {
+                openNewWindows(WindowServerWindow.onScreen())
+            } else {
+                knownWindows = nil
+            }
             return
         }
         checkWindowStates(mains)
@@ -1133,10 +1150,13 @@ final class HostSession: @unchecked Sendable {
         let now = HostClock.nowNanos()
         guard let since = stream.offScreenSince else {
             stream.offScreenSince = now
+            if stream.description.role == .window, now - lastInputTime < Self.causedWindowInterval {
+                awaitingSuccessor = (stream.pid, now + Self.successorInterval)
+            }
             return
         }
         guard now - since >= Self.offScreenGrace else { return }
-        if stream.minimizedOnHost { return }
+        if stream.minimizedOnHost || now - lastHostFullScreen < Self.spaceSwitchInterval { return }
         if stream.description.role == .display {
             log.notice("display \(stream.windowID) went away; ending its stream")
             for session in stream.audience?.sessions ?? [self] {
@@ -1149,6 +1169,9 @@ final class HostSession: @unchecked Sendable {
     }
 
     private static let offScreenGrace: UInt64 = 700_000_000
+
+    /// How long a window closed by the viewer's input waits for its app's next window.
+    private static let successorInterval: UInt64 = 15_000_000_000
 
     private func updateFrame(_ stream: HostStream, frame: CGRect, title: String) {
         let title = title.isEmpty ? stream.description.title : title
@@ -1225,6 +1248,7 @@ final class HostSession: @unchecked Sendable {
                     poller.run("restore \(streamID)", pid: stream.pid, reply: queue) { window.setMinimized(false) } then: { _ in }
                     connection.send(.windowStateRequest(streamID: streamID, .minimize))
                 } else if state.fullScreen {
+                    lastHostFullScreen = HostClock.nowNanos()
                     poller.run("restore \(streamID)", pid: stream.pid, reply: queue) { window.setFullScreen(false) } then: { _ in }
                     connection.send(.windowStateRequest(streamID: streamID, .enterFullScreen))
                 }
@@ -1241,10 +1265,16 @@ final class HostSession: @unchecked Sendable {
         let now = HostClock.nowNanos()
         let current = Self.trackedWindowIDs(onScreen)
         if let known = knownWindows {
+            for id in known.subtracting(current) { departedWindows[id] = now }
+            departedWindows = departedWindows.filter { now - $0.value < Self.spaceSwitchInterval }
             let recentInput = now - lastInputTime < Self.causedWindowInterval
             let launchPID = pendingLaunch?.pid
+            let successorPID = awaitingSuccessor?.pid
+            let spaceSwitch = now - lastHostFullScreen < Self.spaceSwitchInterval
             for window in onScreen where current.contains(window.id) && !known.contains(window.id)
-                && (recentInput || (launchPID != nil && window.pid == launchPID)) {
+                && (recentInput || (launchPID != nil && window.pid == launchPID)
+                    || (successorPID != nil && window.pid == successorPID))
+                && !(spaceSwitch && departedWindows[window.id] != nil) {
                 newWindowCandidates[window.id] = now
             }
         }
@@ -1265,6 +1295,7 @@ final class HostSession: @unchecked Sendable {
                   standardWindowIDs(pid: window.pid, after: seen)?.contains(window.id) == true else { continue }
             newWindowCandidates[window.id] = nil
             if window.pid == pendingLaunch?.pid { pendingLaunch = nil }
+            if window.pid == awaitingSuccessor?.pid { awaitingSuccessor = nil }
             log.notice("opening new window \(window.id) of \(window.ownerName, privacy: .public)")
             openWindow(window.id)
         }
@@ -1272,6 +1303,10 @@ final class HostSession: @unchecked Sendable {
     }
 
     private static let causedWindowInterval: UInt64 = 3_000_000_000
+
+    /// How long a host full screen keeps windows from counting as closed or
+    /// new: the animations there and back, plus the state poll in between.
+    private static let spaceSwitchInterval: UInt64 = 4_000_000_000
 
     private static let panelServiceNames = ["OpenAndSavePanelService", "Open and Save Panel Service"]
 
