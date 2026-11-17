@@ -1,0 +1,16 @@
+{
+  "en": [
+    "Apps looks like macOS's Apps view: recent apps first, then every app by name, with category chips.",
+    "Windows can show every window at its own shape, as in Mission Control.",
+    "Search filters as you type, also while a Chinese input method composes, and finds Chinese names by pinyin.",
+    "Animations when switching views and searching; window cards tilt under the pointer.",
+    "Double-clicking an app in Recent no longer opens the wrong one."
+  ],
+  "zh-Hans": [
+    "“App”页面改成 macOS“App”视图的样式：先是最近打开的 App，再按名称列出全部 App，并可按类别筛选。",
+    "“窗口”页面可以像调度中心一样，按各窗口自身的形状显示所有窗口。",
+    "搜索会随输入实时筛选，中文输入法正在输入拼音时也会，并能用拼音找到中文名称。",
+    "切换视图和搜索时有动画；鼠标移到窗口卡片上，卡片会随之倾斜。",
+    "双击“最近使用”中的 App 不会再打开错的 App。"
+  ]
+}

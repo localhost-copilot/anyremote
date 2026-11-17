@@ -48,16 +48,17 @@ enum HostApplications {
                 || bundle?.object(forInfoDictionaryKey: "LSBackgroundOnly") as? Bool == true { continue }
             let name = fileManager.displayName(atPath: path).replacingOccurrences(of: ".app", with: "")
             result.append(HostApplication(path: path, name: name, bundleIdentifier: bundle?.bundleIdentifier,
-                                          isRunning: runningPaths.contains(path)))
+                                          isRunning: runningPaths.contains(path),
+                                          category: bundle?.object(forInfoDictionaryKey: "LSApplicationCategoryType") as? String))
         }
         return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    /// A 96 px PNG of the app's icon.
+    /// A 128 px PNG of the app's icon, sharp at the Apps grid's 64 pt on Retina.
     static func icon(path: String) -> Data? {
         let icon = NSWorkspace.shared.icon(forFile: path)
-        icon.size = NSSize(width: 96, height: 96)
-        var rect = CGRect(x: 0, y: 0, width: 96, height: 96)
+        icon.size = NSSize(width: 128, height: 128)
+        var rect = CGRect(x: 0, y: 0, width: 128, height: 128)
         guard let image = icon.cgImage(forProposedRect: &rect, context: nil, hints: nil) else { return nil }
         return HostWindows.encode(image, type: .png)
     }

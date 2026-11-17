@@ -176,7 +176,6 @@
 "You can control “%@” from here too. It’s now in My Macs." = "你也可以在这里控制“%@”，它已出现在“我的 Mac”中。";
 
 /* Apps */
-"Not Running" = "未运行";
 "Quit" = "退出";
 "Force Quit" = "强制退出";
 
@@ -349,3 +348,21 @@
 "That Mac’s AnyRemote can’t be updated from here. Install the new version on it by hand." = "那台 Mac 上的 AnyRemote 不能从这里更新。请在它上面手动安装新版本。";
 "Needs an update" = "需要更新";
 "Updating…" = "正在更新…";
+
+/* Apps grid groups */
+"Developer Tools" = "开发工具";
+"Utilities" = "实用工具";
+"Productivity & Finance" = "效率与财务";
+"Creativity" = "创意";
+"Information & Reading" = "信息与阅读";
+"Entertainment" = "娱乐";
+"Social" = "社交";
+"Games" = "游戏";
+"Lifestyle" = "生活";
+"%@ — Running" = "%@ — 正在运行";
+
+/* Windows layouts */
+"Layout" = "布局";
+"By App" = "按 App";
+"All Windows" = "所有窗口";
+"Group windows by app, or show them all at once" = "按 App 分组显示窗口，或一次显示所有窗口";

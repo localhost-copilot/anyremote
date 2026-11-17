@@ -179,12 +179,16 @@ public struct HostApplication: Codable, Hashable, Sendable {
     public var name: String
     public var bundleIdentifier: String?
     public var isRunning: Bool
+    /// The app's `LSApplicationCategoryType` ("public.app-category.utilities"),
+    /// for grouping the viewer's Apps grid. Absent from older hosts.
+    public var category: String?
 
-    public init(path: String, name: String, bundleIdentifier: String?, isRunning: Bool) {
+    public init(path: String, name: String, bundleIdentifier: String?, isRunning: Bool, category: String? = nil) {
         self.path = path
         self.name = name
         self.bundleIdentifier = bundleIdentifier
         self.isRunning = isRunning
+        self.category = category
     }
 }
 

@@ -103,7 +103,12 @@ have to be updated by hand once.
 
 The picker connects to the last used Mac, groups windows by app and stays
 open behind a new window (the AnyRemote Dock icon or ⌃⌥⌘0 brings it back).
-An already open window is brought forward instead of opened twice.
+An already open window is brought forward instead of opened twice. The
+switch at the top right shows the windows *By App* or as *All Windows*,
+each thumbnail at its window's shape, as in Mission Control. The search
+filters as you type, also while an input method is still composing, and
+matches Chinese names by their pinyin or its initials (`jsq` finds 计算器);
+↑/↓ in the search field move the selection, Return opens it.
 
 macOS's own prompts on the other Mac (a keychain or administrator password,
 Touch ID, a privacy permission, an app downloaded from the internet) belong
@@ -213,10 +218,13 @@ and anything running). Opening one launches it there, or brings it forward,
 and its windows open here, the front one in front, as clicking its Dock icon
 brings them all forward (minimized ones and those on another Space stay
 there); an app with no window gets a new one, as if its Dock icon was
-clicked. A window picked under **Windows** opens alone. The list is grouped: *Recent* (opened from this
-Mac lately, newest first), then the others *Running*, then *Not Running*;
-the arrow keys move between groups by column. A running app's context menu
-has *Quit* and *Force Quit* (on the host).
+clicked. A window picked under **Windows** opens alone. As in macOS's Apps
+view, a row of the apps opened from this Mac lately comes first (its order
+holds while the picker is shown, so a double-click never lands on a tile
+that just moved), then every app by name, a dot under those running. The
+chips above filter by the app's App Store category (sent by hosts on 0.30
+or later). A running app's context menu has *Quit* and *Force Quit* (on
+the host).
 
 ### Full desktop
 

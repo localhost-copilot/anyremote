@@ -1,6 +1,7 @@
 import AnyRemoteClient
 import AnyRemoteWire
 import AppKit
+import Combine
 import SwiftUI
 
 /// The window picker: pick a Mac on the left, a window on the right.
@@ -404,43 +405,51 @@ private struct AppGroup: Identifiable {
     var windows: [WindowSummary]
 }
 
-/// One titled group of the Apps grid (Recent, Running, Not Running).
+/// One part of the Apps grid: the row of recent apps, then every app by name.
+/// An app can be in both, so a tile is named by its shelf and path (`key`).
 struct AppShelf: Identifiable {
-    var title: String
+    var id: String
     var apps: [HostApplication]
-    var id: String { title }
 
-    /// The app an arrow key moves the selection to. `offset` is ±1 for
+    func key(_ app: HostApplication) -> String { id + "\u{1F}" + app.path }
+    var keys: [String] { apps.map(key) }
+
+    static func path(ofKey key: String) -> String {
+        String(key.split(separator: "\u{1F}", maxSplits: 1).last ?? "")
+    }
+
+    /// The tile an arrow key moves the selection to. `offset` is ±1 for
     /// left/right and ±`columns` for up/down; up and down stay in the same
     /// column and cross into the neighbouring shelf, whose rows start afresh.
-    static func move(from selected: String?, by offset: Int, columns: Int, in shelves: [AppShelf]) -> String? {
+    static func move(from selected: String?, by offset: Int, columns: Int, in shelves: [[String]]) -> String? {
+        let shelves = shelves.filter { !$0.isEmpty }
         guard !shelves.isEmpty else { return nil }
         let columns = max(1, columns)
         guard let selected,
-              let s = shelves.firstIndex(where: { $0.apps.contains { $0.path == selected } }),
-              let i = shelves[s].apps.firstIndex(where: { $0.path == selected }) else {
-            return offset > 0 ? shelves.first?.apps.first?.path : shelves.last?.apps.last?.path
+              let s = shelves.firstIndex(where: { $0.contains(selected) }),
+              let i = shelves[s].firstIndex(of: selected) else {
+            return offset > 0 ? shelves.first?.first : shelves.last?.last
         }
         if abs(offset) < columns || columns == 1 {
-            let flat = shelves.flatMap(\.apps)
-            let position = flat.firstIndex { $0.path == selected } ?? 0
-            return flat[min(max(position + offset.signum(), 0), flat.count - 1)].path
+            let flat = shelves.flatMap { $0 }
+            let position = flat.firstIndex(of: selected) ?? 0
+            return flat[min(max(position + offset.signum(), 0), flat.count - 1)]
         }
-        let shelf = shelves[s].apps
+        let shelf = shelves[s]
         let column = i % columns
         if offset > 0 {
-            if i + columns < shelf.count { return shelf[i + columns].path }
+            if i + columns < shelf.count { return shelf[i + columns] }
             // The last row may be short: land on its last tile before leaving the shelf.
-            if i / columns < (shelf.count - 1) / columns { return shelf[shelf.count - 1].path }
+            if i / columns < (shelf.count - 1) / columns { return shelf[shelf.count - 1] }
             guard s + 1 < shelves.count else { return selected }
-            let next = shelves[s + 1].apps
-            return next[min(column, next.count - 1)].path
+            let next = shelves[s + 1]
+            return next[min(column, next.count - 1)]
         } else {
-            if i >= columns { return shelf[i - columns].path }
+            if i >= columns { return shelf[i - columns] }
             guard s > 0 else { return selected }
-            let previous = shelves[s - 1].apps
+            let previous = shelves[s - 1]
             let lastRow = (previous.count - 1) / columns * columns
-            return previous[min(lastRow + column, previous.count - 1)].path
+            return previous[min(lastRow + column, previous.count - 1)]
         }
     }
 }
@@ -449,21 +458,53 @@ private enum PickerMode: String {
     case windows, apps
 }
 
+/// How the Windows list is laid out: grouped under each app, or all at once
+/// at their own shapes, as Mission Control shows them.
+private enum WindowLayout: String {
+    case byApp, all
+}
+
 private struct WindowPicker: View {
     let connection: HostConnection
     let model: ViewerModel
     let target: HostTarget
-    @AppStorage("pickerMode") private var mode = PickerMode.windows
+    /// What is shown, and how. Kept in @State and only saved to the
+    /// defaults below: a change that comes back through @AppStorage arrives
+    /// from UserDefaults' notification and loses the click's animation, so
+    /// the lists would swap without moving.
+    @State private var mode: PickerMode
+    @State private var windowLayout: WindowLayout
+    @AppStorage("pickerMode") private var savedMode = PickerMode.windows
+    @AppStorage("windowLayout") private var savedWindowLayout = WindowLayout.byApp
+    /// Lets a window's thumbnail move from one layout to the other.
+    @Namespace private var thumbnails
     @State private var query = ""
     @State private var selection: UInt32?
+    /// The selected app tile, by `AppShelf.key`.
     @State private var appSelection: String?
+    @State private var category: AppCategory?
+    /// The recent apps' order as it was when the picker was last shown.
+    /// Opening an app moves it to the front of `RecentApplications` at once,
+    /// but the row keeps this order until the picker is hidden, so the tile
+    /// under the pointer never changes between the clicks of a double-click.
+    @State private var recentOrder: [String] = []
     @State private var launching: String?
     /// Until the user picks a window, the selection follows the first match.
     @State private var userSelected = false
     @State private var columns = 3
+    /// The grids' width inside their padding, for arrow keys in the All Windows layout.
+    @State private var gridWidth: CGFloat = 0
     @State private var showsVideoQuality = false
-    @FocusState private var searchFocused: Bool
     @FocusState private var gridFocused: Bool
+
+    init(connection: HostConnection, model: ViewerModel, target: HostTarget) {
+        self.connection = connection
+        self.model = model
+        self.target = target
+        let defaults = UserDefaults.standard
+        _mode = State(initialValue: defaults.string(forKey: "pickerMode").flatMap(PickerMode.init) ?? .windows)
+        _windowLayout = State(initialValue: defaults.string(forKey: "windowLayout").flatMap(WindowLayout.init) ?? .byApp)
+    }
 
     /// Windows matching the search, grouped by app in the host's front-to-back order.
     private var groups: [AppGroup] {
@@ -471,8 +512,7 @@ private struct WindowPicker: View {
         var groups: [AppGroup] = []
         var index: [String: Int] = [:]
         for window in connection.listing?.windows ?? [] {
-            if !needle.isEmpty, !window.title.localizedCaseInsensitiveContains(needle),
-               !window.applicationName.localizedCaseInsensitiveContains(needle) { continue }
+            if !SearchMatch.matches(window.title, needle), !SearchMatch.matches(window.applicationName, needle) { continue }
             let key = window.bundleIdentifier ?? window.applicationName
             if let position = index[key] {
                 groups[position].windows.append(window)
@@ -485,20 +525,26 @@ private struct WindowPicker: View {
         return groups
     }
 
-    /// Apps matching the search, in the order the user is likeliest to want
-    /// them: the ones opened from here lately (most recent first), then the
-    /// others running there, then the rest by name.
+    /// The groups the host's apps fall into, in the chips' order.
+    private var categories: [AppCategory] {
+        let present = Set(connection.offeredApplications.compactMap(AppCategory.init))
+        return AppCategory.allCases.filter(present.contains)
+    }
+
+    /// Like the Mac's own Apps view: one row of the apps opened from here
+    /// lately, then every app by name. A search or a chosen group shows just
+    /// the matching apps by name.
     private var appShelves: [AppShelf] {
         let needle = query.trimmingCharacters(in: .whitespaces)
-        let all = connection.offeredApplications
-        let matching = needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
-        let recent = RecentApplications.applications(host: connection.welcome?.hostID ?? "", in: matching)
-        let recentPaths = Set(recent.map(\.path))
-        let rest = matching.filter { !recentPaths.contains($0.path) }
-        return [AppShelf(title: String(localized: "Recent"), apps: recent),
-                AppShelf(title: String(localized: "Running"), apps: rest.filter(\.isRunning)),
-                AppShelf(title: String(localized: "Not Running"), apps: rest.filter { !$0.isRunning })]
-            .filter { !$0.apps.isEmpty }
+        var apps = connection.offeredApplications
+        if let category { apps = apps.filter { AppCategory($0) == category } }
+        if !needle.isEmpty { apps = apps.filter { SearchMatch.matches($0.name, needle) } }
+        var shelves = [AppShelf(id: "all", apps: apps)]
+        if needle.isEmpty, category == nil {
+            let byPath = Dictionary(apps.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+            shelves.insert(AppShelf(id: "recent", apps: Array(recentOrder.compactMap { byPath[$0] }.prefix(columns))), at: 0)
+        }
+        return shelves.filter { !$0.apps.isEmpty }
     }
 
     var body: some View {
@@ -506,9 +552,10 @@ private struct WindowPicker: View {
         let flat = groups.flatMap(\.windows)
         let shelves = mode == .apps ? appShelves : []
         let apps = shelves.flatMap(\.apps)
+        let appKeys = shelves.flatMap(\.keys)
         VStack(spacing: 0) {
             banners
-            Picker("Show", selection: $mode) {
+            Picker("Show", selection: $mode.animation(.smooth(duration: 0.3))) {
                 Text("Windows").tag(PickerMode.windows)
                 Text("Apps").tag(PickerMode.apps)
             }
@@ -516,68 +563,70 @@ private struct WindowPicker: View {
             .labelsHidden()
             .fixedSize()
             .help("Windows open on that Mac, or apps to open there")
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .trailing) {
+                if mode == .windows {
+                    Picker("Layout", selection: $windowLayout.animation(.smooth(duration: 0.4))) {
+                        Label("By App", systemImage: "square.grid.2x2").tag(WindowLayout.byApp)
+                        Label("All Windows", systemImage: "rectangle.3.group").tag(WindowLayout.all)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelStyle(.iconOnly)
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("Group windows by app, or show them all at once")
+                    .padding(.trailing, 20)
+                    .transition(.opacity)
+                }
+            }
             .padding(.top, 12)
             GeometryReader { proxy in
-                ScrollViewReader { scroller in
-                    ScrollView {
-                        if mode == .windows {
-                            LazyVStack(alignment: .leading, spacing: 20, pinnedViews: []) {
-                                ForEach(groups) { group in
-                                    AppSection(group: group, connection: connection, selection: selection,
-                                               select: { selection = $0; userSelected = true; gridFocused = true },
-                                               open: open)
-                                }
-                            }
-                            .padding(20)
-                        } else {
-                            // Not lazy: scrollTo can only reach tiles of shelves that have been laid out.
-                            VStack(alignment: .leading, spacing: 20) {
-                                ForEach(shelves) { shelf in
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text(shelf.title).font(.headline)
-                                        LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.appTileWidth), spacing: 8)],
-                                                  alignment: .leading, spacing: 8) {
-                                            ForEach(shelf.apps, id: \.path) { app in appTile(app) }
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(20)
-                        }
-                    }
-                    .onChange(of: selection) { _, id in
-                        if let id { withAnimation(.easeOut(duration: 0.15)) { scroller.scrollTo(id) } }
-                    }
-                    .onChange(of: appSelection) { _, path in
-                        if let path { withAnimation(.easeOut(duration: 0.15)) { scroller.scrollTo(path) } }
+                // Each list slides in from the side its segment is on.
+                ZStack {
+                    if mode == .windows {
+                        windowsPane(groups, flat: flat)
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                    } else {
+                        appsPane(shelves, isEmpty: apps.isEmpty)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
-                .onAppear { columns = Self.columnCount(width: proxy.size.width, mode: mode) }
-                .onChange(of: proxy.size.width) { _, width in columns = Self.columnCount(width: width, mode: mode) }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                .onAppear {
+                    columns = Self.columnCount(width: proxy.size.width, mode: mode)
+                    gridWidth = proxy.size.width - 40
+                }
+                .onChange(of: proxy.size.width) { _, width in
+                    columns = Self.columnCount(width: width, mode: mode)
+                    gridWidth = width - 40
+                }
                 .onChange(of: mode) { _, mode in columns = Self.columnCount(width: proxy.size.width, mode: mode) }
             }
             .focusable()
             .focusEffectDisabled()
             .focused($gridFocused)
             .onKeyPress(.return) { openSelected(in: flat, apps: apps); return .handled }
-            .onKeyPress(.leftArrow) { move(-1, in: flat, shelves: shelves); return .handled }
-            .onKeyPress(.rightArrow) { move(1, in: flat, shelves: shelves); return .handled }
-            .onKeyPress(.upArrow) { move(-columns, in: flat, shelves: shelves); return .handled }
-            .onKeyPress(.downArrow) { move(columns, in: flat, shelves: shelves); return .handled }
-            .overlay { mode == .windows ? AnyView(emptyState(isEmpty: flat.isEmpty)) : AnyView(appsEmptyState(isEmpty: apps.isEmpty)) }
+            .onKeyPress(.leftArrow) { move(.left, in: flat, shelves: shelves); return .handled }
+            .onKeyPress(.rightArrow) { move(.right, in: flat, shelves: shelves); return .handled }
+            .onKeyPress(.upArrow) { move(.up, in: flat, shelves: shelves); return .handled }
+            .onKeyPress(.downArrow) { move(.down, in: flat, shelves: shelves); return .handled }
+            .overlay { if mode == .windows { emptyState(isEmpty: flat.isEmpty) } }
             footer
         }
-        .searchable(text: $query, placement: .toolbar, prompt: mode == .windows ? "Search windows" : "Search apps")
-        .searchFocused($searchFocused)
-        .onSubmit(of: .search) { openSelected(in: flat, apps: apps) }
         .onChange(of: query) {
             userSelected = false
             selection = flat.first?.windowID
-            appSelection = apps.first?.path
+            appSelection = appKeys.first
         }
-        .onChange(of: apps.map(\.path)) { _, paths in
-            if appSelection.map({ !paths.contains($0) }) ?? true { appSelection = paths.first }
+        .onChange(of: appKeys, initial: true) { _, keys in
+            if appSelection.map({ !keys.contains($0) }) ?? true { appSelection = keys.first }
         }
+        .onChange(of: categories) { _, categories in
+            if let category, !categories.contains(category) { self.category = nil }
+        }
+        .onChange(of: mode) { savedMode = mode }
+        .onChange(of: windowLayout) { savedWindowLayout = windowLayout }
         .task(id: mode) {
             if mode == .apps { await connection.loadApplications() }
         }
@@ -587,8 +636,25 @@ private struct WindowPicker: View {
                 selection = ids.first
             }
         }
-        .toolbar { toolbar }
-        .onAppear { searchFocused = true }
+        .toolbar {
+            toolbar
+            ToolbarItem {
+                LiveSearchField(text: $query, prompt: String(localized: mode == .windows ? "Search windows" : "Search apps"),
+                                onSubmit: { openSelected(in: flat, apps: apps) },
+                                onMove: { move($0, in: flat, shelves: shelves) })
+                    .frame(minWidth: 140, idealWidth: 220, maxWidth: 260)
+            }
+        }
+        .onAppear {
+            refreshRecentOrder()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
+            // The hosts window is kept when closed, so this view never
+            // reappears; take the new order once it's out of sight instead.
+            guard let window = note.object as? NSWindow, window.frameAutosaveName == "AnyRemoteHosts",
+                  !window.occlusionState.contains(.visible) else { return }
+            refreshRecentOrder()
+        }
         .task {
             // Thumbnails and the window list stay fresh while the picker is visible.
             while !Task.isCancelled {
@@ -598,12 +664,107 @@ private struct WindowPicker: View {
         }
     }
 
-    private static let appTileWidth: CGFloat = 112
+    private func windowsPane(_ groups: [AppGroup], flat: [WindowSummary]) -> some View {
+        ScrollViewReader { scroller in
+            ScrollView {
+                // Each thumbnail is matched across the two layouts, so
+                // switching moves every window to its new place.
+                Group {
+                    if windowLayout == .byApp {
+                        VStack(alignment: .leading, spacing: 20) {
+                            ForEach(groups) { group in
+                                AppSection(group: group, connection: connection, namespace: thumbnails) { window in
+                                    WindowCard(window: window, thumbnail: connection.thumbnails[window.windowID],
+                                               isSelected: selection == window.windowID,
+                                               isOpen: connection.openWindowIDs.contains(window.windowID),
+                                               namespace: thumbnails)
+                                        .modifier(windowActions(window))
+                                        .tiltOnHover()
+                                }
+                            }
+                        }
+                    } else {
+                        MasonryLayout(aspects: flat.map(Self.aspect), columns: columns, spacing: Self.masonrySpacing,
+                                      captionHeight: WindowTile.captionHeight) {
+                            ForEach(flat, id: \.windowID) { window in
+                                WindowTile(window: window, thumbnail: connection.thumbnails[window.windowID],
+                                           icon: window.bundleIdentifier.flatMap { connection.windowIcons[$0] },
+                                           isSelected: selection == window.windowID,
+                                           isOpen: connection.openWindowIDs.contains(window.windowID),
+                                           namespace: thumbnails)
+                                    .modifier(windowActions(window))
+                                    .tiltOnHover()
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: selection) { _, id in
+                if let id { withAnimation(.easeOut(duration: 0.15)) { scroller.scrollTo(id) } }
+            }
+        }
+    }
+
+    private func appsPane(_ shelves: [AppShelf], isEmpty: Bool) -> some View {
+        VStack(spacing: 0) {
+            if !categories.isEmpty {
+                CategoryChips(categories: categories, selection: $category)
+                    .padding(.top, 12)
+            }
+            ScrollViewReader { scroller in
+                ScrollView {
+                    // Not lazy: scrollTo can only reach tiles of shelves that have been laid out.
+                    VStack(spacing: 0) {
+                        ForEach(Array(shelves.enumerated()), id: \.element.id) { index, shelf in
+                            if index > 0 { Divider().padding(.vertical, 14) }
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Self.appSpacing, alignment: .top),
+                                                     count: columns),
+                                      spacing: 14) {
+                                ForEach(shelf.apps, id: \.path) { app in appTile(app, key: shelf.key(app)) }
+                            }
+                        }
+                    }
+                    // Full width even when nothing matches; an empty grid
+                    // would otherwise shrink the scroll view (and the
+                    // no-results message over it) to nothing.
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onChange(of: appSelection) { _, key in
+                    if let key { withAnimation(.easeOut(duration: 0.15)) { scroller.scrollTo(key) } }
+                }
+            }
+            .overlay { appsEmptyState(isEmpty: isEmpty) }
+        }
+    }
+
+    private static let appTileWidth: CGFloat = 96
+    private static let masonrySpacing: CGFloat = 16
+
+    private static func aspect(_ window: WindowSummary) -> CGFloat {
+        window.frame.height > 0 ? window.frame.width / window.frame.height : 1
+    }
+
+    private func windowActions(_ window: WindowSummary) -> WindowCardActions {
+        WindowCardActions(window: window, connection: connection,
+                          select: { selection = window.windowID; userSelected = true; gridFocused = true },
+                          open: { open(window) })
+    }
+    private static let appSpacing: CGFloat = 8
 
     private static func columnCount(width: CGFloat, mode: PickerMode) -> Int {
-        // Mirrors the grids' adaptive GridItems inside 20 pt padding.
-        let (tile, spacing): (CGFloat, CGFloat) = mode == .windows ? (200, 16) : (appTileWidth, 8)
+        // Mirrors the grids inside their 20 pt side padding.
+        let (tile, spacing): (CGFloat, CGFloat) = mode == .windows ? (200, 16) : (appTileWidth, appSpacing)
         return max(1, Int((width - 40 + spacing) / (tile + spacing)))
+    }
+
+    private func refreshRecentOrder() {
+        recentOrder = RecentApplications.paths(host: connection.welcome?.hostID ?? "")
     }
 
     @ToolbarContentBuilder
@@ -675,12 +836,30 @@ private struct WindowPicker: View {
         .background(.bar)
     }
 
-    private func move(_ offset: Int, in flat: [WindowSummary], shelves: [AppShelf]) {
+    private func move(_ direction: MasonryPlacement.Direction, in flat: [WindowSummary], shelves: [AppShelf]) {
+        let offset = switch direction {
+        case .left: -1
+        case .right: 1
+        case .up: -columns
+        case .down: columns
+        }
         if mode == .apps {
-            appSelection = AppShelf.move(from: appSelection, by: offset, columns: columns, in: shelves) ?? appSelection
+            appSelection = AppShelf.move(from: appSelection, by: offset, columns: columns, in: shelves.map(\.keys))
+                ?? appSelection
             return
         }
         guard !flat.isEmpty else { return }
+        if windowLayout == .all {
+            let placement = MasonryPlacement(aspects: flat.map(Self.aspect), columns: columns, width: gridWidth,
+                                             spacing: Self.masonrySpacing, captionHeight: WindowTile.captionHeight)
+            if let current = flat.firstIndex(where: { $0.windowID == selection }) {
+                if let next = placement.neighbour(of: current, direction) { selection = flat[next].windowID }
+            } else {
+                selection = flat.first?.windowID
+            }
+            userSelected = true
+            return
+        }
         let current = flat.firstIndex { $0.windowID == selection } ?? (offset > 0 ? -1 : flat.count)
         selection = flat[min(max(current + offset, 0), flat.count - 1)].windowID
         userSelected = true
@@ -688,19 +867,21 @@ private struct WindowPicker: View {
 
     private func openSelected(in flat: [WindowSummary], apps: [HostApplication]) {
         if mode == .apps {
-            if let app = apps.first(where: { $0.path == appSelection }) ?? apps.first { launch(app) }
+            let path = appSelection.map(AppShelf.path(ofKey:))
+            if let app = apps.first(where: { $0.path == path }) ?? apps.first { launch(app) }
             return
         }
         if let window = flat.first(where: { $0.windowID == selection }) ?? flat.first { open(window) }
     }
 
-    private func appTile(_ app: HostApplication) -> some View {
+    private func appTile(_ app: HostApplication, key: String) -> some View {
         AppTile(application: app, icon: connection.applicationIcons[app.path],
-                isSelected: appSelection == app.path, isLaunching: launching == app.path)
-            .id(app.path)
+                isSelected: appSelection == key, isLaunching: launching == app.path)
+            .tiltOnHover(tilts: false)
+            .id(key)
             .onAppear { connection.needIcon(forApplicationAt: app.path) }
             .onTapGesture(count: 2) { launch(app) }
-            .simultaneousGesture(TapGesture().onEnded { appSelection = app.path; gridFocused = true })
+            .simultaneousGesture(TapGesture().onEnded { appSelection = key; gridFocused = true })
             .contextMenu {
                 Button(app.isRunning ? "Show" : "Open") { launch(app) }
                 if app.isRunning {
@@ -725,6 +906,39 @@ private struct WindowPicker: View {
     }
 }
 
+/// The row of group chips above the Apps grid; choosing the chosen one again
+/// shows every app.
+private struct CategoryChips: View {
+    let categories: [AppCategory]
+    @Binding var selection: AppCategory?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(categories) { category in
+                    let isSelected = selection == category
+                    Button {
+                        withAnimation(.smooth(duration: 0.2)) { selection = isSelected ? nil : category }
+                    } label: {
+                        Text(category.title)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                            .background(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary.opacity(0.7)),
+                                        in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    }
+}
+
+/// An app as the Mac's Apps view shows it: a large icon with its name below,
+/// and a dot under the icon while it's running, as in the Dock.
 private struct AppTile: View {
     let application: HostApplication
     let icon: Data?
@@ -732,44 +946,43 @@ private struct AppTile: View {
     let isLaunching: Bool
 
     var body: some View {
-        VStack(spacing: 6) {
-            ZStack(alignment: .bottomTrailing) {
+        VStack(spacing: 3) {
+            Group {
                 if let icon, let image = NSImage(data: icon) {
-                    Image(nsImage: image).resizable().frame(width: 56, height: 56)
+                    Image(nsImage: image).resizable()
                 } else {
-                    Image(systemName: "app.dashed").font(.system(size: 40)).frame(width: 56, height: 56)
-                        .foregroundStyle(.tertiary)
-                }
-                if isLaunching {
-                    ProgressView().controlSize(.small)
+                    Image(systemName: "app.dashed").font(.system(size: 46)).foregroundStyle(.tertiary)
                 }
             }
-            Text(application.name)
-                .font(.callout)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
+            .frame(width: 64, height: 64)
+            .pressBounce()
+            .opacity(isLaunching ? 0.5 : 1)
+            .overlay { if isLaunching { ProgressView().controlSize(.small) } }
+            .padding(6)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.15) : .clear))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 3))
             Circle()
                 .fill(application.isRunning ? Color.secondary : .clear)
                 .frame(width: 4, height: 4)
-                .help(application.isRunning ? "Running" : "")
+            Text(application.name)
+                .font(.callout)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity)
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 6)
-        .frame(width: 112)
-        .background(RoundedRectangle(cornerRadius: 10).fill(isSelected ? Color.accentColor.opacity(0.18) : .clear))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2))
+        .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .help(application.path)
+        .help(application.isRunning ? String(localized: "\(application.name) — Running") : application.name)
     }
 }
 
-private struct AppSection: View {
+private struct AppSection<Card: View>: View {
     let group: AppGroup
     let connection: HostConnection
-    let selection: UInt32?
-    let select: (UInt32) -> Void
-    let open: (WindowSummary) -> Void
+    let namespace: Namespace.ID
+    @ViewBuilder let card: (WindowSummary) -> Card
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -784,24 +997,44 @@ private struct AppSection: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 16, alignment: .top)],
                       alignment: .leading, spacing: 16) {
-                ForEach(group.windows, id: \.windowID) { window in
-                    WindowCard(window: window, thumbnail: connection.thumbnails[window.windowID],
-                               isSelected: selection == window.windowID,
-                               isOpen: connection.openWindowIDs.contains(window.windowID))
-                        .id(window.windowID)
-                        .onTapGesture(count: 2) { open(window) }
-                        .simultaneousGesture(TapGesture().onEnded { select(window.windowID) })
-                        .contextMenu {
-                            if connection.openWindowIDs.contains(window.windowID) {
-                                Button("Switch to This Window") { open(window) }
-                                Button("Close on This Mac") { connection.closeMirror(windowID: window.windowID) }
-                            } else {
-                                Button("Open") { open(window) }
-                            }
-                        }
-                }
+                ForEach(group.windows, id: \.windowID, content: card)
             }
         }
+    }
+}
+
+/// What a window's card does in either layout: a click selects it, a
+/// double-click opens it, and its menu opens or closes it here.
+private struct WindowCardActions: ViewModifier {
+    let window: WindowSummary
+    let connection: HostConnection
+    let select: () -> Void
+    let open: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .id(window.windowID)
+            .onTapGesture(count: 2, perform: open)
+            .simultaneousGesture(TapGesture().onEnded(select))
+            .contextMenu {
+                if connection.openWindowIDs.contains(window.windowID) {
+                    Button("Switch to This Window", action: open)
+                    Button("Close on This Mac") { connection.closeMirror(windowID: window.windowID) }
+                } else {
+                    Button("Open", action: open)
+                }
+            }
+    }
+}
+
+private struct OpenedBadge: View {
+    var body: some View {
+        Text("Opened")
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(.tint, in: Capsule())
+            .foregroundStyle(.white)
+            .padding(8)
     }
 }
 
@@ -810,6 +1043,7 @@ private struct WindowCard: View {
     let thumbnail: Data?
     let isSelected: Bool
     let isOpen: Bool
+    let namespace: Namespace.ID
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -817,20 +1051,15 @@ private struct WindowCard: View {
                 RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.6))
                 if let thumbnail, let image = NSImage(data: thumbnail) {
                     Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                        .matchedGeometryEffect(id: window.windowID, in: namespace)
                         .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
                         .padding(10)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                if isOpen {
-                    Text("Opened")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(.tint, in: Capsule())
-                        .foregroundStyle(.white)
-                        .padding(8)
-                }
+                if isOpen { OpenedBadge() }
             }
             .frame(height: 140)
+            .tiltGlare(cornerRadius: 10)
             .overlay(RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 3))
             VStack(alignment: .leading, spacing: 1) {
@@ -844,6 +1073,54 @@ private struct WindowCard: View {
         }
         .contentShape(Rectangle())
         .help(window.title)
+    }
+}
+
+/// A window in the All Windows layout: its thumbnail at the window's own
+/// shape, and the app's icon with the window's title below, as in Mission Control.
+private struct WindowTile: View {
+    let window: WindowSummary
+    let thumbnail: Data?
+    let icon: Data?
+    let isSelected: Bool
+    let isOpen: Bool
+    let namespace: Namespace.ID
+
+    static let captionHeight: CGFloat = 28
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack(alignment: .topTrailing) {
+                if let thumbnail, let image = NSImage(data: thumbnail) {
+                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .tiltGlare(cornerRadius: 8)
+                        .matchedGeometryEffect(id: window.windowID, in: namespace)
+                        .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.quaternary.opacity(0.6))
+                }
+                if isOpen { OpenedBadge() }
+            }
+            .padding(5)
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 3))
+            HStack(spacing: 5) {
+                if let icon, let image = NSImage(data: icon) {
+                    Image(nsImage: image).resizable().frame(width: 16, height: 16)
+                }
+                Text(window.title.isEmpty ? window.applicationName : window.title)
+                    .lineLimit(1)
+                    .fontWeight(isSelected ? .medium : .regular)
+            }
+            .font(.callout)
+            .padding(.horizontal, 4)
+            .frame(maxWidth: .infinity)
+            .frame(height: Self.captionHeight)
+        }
+        .contentShape(Rectangle())
+        .help(window.title.isEmpty ? window.applicationName : "\(window.applicationName) — \(window.title)")
     }
 }
 
