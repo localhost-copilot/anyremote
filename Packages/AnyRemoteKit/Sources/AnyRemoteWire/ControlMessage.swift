@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 23
+public let anyRemoteProtocolVersion: UInt16 = 24
 
 /// Cleartext handshake exchanged before the session keys exist.
 ///
@@ -12,8 +12,12 @@ public let anyRemoteProtocolVersion: UInt16 = 23
 /// different protocols can still tell each other their versions and one can
 /// ask the other to update itself (`purpose: .update`).
 public enum HandshakeMessage: Codable, Equatable, Sendable {
+    /// `credentialID` names the viewer's key (`PairingCredential.id`; nil
+    /// for the legacy shared code); `viewerID` is the viewer's own host ID,
+    /// sent when pairing.
     case clientHello(version: UInt16, nonce: Data, viewerName: String,
-                     appVersion: String? = nil, purpose: HandshakePurpose? = nil)
+                     appVersion: String? = nil, purpose: HandshakePurpose? = nil,
+                     credentialID: String? = nil, viewerID: String? = nil)
     case serverHello(version: UInt16, nonce: Data, hostID: String, hostName: String, sessionID: UInt32)
     /// Sent instead of `serverHello`, or in reply to an unauthenticated frame.
     /// `host` tells a viewer on another protocol which AnyRemote that Mac runs.
@@ -24,12 +28,28 @@ public enum HandshakeMessage: Codable, Equatable, Sendable {
     case updateRequest(proof: Data)
     /// The host downloaded and checked `version` and is about to relaunch with it.
     case updateStarted(version: String)
+
+    // Pairing (`purpose: .pair`, protocol 24): SPAKE2 with the six digits
+    // the host shows, the viewer as party A.
+
+    /// The host shows a code now; the viewer asks for it.
+    case pairingStarted(hostID: String, hostName: String)
+    /// The viewer's SPAKE2 share for the code typed. Again after a wrong code.
+    case pairingShare(Data)
+    /// The host's share and confirmation, and the ID of the key the pairing makes.
+    case pairingReply(share: Data, confirmation: Data, credentialID: String)
+    /// The viewer's confirmation, sent only once the host's checked out.
+    case pairingConfirm(Data)
+    /// The host stored the key; the connection ends.
+    case pairingDone
 }
 
 /// Why a viewer connects: to control the host, or only to ask it to update.
 public enum HandshakePurpose: String, Codable, Sendable {
     case session
     case update
+    /// To pair with a six-digit code shown on the host (protocol 24).
+    case pair
 }
 
 /// Which AnyRemote a Mac runs. Part of the frozen handshake.
@@ -92,10 +112,14 @@ public struct WindowSummary: Codable, Hashable, Sendable {
     public var title: String
     public var frame: CGRect
     public var isResizable: Bool?
+    /// The app's bundle, so the viewer can quit it from the window's menu.
+    /// Nil from hosts that predate it, and for processes without a bundle.
+    public var applicationPath: String?
 
     public init(windowID: UInt32, pid: Int32, applicationName: String, bundleIdentifier: String?,
-                title: String, frame: CGRect, isResizable: Bool? = nil) {
+                title: String, frame: CGRect, isResizable: Bool? = nil, applicationPath: String? = nil) {
         self.windowID = windowID
+        self.applicationPath = applicationPath
         self.pid = pid
         self.applicationName = applicationName
         self.bundleIdentifier = bundleIdentifier
@@ -152,22 +176,23 @@ public struct PasteboardOfferItem: Codable, Equatable, Sendable {
     }
 }
 
-/// A Mac offering the other side of a pairing: connect back to me with this code.
+/// A Mac offering the other side of a pairing: connect back to me with this key.
 public struct PeerPairing: Codable, Equatable, Sendable {
     public var hostID: String
     public var name: String
-    /// Nil withdraws an earlier offer.
-    public var pairingCode: String?
+    /// A key made for the receiving Mac alone. Nil withdraws an earlier
+    /// offer (and the key is revoked on the offering Mac).
+    public var credential: PairingCredential?
     /// Its listening port, for reaching it by address.
     public var port: UInt16?
     /// It reached the host by address rather than Bonjour, so connecting
     /// back should use its address too.
     public var usesAddress: Bool
 
-    public init(hostID: String, name: String, pairingCode: String?, port: UInt16?, usesAddress: Bool) {
+    public init(hostID: String, name: String, credential: PairingCredential?, port: UInt16?, usesAddress: Bool) {
         self.hostID = hostID
         self.name = name
-        self.pairingCode = pairingCode
+        self.credential = credential
         self.port = port
         self.usesAddress = usesAddress
     }

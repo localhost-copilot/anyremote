@@ -5,8 +5,15 @@ import Foundation
 enum FriendlyText {
     static func message(_ raw: String) -> String {
         let table: [(String, String)] = [
-            ("pairing code is not valid", String(localized: "The pairing code is wrong. Check the code shown in AnyRemote › Settings on that Mac.")),
-            ("authentication failed", String(localized: "The pairing code is wrong. Check the code shown in AnyRemote › Settings on that Mac.")),
+            ("pairing code is not valid", String(localized: "That Mac no longer accepts this Mac’s key. Pair them again.")),
+            ("authentication failed", String(localized: "That Mac no longer accepts this Mac’s key. Pair them again.")),
+            ("no longer paired", String(localized: "This Mac is no longer paired with that Mac. Pair them again.")),
+            ("pairing code expired", String(localized: "The code expired. Pair again to get a new one.")),
+            ("wrong too many times", String(localized: "The code was wrong too many times. Pair again to get a new one.")),
+            ("Another Mac is pairing", String(localized: "Another Mac is pairing with that Mac. Try again in a moment.")),
+            ("Too many wrong pairing codes", String(localized: "That Mac refused pairing after too many wrong codes. Try again in a few minutes.")),
+            ("Pairing was cancelled", String(localized: "Pairing was cancelled on that Mac.")),
+            ("pairs differently", String(localized: "That Mac runs an older AnyRemote. Update it, then pair again.")),
             ("being controlled by", String(localized: "That Mac is being controlled by someone else.")),
             ("Remote control is turned off", String(localized: "That Mac has turned off “Allow Other Macs to Control This Mac”.")),
             ("Remote control was turned off", String(localized: "That Mac has turned off “Allow Other Macs to Control This Mac”.")),
@@ -38,7 +45,7 @@ enum FriendlyText {
     }
 
     static func isPairingFailure(_ raw: String) -> Bool {
-        raw.localizedCaseInsensitiveContains("pairing code") || raw.localizedCaseInsensitiveContains("authentication failed")
+        ["pairing code", "authentication failed", "no longer paired"].contains { raw.localizedCaseInsensitiveContains($0) }
     }
 
     static func isBusy(_ raw: String) -> Bool { raw.localizedCaseInsensitiveContains("being controlled") }

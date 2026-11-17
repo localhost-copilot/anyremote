@@ -22,9 +22,17 @@ final class HostSettingsModel {
             self?.status = status
             self?.onStatusChange?(status)
         }
+        service.onPairedViewersChange = { [weak self] in self?.reloadSettings() }
+    }
+
+    /// Takes changes made elsewhere: a Mac that paired, or a key offered to one.
+    func reloadSettings() {
+        let current = service.settingsStore.settings
+        if current != settings { settings = current }
     }
 
     func refreshPermissions() {
+        reloadSettings()
         let current = HostService.permissions
         if current != permissions { permissions = current }
         let driver = MicrophoneDriverInstaller.status
@@ -45,10 +53,21 @@ final class HostSettingsModel {
         }
     }
 
-    func resetCode() {
-        service.settingsStore.resetPairingCode()
-        settings = service.settingsStore.settings
-        service.disconnectViewer()
+    /// Revokes a paired Mac's key (nil: the legacy code) after asking.
+    func confirmRemoval(of viewer: PairedViewer?) {
+        let alert = NSAlert()
+        if let viewer {
+            alert.messageText = String(localized: "Remove “\(viewer.name)”?")
+            alert.informativeText = String(localized: "It can no longer control this Mac until it pairs again. If it’s connected now, it’s disconnected.")
+        } else {
+            alert.messageText = String(localized: "Remove the old pairing code?")
+            alert.informativeText = String(localized: "Macs paired with the 20-character code of earlier versions can no longer control this Mac until they pair again.")
+        }
+        alert.addButton(withTitle: String(localized: "Remove"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        service.revokeViewer(id: viewer?.id)
+        reloadSettings()
     }
 
     func setVirtualDisplay(_ mode: HostSettings.VirtualDisplayMode) {
@@ -148,11 +167,6 @@ final class HostSettingsModel {
         alert.addButton(withTitle: String(localized: "Restart Now"))
         alert.addButton(withTitle: String(localized: "Later"))
         if alert.runModal() == .alertFirstButtonReturn { Self.relaunch() }
-    }
-
-    func copyCode() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(settings.code?.description ?? "", forType: .string)
     }
 
     /// Screen Recording only takes effect in a new process.
@@ -315,27 +329,47 @@ struct HostSettingsView: View {
         }
     }
 
+    /// The Macs that may control this one, each with its own key.
     private var pairingSection: some View {
-        Section("Pairing Code") {
-            VStack(alignment: .leading, spacing: 10) {
+        Section {
+            ForEach(model.settings.viewers) { viewer in
                 HStack {
-                    Text(model.settings.code?.description ?? "–")
-                        .font(.system(size: 20, weight: .medium, design: .monospaced))
-                        .textSelection(.enabled)
+                    Label {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(verbatim: viewer.name)
+                            Text("Paired \(viewer.created.formatted(date: .abbreviated, time: .omitted))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "macmini")
+                    }
                     Spacer()
-                    Button("Copy") { model.copyCode() }
+                    Button("Remove…") { model.confirmRemoval(of: viewer) }
                 }
-                Text("Enter it once on the Mac that will control this one. Anyone with this code can control this Mac, so keep it private.")
-                    .font(.callout).foregroundStyle(.secondary)
             }
-            Button("Reset Pairing Code…") {
-                let alert = NSAlert()
-                alert.messageText = String(localized: "Reset the pairing code?")
-                alert.informativeText = String(localized: "Paired Macs will need to enter the new code, and the current session will be disconnected.")
-                alert.addButton(withTitle: String(localized: "Reset"))
-                alert.addButton(withTitle: String(localized: "Cancel"))
-                if alert.runModal() == .alertFirstButtonReturn { model.resetCode() }
+            if model.settings.legacyCode != nil {
+                HStack {
+                    Label {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Macs paired with the old code")
+                            Text("The 20-character code of AnyRemote before 0.31")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "key")
+                    }
+                    Spacer()
+                    Button("Remove…") { model.confirmRemoval(of: nil) }
+                }
             }
+            if model.settings.viewers.isEmpty, model.settings.legacyCode == nil {
+                Text("No Mac is paired with this one yet.").foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Paired Macs")
+        } footer: {
+            Text("To pair another Mac, choose this Mac in AnyRemote on it. This Mac then shows a six-digit code to enter there.")
+                .font(.callout).foregroundStyle(.secondary)
         }
     }
 

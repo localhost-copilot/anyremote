@@ -2,7 +2,7 @@ import AnyRemoteNetwork
 import AnyRemoteWire
 import Foundation
 
-/// A host this viewer knows the pairing code of.
+/// A Mac this one has paired with (or that offered the way back).
 public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
     /// The host's stable ID once known; before the first connection, the address.
     public var id: String
@@ -10,7 +10,10 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
     /// "host:port" for manual entries; nil for hosts reached through Bonjour.
     public var address: String?
     public var bonjourName: String?
-    public var pairingCode: String
+    /// The key to connect with: the Mac's own for this one, or its legacy
+    /// shared code (Macs paired before 0.31). Nil until paired, for a Mac
+    /// added by address.
+    public var credential: PairingCredential?
     public var lastConnected: Date?
     /// Added because that Mac paired with this one and offered the way back,
     /// rather than by entering its code here.
@@ -24,14 +27,14 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
     /// Frames a second to show that Mac's windows at; nil: 60.
     public var frameRate: Int?
 
-    public init(id: String, name: String, address: String?, bonjourName: String?, pairingCode: String,
+    public init(id: String, name: String, address: String?, bonjourName: String?, credential: PairingCredential?,
                 lastConnected: Date? = nil, fromPeer: Bool = false, sharesBack: Bool = true,
                 maximumBitRate: Int? = nil, frameRate: Int? = nil) {
         self.id = id
         self.name = name
         self.address = address
         self.bonjourName = bonjourName
-        self.pairingCode = pairingCode
+        self.credential = credential
         self.lastConnected = lastConnected
         self.fromPeer = fromPeer
         self.sharesBack = sharesBack
@@ -40,7 +43,8 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, address, bonjourName, pairingCode, lastConnected, fromPeer, sharesBack, maximumBitRate, frameRate
+        case id, name, address, bonjourName, credential, pairingCode, lastConnected, fromPeer, sharesBack,
+             maximumBitRate, frameRate
     }
 
     public init(from decoder: Decoder) throws {
@@ -49,7 +53,10 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
         name = try container.decode(String.self, forKey: .name)
         address = try container.decodeIfPresent(String.self, forKey: .address)
         bonjourName = try container.decodeIfPresent(String.self, forKey: .bonjourName)
-        pairingCode = try container.decode(String.self, forKey: .pairingCode)
+        // Before 0.31 every Mac was reached with its shared code.
+        credential = try container.decodeIfPresent(PairingCredential.self, forKey: .credential)
+            ?? container.decodeIfPresent(String.self, forKey: .pairingCode).flatMap(PairingCode.init)
+                .map(PairingCredential.legacy)
         lastConnected = try container.decodeIfPresent(Date.self, forKey: .lastConnected)
         fromPeer = try container.decodeIfPresent(Bool.self, forKey: .fromPeer) ?? false
         // Pairings from before this setting existed share back too.
@@ -58,7 +65,19 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
         frameRate = try container.decodeIfPresent(Int.self, forKey: .frameRate)
     }
 
-    public var code: PairingCode? { PairingCode(pairingCode) }
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(address, forKey: .address)
+        try container.encodeIfPresent(bonjourName, forKey: .bonjourName)
+        try container.encodeIfPresent(credential, forKey: .credential)
+        try container.encodeIfPresent(lastConnected, forKey: .lastConnected)
+        try container.encode(fromPeer, forKey: .fromPeer)
+        try container.encode(sharesBack, forKey: .sharesBack)
+        try container.encodeIfPresent(maximumBitRate, forKey: .maximumBitRate)
+        try container.encodeIfPresent(frameRate, forKey: .frameRate)
+    }
 }
 
 /// Viewer-side store of paired hosts (`viewer.json`, 0600).
@@ -105,25 +124,25 @@ public final class PairedHostStore: @unchecked Sendable {
     }
 
     public enum PeerPairingOutcome: Equatable, Sendable {
-        case added, codeChanged, addressChanged, removed, unchanged
+        case added, keyChanged, addressChanged, removed, unchanged
     }
 
-    /// An offer adds the Mac, or refreshes the code of a Mac already known
-    /// (it was reset there) and, for a Mac added by an offer, the address it
-    /// connected from (it moved: another network, a new DHCP lease). A
-    /// withdrawal removes only a Mac that was added by an offer, never one
-    /// paired here by hand.
+    /// An offer adds the Mac, or takes the key of a Mac already known when
+    /// that's new (it paired again, or this Mac had only its legacy code)
+    /// and, for a Mac added by an offer, the address it connected from (it
+    /// moved: another network, a new DHCP lease). A withdrawal removes only
+    /// a Mac that was added by an offer, never one paired here by hand.
     static func applying(_ pairing: PeerPairing, address: String?, ownID: String,
                          to hosts: [PairedHost]) -> ([PairedHost], PeerPairingOutcome) {
         guard pairing.hostID != ownID else { return (hosts, .unchanged) }
         var hosts = hosts
         let index = hosts.firstIndex { $0.id == pairing.hostID }
-        guard let text = pairing.pairingCode else {
+        guard let credential = pairing.credential else {
             guard let index, hosts[index].fromPeer else { return (hosts, .unchanged) }
             hosts.remove(at: index)
             return (hosts, .removed)
         }
-        guard let code = PairingCode(text) else { return (hosts, .unchanged) }
+        guard !credential.isLegacy else { return (hosts, .unchanged) }
         let byAddress = pairing.usesAddress && address != nil
         if let index {
             var outcome = PeerPairingOutcome.unchanged
@@ -132,14 +151,16 @@ public final class PairedHostStore: @unchecked Sendable {
                 hosts[index].bonjourName = nil
                 outcome = .addressChanged
             }
-            if hosts[index].pairingCode != code.canonical {
-                hosts[index].pairingCode = code.canonical
-                outcome = .codeChanged
+            // A key of its own beats the legacy code, but one paired here
+            // stays: the offer is for connecting back, not instead.
+            if hosts[index].credential != credential, hosts[index].fromPeer || hosts[index].credential?.isLegacy != false {
+                hosts[index].credential = credential
+                outcome = .keyChanged
             }
             return (hosts, outcome)
         }
         hosts.append(PairedHost(id: pairing.hostID, name: pairing.name, address: byAddress ? address : nil,
-                                bonjourName: byAddress ? nil : pairing.name, pairingCode: code.canonical,
+                                bonjourName: byAddress ? nil : pairing.name, credential: credential,
                                 fromPeer: true))
         hosts.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         return (hosts, .added)

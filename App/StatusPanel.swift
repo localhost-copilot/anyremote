@@ -89,6 +89,10 @@ enum PanelResult: Identifiable {
 /// controlling this Mac. So the search field has focus the moment it opens,
 /// the apps used last are listed before anything is typed, and Return opens
 /// the top result.
+///
+/// It is laid out like the system's own menu bar panels (Wi‑Fi, Bluetooth):
+/// the app's name with its main switch on top, the Macs as rows with round
+/// icons, the selected one filled, and plain rows for the rest at the bottom.
 struct StatusPanelView: View {
     @Bindable var model: StatusPanelModel
     @FocusState private var searchFocused: Bool
@@ -99,8 +103,11 @@ struct StatusPanelView: View {
         let target = model.target
         let connection = target.flatMap(viewer.connection(for:))
         VStack(spacing: 0) {
-            header(target: target, connection: connection)
-            Divider()
+            SharingHeader(model: model)
+            PanelDivider()
+            MacList(model: model, target: target)
+            PanelDivider()
+            if target != nil { searchField(target: target) }
             Group {
                 if let target {
                     if let connection, connection.state == .connected {
@@ -116,13 +123,14 @@ struct StatusPanelView: View {
                     }
                 }
             }
-            .frame(height: 300)
+            .frame(height: 264)
             // Mirrors aren't observable; the open window and display IDs are, and change with them.
             OpenHereSection(viewer: viewer, presentation: model.presentation,
                             openCount: viewer.connections.values.reduce(0) { $0 + $1.openWindowIDs.count + $1.openDisplayIDs.count })
-            Divider()
-            SharingFooter(model: model)
+            PanelDivider()
+            PanelActions(model: model, target: target, connection: connection)
         }
+        .padding(.vertical, 6)
         .frame(width: 340)
         .fixedSize(horizontal: false, vertical: true)
         .onGeometryChange(for: CGSize.self, of: \.size) { model.actions.resize($0) }
@@ -136,44 +144,30 @@ struct StatusPanelView: View {
         .onExitCommand { model.actions.dismiss() }
     }
 
-    // MARK: Header
+    // MARK: Search
 
-    @ViewBuilder
-    private func header(target: HostTarget?, connection: HostConnection?) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            MacTabs(model: model, target: target)
-            HStack(spacing: 4) {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField(searchPrompt(target), text: $model.query)
-                        .textFieldStyle(.plain)
-                        .font(.title3)
-                        .focused($searchFocused)
-                        .onSubmit { openHighlighted() }
-                        .onKeyPress(.downArrow) { move(1); return .handled }
-                        .onKeyPress(.upArrow) { move(-1); return .handled }
-                        .onChange(of: model.query) { model.highlighted = 0 }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
-                if let connection, connection.state == .connected {
-                    PanelIconButton(symbol: "display", help: String(localized: "Show the whole desktop of this Mac")) {
-                        model.actions.dismiss()
-                        connection.openDesktop()
-                    }
-                    PanelIconButton(symbol: "rectangle.3.group", help: String(localized: "All windows and apps, with previews")) {
-                        model.showPicker(for: target)
-                    }
-                }
-            }
+    private func searchField(target: HostTarget?) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(searchPrompt(target), text: $model.query)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+                .onSubmit { openHighlighted() }
+                .onKeyPress(.downArrow) { move(1); return .handled }
+                .onKeyPress(.upArrow) { move(-1); return .handled }
+                .onChange(of: model.query) { model.highlighted = 0 }
         }
-        .padding(10)
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
     }
 
     private func searchPrompt(_ target: HostTarget?) -> String {
-        guard let target else { return String(localized: "Search apps") }
-        return String(localized: "Open an app on “\(target.name)”")
+        guard target != nil else { return String(localized: "Search apps") }
+        return String(localized: "Search apps and windows")
     }
 
     // MARK: Results
@@ -229,7 +223,7 @@ struct StatusPanelView: View {
     /// Connects to the Mac when needed and brings its app and window lists up to date.
     private func prepare(_ target: HostTarget?) async {
         guard let target else { return }
-        if viewer.connection(for: target) == nil, viewer.code(for: target) != nil, target.kind != .offline {
+        if viewer.connection(for: target) == nil, viewer.isPaired(target), target.kind != .offline {
             await viewer.connect(target)
         }
         guard let connection = viewer.connection(for: target), connection.state == .connected else { return }
@@ -238,58 +232,84 @@ struct StatusPanelView: View {
     }
 }
 
-// MARK: - Mac switcher
+// MARK: - Macs
 
-/// Every paired Mac as a tab, so with several the choice is one click (or
-/// ⌘1…⌘9) and their states are visible at once. The panel remembers the
-/// last one; each Mac keeps its own recent apps.
-private struct MacTabs: View {
+/// Every paired Mac as a row, as the Wi‑Fi panel lists networks: the one the
+/// panel works on has a filled icon, and each shows its state. One click
+/// (or ⌘1…⌘9) switches; the panel remembers the choice, and each Mac keeps
+/// its own recent apps.
+private struct MacList: View {
     let model: StatusPanelModel
     let target: HostTarget?
 
     var body: some View {
         let macs = model.viewer.myMacs
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(Array(macs.enumerated()), id: \.element.id) { index, mac in
-                    MacTab(mac: mac, model: model, isSelected: mac.id == target?.id, number: index + 1)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                PanelSectionTitle("Macs")
+                Spacer()
                 Button { model.showPicker(for: nil) } label: {
-                    Image(systemName: "plus").frame(width: 22, height: 22)
+                    Image(systemName: "plus").font(.system(size: 11, weight: .semibold)).frame(width: 20, height: 18)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help("Pair a Mac…")
+                .padding(.trailing, 12)
             }
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(macs.enumerated()), id: \.element.id) { index, mac in
+                        MacRow(mac: mac, model: model, isSelected: mac.id == target?.id, number: index + 1)
+                    }
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: 3.5 * MacRow.height)
+            .fixedSize(horizontal: false, vertical: true)
         }
+        .padding(.bottom, 4)
     }
 }
 
-private struct MacTab: View {
+private struct MacRow: View {
     let mac: HostTarget
     let model: StatusPanelModel
     let isSelected: Bool
     let number: Int
     @State private var hovering = false
 
+    static let height: CGFloat = 40
+
     var body: some View {
+        let status = PanelHostStatus(model: model.viewer, target: mac)
         Button { model.choose(mac) } label: {
-            HStack(spacing: 5) {
-                StatusDot(color: PanelHostStatus(model: model.viewer, target: mac).color)
-                Text(verbatim: mac.name).lineLimit(1).truncationMode(.middle)
+            HStack(spacing: 10) {
+                Image(systemName: "macmini")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary)))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(verbatim: mac.name).lineLimit(1).truncationMode(.middle)
+                    Text(verbatim: status.text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if status.isConnecting {
+                    ProgressView().controlSize(.mini)
+                } else if number <= 9, model.viewer.myMacs.count > 1 {
+                    Text(verbatim: "⌘\(number)").font(.caption).foregroundStyle(.tertiary)
+                }
             }
-            .font(.callout.weight(isSelected ? .semibold : .regular))
-            .padding(.horizontal, 9)
-            .frame(height: 24)
-            .frame(maxWidth: 150)
-            .background(Capsule().fill(isSelected ? Color.accentColor.opacity(0.22)
-                                      : hovering ? Color.primary.opacity(0.08) : .clear))
-            .contentShape(Capsule())
+            .padding(.horizontal, 8)
+            .frame(height: Self.height)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hovering ? Color.primary.opacity(0.08) : .clear))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, 6)
         .onHover { hovering = $0 }
         .modifier(NumberShortcut(number: number))
-        .help(Text(verbatim: number <= 9 ? "⌘\(number)" : ""))
     }
 }
 
@@ -306,25 +326,30 @@ private struct NumberShortcut: ViewModifier {
     }
 }
 
-/// The connection state of a Mac as a color, matching the picker's sidebar.
+/// A Mac's state in a few words, as the picker's sidebar puts it.
 @MainActor
 private struct PanelHostStatus {
     let model: ViewerModel
     let target: HostTarget
 
-    var color: Color {
-        switch model.connection(for: target)?.state {
-        case .connected?: .green
-        case .connecting?: .orange
-        case .failed?: .red
-        case .disconnected?, nil: target.kind == .offline ? .gray.opacity(0.5) : .gray
-        }
-    }
-}
+    var isConnecting: Bool { model.connection(for: target)?.state == .connecting }
 
-private struct StatusDot: View {
-    let color: Color
-    var body: some View { Circle().fill(color).frame(width: 7, height: 7) }
+    var text: String {
+        let connection = model.connection(for: target)
+        switch connection?.state {
+        case .connected?: return String(localized: "Connected")
+        case .connecting?: return String(localized: "Connecting…")
+        case .failed(let message)?:
+            if connection?.versionMismatch != nil { return String(localized: "Needs an update") }
+            if FriendlyText.isBusy(message) { return String(localized: "In use by someone else") }
+            if FriendlyText.isPairingFailure(message) { return String(localized: "Needs pairing") }
+            return String(localized: "Couldn’t connect")
+        case .disconnected?, nil:
+            break
+        }
+        if !model.isPaired(target) { return String(localized: "Needs pairing") }
+        return target.kind == .offline ? String(localized: "Offline") : String(localized: "Not connected")
+    }
 }
 
 // MARK: - Results list
@@ -352,12 +377,8 @@ private struct ResultsList: View {
                     VStack(alignment: .leading, spacing: 1) {
                         let offsets = sectionOffsets
                         ForEach(Array(results.enumerated()), id: \.offset) { section, entry in
-                            Text(entry.title)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                                .padding(.top, section == 0 ? 4 : 10)
-                                .padding(.bottom, 2)
+                            PanelSectionTitle(verbatim: entry.title, inset: 8)
+                                .padding(.top, section == 0 ? 0 : 6)
                             ForEach(Array(entry.items.enumerated()), id: \.element.id) { index, item in
                                 let position = offsets[section] + index
                                 ResultRow(item: item, connection: connection,
@@ -507,9 +528,9 @@ private struct ConnectionStateView: View {
                 Text("Connecting to “\(target.name)”…").foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if model.viewer.code(for: target) == nil || failure.map(FriendlyText.isPairingFailure) == true {
+        } else if !model.viewer.isPaired(target) || failure.map(FriendlyText.isPairingFailure) == true {
             PanelMessage(symbol: "lock.shield", title: String(localized: "Pair with “\(target.name)”"),
-                         detail: String(localized: "Enter that Mac’s pairing code once, in the AnyRemote window.")) {
+                         detail: String(localized: "Pair once in the AnyRemote window: that Mac shows a code to enter here.")) {
                 Button("Pair…") { model.showPicker(for: target) }
             }
         } else if let failure, FriendlyText.isBusy(failure) {
@@ -568,13 +589,9 @@ private struct OpenHereSection: View {
         let windows = ((viewer.allDesktops as [NSWindowController]) + viewer.allMirrors)
             .sorted { ($0.window?.title ?? "") < ($1.window?.title ?? "") }
         if !windows.isEmpty {
-            Divider()
+            PanelDivider()
             VStack(alignment: .leading, spacing: 1) {
-                Text("Open on This Mac")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 2)
+                PanelSectionTitle("Open on This Mac", inset: 8)
                 ScrollView {
                     VStack(spacing: 1) {
                         ForEach(windows, id: \.self) { OpenHereRow(controller: $0) }
@@ -617,107 +634,159 @@ private struct OpenHereRow: View {
     }
 }
 
-// MARK: - Sharing footer
+// MARK: - Sharing
 
-/// This Mac as a host: whether others can control it, who does right now
-/// (with a way to cut them off), and everything else AnyRemote has, behind ⋯.
-private struct SharingFooter: View {
+/// This Mac as a host, the way the Wi‑Fi panel starts: the name and the main
+/// switch, what it means right now, and who is controlling this Mac (with a
+/// way to cut them off).
+private struct SharingHeader: View {
     let model: StatusPanelModel
 
     private var host: HostSettingsModel { model.host }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 6) {
-                if host.status.viewers.isEmpty {
-                    HStack(spacing: 8) {
-                        StatusDot(color: summary.color)
-                        Text(verbatim: summary.text).foregroundStyle(.secondary).lineLimit(1)
-                        Spacer(minLength: 4)
-                        if !host.settings.isEnabled {
-                            Button("Turn On") { host.setEnabled(true) }.controlSize(.small)
-                        } else if !host.permissions.allGranted {
-                            Button("Fix…") { model.actions.dismiss(); model.actions.showSettings() }.controlSize(.small)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(verbatim: "AnyRemote").font(.headline)
+                    HStack(spacing: 4) {
+                        Text(verbatim: summary).foregroundStyle(.secondary)
+                        if host.settings.isEnabled, !host.permissions.allGranted {
+                            Button("Fix…") { model.actions.dismiss(); model.actions.showSettings() }
+                                .buttonStyle(.link)
                         }
                     }
+                    .font(.caption)
+                    .lineLimit(1)
                 }
-                ForEach(host.status.viewers) { viewer in
-                    HStack(spacing: 8) {
-                        StatusDot(color: .orange)
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(verbatim: viewer.name).lineLimit(1).truncationMode(.middle)
-                            Text("Is controlling this Mac").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 4)
-                        Button("Disconnect") { host.service.disconnectViewer(id: viewer.id) }
-                            .controlSize(.small)
+                Spacer()
+                Toggle("Let Others Control This Mac",
+                       isOn: Binding(get: { host.settings.isEnabled }, set: { host.setEnabled($0) }))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .help("Let Others Control This Mac")
+            }
+            .padding(.horizontal, 14)
+            ForEach(host.status.viewers) { viewer in
+                HStack(spacing: 10) {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white)
+                        .frame(width: 26, height: 26)
+                        .background(Circle().fill(.orange))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: viewer.name).lineLimit(1).truncationMode(.middle)
+                        Text("Is controlling this Mac").font(.caption).foregroundStyle(.secondary)
                     }
+                    Spacer(minLength: 4)
+                    Button("Disconnect") { host.service.disconnectViewer(id: viewer.id) }
+                        .controlSize(.small)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 2)
             }
-            moreMenu
         }
-        .font(.callout)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
     }
 
-    private var summary: (text: String, color: Color) {
-        if !host.settings.isEnabled { return (String(localized: "Others can’t control this Mac"), .gray) }
-        if !host.permissions.allGranted { return (String(localized: "Sharing needs permissions"), .yellow) }
-        if host.status.isListening { return (String(localized: "Others can control this Mac"), .green) }
-        return (String(localized: "Sharing: Starting…"), .orange)
-    }
-
-    private var moreMenu: some View {
-        Menu {
-            if host.settings.isEnabled {
-                Button("Copy Pairing Code") { host.copyCode() }
-                Button("Show Pairing Code…") { model.actions.dismiss(); model.actions.showSettings() }
-                Button("Stop Sharing This Mac") { host.setEnabled(false) }
-            } else {
-                Button("Allow Other Macs to Control This Mac") { host.setEnabled(true) }
-            }
-            Divider()
-            Button("Open AnyRemote Window") { model.showPicker(for: model.target) }
-            Button("Settings…") { model.actions.dismiss(); model.actions.showSettings() }
-            if case .ready(let staged) = SoftwareUpdate.shared.state {
-                Button("Install AnyRemote \(staged.manifest.version)…") {
-                    model.actions.dismiss()
-                    Task { await SoftwareUpdate.shared.check(userInitiated: true) }
-                }
-            } else if SoftwareUpdate.shared.isSupported {
-                Button("Check for Updates…") {
-                    model.actions.dismiss()
-                    Task { await SoftwareUpdate.shared.check(userInitiated: true) }
-                }
-            }
-            Divider()
-            Button("Quit AnyRemote") { NSApp.terminate(nil) }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Pairing code, settings and more")
+    private var summary: String {
+        if !host.settings.isEnabled { return String(localized: "Others can’t control this Mac") }
+        if !host.permissions.allGranted { return String(localized: "Sharing needs permissions") }
+        if host.status.isListening { return String(localized: "Others can control this Mac") }
+        return String(localized: "Sharing: Starting…")
     }
 }
 
-private struct PanelIconButton: View {
-    let symbol: String
-    let help: String
+// MARK: - Actions
+
+/// What else there is to do, as plain rows like the system panels' last ones
+/// (“Wi‑Fi Settings…”).
+private struct PanelActions: View {
+    let model: StatusPanelModel
+    let target: HostTarget?
+    let connection: HostConnection?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let connection, connection.state == .connected {
+                PanelActionRow(String(localized: "Show Full Desktop")) {
+                    model.actions.dismiss()
+                    connection.openDesktop()
+                }
+                PanelActionRow(String(localized: "Show All Windows and Apps…")) { model.showPicker(for: target) }
+            } else {
+                PanelActionRow(String(localized: "Open AnyRemote Window")) { model.showPicker(for: target) }
+            }
+            if case .ready(let staged) = SoftwareUpdate.shared.state {
+                PanelActionRow(String(localized: "Install AnyRemote \(staged.manifest.version)…")) {
+                    model.actions.dismiss()
+                    Task { await SoftwareUpdate.shared.check(userInitiated: true) }
+                }
+            }
+            PanelActionRow(String(localized: "AnyRemote Settings…")) {
+                model.actions.dismiss()
+                model.actions.showSettings()
+            }
+            PanelActionRow(String(localized: "Quit AnyRemote")) { NSApp.terminate(nil) }
+        }
+        .padding(.top, 4)
+    }
+}
+
+private struct PanelActionRow: View {
+    let title: String
     let action: () -> Void
     @State private var hovering = false
 
+    init(_ title: String, action: @escaping () -> Void) {
+        self.title = title
+        self.action = action
+    }
+
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .frame(width: 26, height: 22)
-                .background(RoundedRectangle(cornerRadius: 5).fill(hovering ? Color.primary.opacity(0.1) : .clear))
+            Text(verbatim: title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hovering ? Color.primary.opacity(0.08) : .clear))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
+        .padding(.horizontal, 6)
         .onHover { hovering = $0 }
-        .help(help)
     }
+}
+
+/// A section's name, small and gray, as the system panels set them.
+private struct PanelSectionTitle: View {
+    let title: String
+    var inset: CGFloat = 14
+
+    init(verbatim title: String, inset: CGFloat = 14) {
+        self.title = title
+        self.inset = inset
+    }
+
+    init(_ key: LocalizedStringResource, inset: CGFloat = 14) {
+        self.init(verbatim: String(localized: key), inset: inset)
+    }
+
+    var body: some View {
+        Text(verbatim: title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, inset)
+            .padding(.top, 6)
+            .padding(.bottom, 3)
+    }
+}
+
+/// The system panels' separators stop short of the edges.
+private struct PanelDivider: View {
+    var body: some View { Divider().padding(.horizontal, 14).padding(.vertical, 4) }
 }

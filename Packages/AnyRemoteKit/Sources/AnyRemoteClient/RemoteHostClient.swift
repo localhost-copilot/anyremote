@@ -60,7 +60,7 @@ public final class RemoteHostClient: @unchecked Sendable {
 
     public let endpoint: NWEndpoint
     public let clock = RemoteClock()
-    private let code: PairingCode
+    private let credential: PairingCredential
     private let viewerName: String
     /// The screen being worked on, told to the host when connecting.
     public var screen: ViewerScreen?
@@ -108,9 +108,9 @@ public final class RemoteHostClient: @unchecked Sendable {
     /// Delivered on the main queue.
     public var onEvent: (@MainActor @Sendable (Event) -> Void)?
 
-    public init(endpoint: NWEndpoint, code: PairingCode, viewerName: String) {
+    public init(endpoint: NWEndpoint, credential: PairingCredential, viewerName: String) {
         self.endpoint = endpoint
-        self.code = code
+        self.credential = credential
         self.viewerName = viewerName
     }
 
@@ -127,7 +127,7 @@ public final class RemoteHostClient: @unchecked Sendable {
                 connectContinuation = continuation
                 let connection = NWConnection(to: endpoint, using: ControlConnection.parameters())
                 let control = ControlConnection(connection: connection,
-                                                role: .viewer(code: code, viewerName: viewerName), queue: queue)
+                                                role: .viewer(credential: credential, viewerName: viewerName), queue: queue)
                 control.onSecured = { [weak self, weak control] info in
                     self?.secured(info)
                     control?.send(.authenticate(viewerName: self?.viewerName ?? "", takeOver: takeOver,
@@ -430,7 +430,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         control?.send(.transferToken(token))
         let transferQueue = DispatchQueue(label: "anyremote.client.transfer", qos: .userInitiated)
         let connection = ControlConnection(connection: NWConnection(to: endpoint, using: ControlConnection.parameters(bulk: true)),
-                                           role: .viewer(code: code, viewerName: viewerName), queue: transferQueue)
+                                           role: .viewer(credential: credential, viewerName: viewerName), queue: transferQueue)
         let channel = FileTransferChannel(connection: connection, ready: false)
         connection.onSecured = { [weak connection, weak channel] _ in
             connection?.send(.transfer(.attach(sessionID: session.sessionID, token: token)))

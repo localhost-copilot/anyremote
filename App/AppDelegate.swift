@@ -52,6 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         update.activityDescription = { [weak self] in self?.relaunchConsequences() ?? [] }
         if update.isSupported { hostService.updateHandler = SoftwareUpdate.remoteRequestHandler() }
         update.start()
+        hostService.onPairingRequest = { [weak self] prompt in
+            guard let self else { return }
+            PairingCodePanel.show(prompt, service: hostService)
+        }
+        hostService.onPairingEnded = { id, _ in PairingCodePanel.close(id: id) }
         if hostService.settingsStore.settings.isEnabled {
             do { try hostService.start() } catch {
                 log.error("host failed to start: \(error.localizedDescription, privacy: .public)")

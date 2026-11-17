@@ -18,8 +18,9 @@ one click away too.
   a wired LAN.
 - **Several viewers** — up to four Macs can view and control one Mac at
   once.
-- **Encrypted, paired once** — a 100-bit pairing code and AES-256-GCM for
-  everything; pairing works both ways.
+- **Encrypted, paired once** — like Apple devices: the other Mac shows a
+  six-digit code to type in (SPAKE2), then each pair of Macs has a key of
+  its own and AES-256-GCM protects everything; pairing works both ways.
 - **Sound** — with a window open you hear that app, and only that app; with
   the full desktop, the whole Mac.
 - **Microphone** — apps on the other Mac record from your microphone, as if
@@ -80,20 +81,24 @@ have to be updated by hand once.
 
 ## Getting started
 
-1. On the Mac to be controlled, the menu bar panel shows whether it can be
-   controlled and who is controlling it (each viewer with **Disconnect**);
-   its ⋯ menu shows or copies the pairing code (`XXXXX-XXXXX-XXXXX-XXXXX`).
+1. On the Mac to be controlled, turn on *Let Others Control This Mac* in
+   the menu bar panel. The panel also shows who is controlling it, each
+   with **Disconnect**.
 2. On the controlling Mac, open the window picker (⌃⌥⌘0 from anywhere). It
    lists *My Macs* (paired) and *Nearby* (unpaired, found with Bonjour).
-   Select a Mac and enter its code once. **Add by address** covers Macs on
-   other networks; **Edit Address…** in a Mac's context menu changes it
-   later (for instance when the other Mac is on another subnet and was
-   added under its router's address).
+   Select a Mac and click **Pair**: that Mac shows a six-digit code in front
+   of everything, which you type in here. A wrong code can be retyped; three
+   wrong ones end the attempt. **Add by address** covers Macs on other
+   networks; **Edit Address…** in a Mac's context menu changes it later
+   (for instance when the other Mac is on another subnet and was added
+   under its router's address).
 3. Pairing works both ways: unless *Also let … control this Mac* is turned
-   off, the Mac that entered the code hands its own code to the other over
-   the encrypted connection, and appears there in *My Macs* (with a
-   notification). A reset code follows on the next connection; turning
-   *Let … Control This Mac* off in a Mac's context menu withdraws it.
+   off, the Mac that paired hands the other a key of its own over the
+   encrypted connection, and appears there in *My Macs* (with a
+   notification). Turning *Let … Control This Mac* off in a Mac's context
+   menu withdraws and revokes that key. *Paired Macs* in Settings lists the
+   Macs that may control this one; **Remove…** revokes one and disconnects
+   it.
 4. Pick a window. Type to filter, arrows to select, Return or double-click
    to open.
 
@@ -124,15 +129,15 @@ windows, without making AnyRemote the active app: the search field has
 focus, so typing an app's name and pressing Return opens it on the chosen
 Mac (the panel stays with a spinner until its window arrives). Before
 anything is typed it lists the apps recently opened on that Mac, then the
-ones running there; a search also finds windows. Paired Macs are tabs along the
-top, each with its connection state (⌘1…⌘9 switch, + pairs another); the
-chosen one is remembered and connected on opening, and each Mac keeps its
-own recent apps. Buttons beside the search field open that Mac's full
-desktop and the window picker. *Open on This Mac* lists remote windows shown here,
-to bring one forward or close it here. The footer is this Mac as a host:
-sharing on or off, who is controlling it with **Disconnect**, and a ⋯ menu
-with the pairing code, Settings and Quit. A right click gives a short
-classic menu.
+ones running there; a search also finds windows. It is laid out like
+macOS's Wi‑Fi and Bluetooth panels: at the top this Mac as a host (a
+switch for *Let Others Control This Mac* and who is controlling it, with
+**Disconnect**), then the paired Macs, each with its connection state
+(⌘1…⌘9 switch, + pairs another); the chosen one is remembered and
+connected on opening, and each Mac keeps its own recent apps. *Open on
+This Mac* lists remote windows shown here, to bring one forward or close
+it here. Rows at the bottom open that Mac's full desktop, the window
+picker, Settings, and quit. A right click gives a short classic menu.
 
 A mirror behaves like a local window. Dragging it moves only the mirror:
 the host window stays where it is, so it never ends up partly off its
@@ -219,12 +224,13 @@ and its windows open here, the front one in front, as clicking its Dock icon
 brings them all forward (minimized ones and those on another Space stay
 there); an app with no window gets a new one, as if its Dock icon was
 clicked. A window picked under **Windows** opens alone. As in macOS's Apps
-view, a row of the apps opened from this Mac lately comes first (its order
-holds while the picker is shown, so a double-click never lands on a tile
-that just moved), then every app by name, a dot under those running. The
+view, one click opens an app, and a row of the apps opened from this Mac
+lately comes first (its order holds while the picker is shown, so tiles
+never move from under the pointer), then every app by name, a dot under
+those running. The
 chips above filter by the app's App Store category (sent by hosts on 0.30
 or later). A running app's context menu has *Quit* and *Force Quit* (on
-the host).
+the host), and so does every window's under **Windows**.
 
 ### Full desktop
 
@@ -659,16 +665,32 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
 
 ### Security
 
-The pairing code is 100 bits (20 Crockford base32 characters). Both sides
-derive a pre-shared key from it with HKDF-SHA256; each connection mixes in
-two fresh 32-byte nonces to derive four AES-256-GCM keys (control and
-datagram, each direction). Control frames use implicit counter nonces;
-datagrams (video, sound and microphone) carry an explicit counter (authenticated, 1024-entry replay
-window). A wrong code fails at the first sealed frame. Resetting the code in
-Settings disconnects every viewer. A code received through two-way pairing is
-stored like one typed in; a withdrawal only removes Macs added that way.
-Settings and saved hosts are JSON files (mode 0600) in
-`~/Library/Application Support/AnyRemote`.
+Pairing is a password-authenticated key exchange: SPAKE2 (RFC 9382,
+P-256, SHA-256, HKDF, HMAC; `AnyRemoteWire/SPAKE2.swift`, checked against
+the RFC's test vectors) over a six-digit code the host makes up for that
+one attempt and shows on its screen. Someone watching or relaying the
+connection learns nothing they could test guesses against offline; each
+guess costs them a live attempt, and the host allows three per code, one
+pairing at a time, ten wrong codes per 15 minutes, and three minutes to
+type it. Once both sides confirm, the host sends a fresh 256-bit key and
+its ID under the exchanged key; the viewer stores that key and the host
+stores it under that ID, with the viewer's name. Pairing again replaces it,
+and **Remove…** in Settings revokes it and ends that Mac's sessions.
+
+Every connection names its key's ID in the hello. Both sides derive a
+pre-shared key from the stored key with HKDF-SHA256, and each connection
+mixes in two fresh 32-byte nonces to derive four AES-256-GCM keys (control
+and datagram, each direction). Control frames use implicit counter nonces;
+datagrams (video, sound and microphone) carry an explicit counter
+(authenticated, 1024-entry replay window). A wrong key fails at the first
+sealed frame. A key received through two-way pairing is made for that Mac
+alone, so revoking it affects nothing else; a withdrawal only removes Macs
+added that way.
+
+Macs paired before 0.31 used one 100-bit code (20 Crockford base32
+characters) per host. It keeps working, so those Macs need no new pairing,
+until **Remove…** next to it in Settings. Settings and saved hosts are
+JSON files (mode 0600) in `~/Library/Application Support/AnyRemote`.
 
 ### Performance
 
@@ -683,7 +705,9 @@ VideoToolbox findings behind the encoder settings are in
 ```
 App/                        AppKit + SwiftUI app
   AppDelegate               host service + viewer, menus, ⌃⌥⌘ commands
-  HostsView / ViewerModel   window picker: My Macs / Nearby, grouped searchable grid, pairing
+  HostsView / ViewerModel   window picker: My Macs / Nearby, grouped searchable grid
+  PairingPane               pairing with a Mac: ask it for a code, type the six digits
+  PairingCodePanel          the code this Mac shows while another Mac pairs with it
   StatusMenu / StatusPanel  menu bar icon and panel: open apps on a Mac, open windows, sharing state; ⌃⌥⌘0 hot key
   RecentApplications        apps recently opened on each host, for the panel
   FriendlyText              user-facing wording for wire/system errors
@@ -699,7 +723,7 @@ App/                        AppKit + SwiftUI app
   RemoteSurfaceView         Metal surface + mouse/scroll; KeyForwarder
   RemoteTextInput           this Mac's input method for the host: composer, composition panel, ⌃Space
   RemoteMenuBar             host menu bar as native NSMenus
-  HostSettingsView          sharing + viewers, permission checklist, pairing code, display, sound, microphone
+  HostSettingsView          sharing + viewers, permission checklist, paired Macs, display, sound, microphone
   SoundSharing              the viewer's "Play Sound from Other Macs" setting
   MicrophoneSharing         the viewer's microphone setting; notice when macOS denies it
   MicrophoneDriverInstaller installs/updates/removes the AnyRemote Microphone (administrator prompt)
@@ -734,7 +758,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 115 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 143 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -826,7 +850,14 @@ always one switch.
 See `App/DevelopmentLaunch.swift`. All go through the real network path,
 against this Mac's own host service unless `--connect` is given.
 
-- `--connect host[:port] --code CODE` — another Mac
+- `--connect host[:port] --code CODE` — another Mac, with its pre-0.31
+  pairing code
+- `--connect host[:port] --pair [--pair-code-file PATH] [--pair-typo]` —
+  pairs with that Mac first, typing the code from the file
+  (`anyremote-bench --host` writes the code it shows to
+  `$TMPDIR/anyremote-bench/pairing-code`), first a wrong one with
+  `--pair-typo`; without a file, type it in the pane. The key is kept in
+  `ANYREMOTE_HOME`, so later runs connect without `--pair`.
 - `--synthetic 940x700 [--resize-test] [--display-test]`
 - `--video-quality` — the Video Quality popover's content in a window, for
   a screenshot

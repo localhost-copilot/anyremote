@@ -43,7 +43,9 @@ swift test --package-path Packages/AnyRemoteKit
 
   `anyremote-bench --host --port N` runs a headless host on this Mac
   (`ANYREMOTE_LOOPBACK=1` keeps it from resizing this Mac's display); point
-  one or more viewers at `127.0.0.1:N`.
+  one or more viewers at `127.0.0.1:N`. A viewer pairs with it once with
+  `--pair --pair-code-file "$TMPDIR/anyremote-bench/pairing-code"` in place
+  of `--code`, and keeps the key in its `ANYREMOTE_HOME`.
 - Check UI changes with a screenshot of the running app.
 - Logs: subsystem `com.localhost-copilot.anyremote`. In zsh, call
   `/usr/bin/log`, since `log` is a shell builtin there:

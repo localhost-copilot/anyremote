@@ -171,7 +171,7 @@ func runBenchmark(_ options: Options, syntheticWindowID: CGWindowID?) async thro
 func runNetwork(_ options: Options, syntheticWindowID: CGWindowID?) async throws {
     var service: HostService?
     let endpoint: NWEndpoint
-    let code: PairingCode
+    let credential: PairingCredential
     if let target = options.connect {
         let parts = target.split(separator: ":")
         guard parts.count >= 2, let port = UInt16(parts.last!), let parsed = PairingCode(options.code ?? "") else {
@@ -179,7 +179,7 @@ func runNetwork(_ options: Options, syntheticWindowID: CGWindowID?) async throws
             exit(2)
         }
         endpoint = .hostPort(host: .init(parts.dropLast().joined(separator: ":")), port: .init(rawValue: port)!)
-        code = parsed
+        credential = .legacy(parsed)
     } else {
         setenv("ANYREMOTE_HOME", NSTemporaryDirectory() + "anyremote-bench", 1)
         let store = HostSettingsStore()
@@ -188,10 +188,21 @@ func runNetwork(_ options: Options, syntheticWindowID: CGWindowID?) async throws
         try host.start()
         service = host
         while host.port == nil || host.port == 0 { try await Task.sleep(for: .milliseconds(20)) }
-        code = store.settings.code!
+        credential = store.loopbackCredential
         endpoint = .hostPort(host: "127.0.0.1", port: .init(rawValue: host.port!)!)
         if options.hostOnly {
-            print("host listening on port \(host.port!) pairing code \(code)")
+            // Codes stay out of the output: the Dev viewer reads the
+            // legacy code from host.json, a pairing code from pairing-code.
+            print("host listening on port \(host.port!)")
+            host.onPairingRequest = { prompt in
+                FileManager.default.createFile(atPath: NSTemporaryDirectory() + "anyremote-bench/pairing-code",
+                                               contents: Data(prompt.code.utf8), attributes: [.posixPermissions: 0o600])
+                print("pairing request from \(prompt.viewerName); its code is in pairing-code")
+            }
+            host.onPairingEnded = { _, paired in
+                try? FileManager.default.removeItem(atPath: NSTemporaryDirectory() + "anyremote-bench/pairing-code")
+                print(paired ? "paired" : "pairing ended without pairing")
+            }
             let permissions = HostService.permissions
             print("permissions: screen=\(permissions.screenRecording) ax=\(permissions.accessibility) post=\(permissions.postEvents)")
             // How often the synthetic window redraws: its display's refresh rate.
@@ -208,7 +219,7 @@ func runNetwork(_ options: Options, syntheticWindowID: CGWindowID?) async throws
         }
     }
 
-    let client = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "anyremote-bench")
+    let client = RemoteHostClient(endpoint: endpoint, credential: credential, viewerName: "anyremote-bench")
     let welcome = try await client.connect()
     print("connected to \(welcome.hostName) (missing permissions: \(welcome.missingPermissions))")
     let listing = try await client.listWindows()

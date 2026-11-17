@@ -289,15 +289,29 @@ enum DevelopmentLaunch {
         Task { @MainActor in
             let target: HostTarget
             if let connectAddress {
+                let code = value("--code").flatMap(PairingCode.init)
                 guard let endpoint = HostTarget.endpoint(fromAddress: connectAddress),
-                      let code = value("--code").flatMap(PairingCode.init) else {
-                    print("dev: --connect needs a valid address and --code"); return
+                      code != nil || arguments.contains("--pair") else {
+                    print("dev: --connect needs a valid address and --code (or --pair)"); return
                 }
                 // A host paired at this address keeps its settings (such as the video cap).
                 let paired = model.pairedStore.all.first { $0.address == connectAddress }
                 target = HostTarget(id: "dev:\(connectAddress)", name: connectAddress, kind: .saved, endpoint: endpoint,
                                     savedID: paired?.id)
-                await model.connect(target, code: code)
+                if arguments.contains("--pair") {
+                    let hostID = await DevelopmentPairing.run(target, model: model, codeFile: value("--pair-code-file"),
+                                                              typo: arguments.contains("--pair-typo"))
+                    // Pairing connected under the Mac's own entry; the
+                    // flags below expect the connection under `target`.
+                    if let hostID, let host = model.pairedStore.host(id: hostID) {
+                        for (id, connection) in model.connections where connection.welcome?.hostID == host.id {
+                            if let other = model.target(id: id) { model.disconnect(other) }
+                        }
+                        await model.connect(target, credential: host.credential)
+                    }
+                } else {
+                    await model.connect(target, credential: code.map(PairingCredential.legacy))
+                }
             } else {
                 model.showsThisMac = true
                 guard let thisMac = model.thisMacTarget else { print("dev: hosting is off"); return }
@@ -309,7 +323,8 @@ enum DevelopmentLaunch {
             if arguments.contains("--update-host") {
                 let before = model.connection(for: target)?.hostVersion
                 print("dev: host runs \(before.map { "\($0.appVersion) (protocol \($0.protocolVersion))" } ?? "unknown")")
-                await model.updateHost(target, code: value("--code").flatMap(PairingCode.init))
+                await model.updateHost(target, credential: value("--code").flatMap(PairingCode.init)
+                    .map(PairingCredential.legacy))
                 let after = model.connection(for: target)
                 print("dev: update \(model.remoteUpdates[target.id].map { "\($0)" } ?? "done"), "
                       + "host runs \(after?.hostVersion?.appVersion ?? "unknown"), state \(String(describing: after?.state))")
@@ -907,5 +922,36 @@ enum MenuTest {
             menu.performActionForItem(at: index)
             print("menu-test: chose \(choose)")
         }
+    }
+}
+
+
+/// `--pair [--pair-code-file <path>] [--pair-typo]`: pairs with the
+/// `--connect` Mac, typing the code the host wrote to that file
+/// (`anyremote-bench --host` writes `$TMPDIR/anyremote-bench/pairing-code`),
+/// first a wrong one with `--pair-typo`. Without a file it waits for the
+/// code to be typed in the pane.
+@MainActor
+enum DevelopmentPairing {
+    static func run(_ target: HostTarget, model: ViewerModel, codeFile: String?, typo: Bool) async -> String? {
+        let flow = PairingFlow()
+        let typist = Task { @MainActor in
+            var typed = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(200))
+                guard let codeFile, flow.phase == .enterCode || flow.phase == .wrongCode,
+                      let code = try? String(contentsOfFile: codeFile, encoding: .utf8) else { continue }
+                if flow.phase == .wrongCode { print("dev: the host said the code was wrong") }
+                let wrong = typo && typed == 0
+                let digits = wrong ? String(format: "%06d", ((Int(code) ?? 0) + 1) % 1_000_000) : code
+                print("dev: typing the \(wrong ? "wrong" : "right") code")
+                typed += 1
+                flow.submit(digits)
+            }
+        }
+        let hostID = await model.pair(target, sharesBack: true, flow: flow)
+        typist.cancel()
+        if case .failed(let message) = flow.phase { print("dev: pairing failed: \(message)") } else { print("dev: paired") }
+        return hostID
     }
 }

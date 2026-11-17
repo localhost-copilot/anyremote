@@ -140,12 +140,12 @@ private struct HostRow: View {
             if connection?.versionMismatch != nil { return (String(localized: "Needs an update"), .orange) }
             if model.remoteUpdates[target.id] != nil { return (String(localized: "Updating…"), .orange) }
             if FriendlyText.isBusy(message) { return (String(localized: "In use by someone else"), .orange) }
-            if FriendlyText.isPairingFailure(message) { return (String(localized: "Wrong pairing code"), .red) }
+            if FriendlyText.isPairingFailure(message) { return (String(localized: "Needs pairing"), .red) }
             return (String(localized: "Couldn’t connect"), .red)
         case .disconnected?, nil:
             break
         }
-        if model.code(for: target) == nil { return (String(localized: "Needs pairing"), .gray) }
+        if !model.isPaired(target) { return (String(localized: "Needs pairing"), .gray) }
         switch target.kind {
         case .offline: return (String(localized: "Offline"), .gray.opacity(0.5))
         case .saved: return (model.pairedHost(for: target)?.address ?? String(localized: "Connect by address"), .gray)
@@ -182,7 +182,7 @@ struct HostDetailView: View {
         content
             .navigationTitle(connection?.hostName ?? target.name)
             .task(id: target.id) {
-                if connection == nil, model.code(for: target) != nil, target.kind != .offline { await connect() }
+                if connection == nil, model.isPaired(target), target.kind != .offline { await connect() }
             }
     }
 
@@ -198,7 +198,7 @@ struct HostDetailView: View {
                 Text("Connecting to “\(target.name)”…").foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if model.code(for: target) == nil || isFailure(FriendlyText.isPairingFailure) {
+        } else if !model.isPaired(target) || isFailure(FriendlyText.isPairingFailure) {
             PairingPane(target: target, model: model, error: failureMessage.map(FriendlyText.message))
         } else if failureMessage != nil, let mismatch = connection?.versionMismatch {
             VersionMismatchPane(target: target, model: model, host: mismatch.host) { Task { await connect() } }
@@ -341,61 +341,6 @@ private struct StatusPane<Actions: View>: View {
     }
 }
 
-private struct PairingPane: View {
-    let target: HostTarget
-    let model: ViewerModel
-    let error: String?
-    @State private var codeText = ""
-    @State private var working = false
-    @State private var sharesBack = true
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "lock.shield").font(.system(size: 40)).foregroundStyle(.tint)
-            Text("Pair with “\(target.name)”").font(.title2.weight(.semibold))
-            VStack(alignment: .leading, spacing: 6) {
-                Label("On “\(target.name)”, click the AnyRemote icon in the menu bar and choose ⋯ › Show Pairing Code.", systemImage: "1.circle")
-                Label("Enter the 20-character code below. Each Mac only needs to be paired once.", systemImage: "2.circle")
-            }
-            .foregroundStyle(.secondary)
-            TextField("XXXXX-XXXXX-XXXXX-XXXXX", text: $codeText)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.title3, design: .monospaced))
-                .multilineTextAlignment(.center)
-                .frame(width: 340)
-                .focused($focused)
-                .onSubmit(pair)
-            Toggle("Also let “\(target.name)” control this Mac", isOn: $sharesBack)
-                .help("Then “\(target.name)” can connect to this Mac without pairing again")
-            if let error, codeText.isEmpty || working {
-                Text(error).foregroundStyle(.red).font(.callout).multilineTextAlignment(.center).frame(maxWidth: 420)
-            }
-            if working {
-                ProgressView().controlSize(.small)
-            } else {
-                Button("Pair and Connect", action: pair)
-                    .keyboardShortcut(.defaultAction)
-                    .controlSize(.large)
-                    .disabled(PairingCode(codeText) == nil)
-            }
-        }
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { focused = true }
-    }
-
-    private func pair() {
-        guard let code = PairingCode(codeText) else { return }
-        Task {
-            working = true
-            await model.connect(target, code: code, sharesBack: sharesBack)
-            working = false
-            codeText = ""
-        }
-    }
-}
-
 // MARK: Window picker
 
 private struct AppGroup: Identifiable {
@@ -485,10 +430,13 @@ private struct WindowPicker: View {
     @State private var category: AppCategory?
     /// The recent apps' order as it was when the picker was last shown.
     /// Opening an app moves it to the front of `RecentApplications` at once,
-    /// but the row keeps this order until the picker is hidden, so the tile
-    /// under the pointer never changes between the clicks of a double-click.
+    /// but the row keeps this order until the picker is hidden, so tiles
+    /// never jump away from under the pointer.
     @State private var recentOrder: [String] = []
     @State private var launching: String?
+    /// The windows in the order and shapes shown, which hold while the
+    /// picker is visible (see `StableWindowList`).
+    @State private var shownWindows = StableWindowList()
     /// Until the user picks a window, the selection follows the first match.
     @State private var userSelected = false
     @State private var columns = 3
@@ -506,12 +454,13 @@ private struct WindowPicker: View {
         _windowLayout = State(initialValue: defaults.string(forKey: "windowLayout").flatMap(WindowLayout.init) ?? .byApp)
     }
 
-    /// Windows matching the search, grouped by app in the host's front-to-back order.
+    /// Windows matching the search, grouped by app in the host's
+    /// front-to-back order as of when the picker was shown.
     private var groups: [AppGroup] {
         let needle = query.trimmingCharacters(in: .whitespaces)
         var groups: [AppGroup] = []
         var index: [String: Int] = [:]
-        for window in connection.listing?.windows ?? [] {
+        for window in shownWindows.windows {
             if !SearchMatch.matches(window.title, needle), !SearchMatch.matches(window.applicationName, needle) { continue }
             let key = window.bundleIdentifier ?? window.applicationName
             if let position = index[key] {
@@ -648,12 +597,21 @@ private struct WindowPicker: View {
         .onAppear {
             refreshRecentOrder()
         }
+        .onChange(of: connection.listing?.windows, initial: true) { old, windows in
+            let windows = windows ?? []
+            if old == nil || shownWindows.windows.isEmpty {
+                shownWindows.reset(to: windows)
+            } else {
+                withAnimation(.smooth(duration: 0.35)) { shownWindows.update(with: windows) }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { note in
             // The hosts window is kept when closed, so this view never
             // reappears; take the new order once it's out of sight instead.
             guard let window = note.object as? NSWindow, window.frameAutosaveName == "AnyRemoteHosts",
                   !window.occlusionState.contains(.visible) else { return }
             refreshRecentOrder()
+            shownWindows.reset(to: connection.listing?.windows ?? [])
         }
         .task {
             // Thumbnails and the window list stay fresh while the picker is visible.
@@ -684,7 +642,7 @@ private struct WindowPicker: View {
                             }
                         }
                     } else {
-                        MasonryLayout(aspects: flat.map(Self.aspect), columns: columns, spacing: Self.masonrySpacing,
+                        MasonryLayout(aspects: flat.map(shownWindows.aspect), columns: columns, spacing: Self.masonrySpacing,
                                       captionHeight: WindowTile.captionHeight) {
                             ForEach(flat, id: \.windowID) { window in
                                 WindowTile(window: window, thumbnail: connection.thumbnails[window.windowID],
@@ -745,10 +703,6 @@ private struct WindowPicker: View {
 
     private static let appTileWidth: CGFloat = 96
     private static let masonrySpacing: CGFloat = 16
-
-    private static func aspect(_ window: WindowSummary) -> CGFloat {
-        window.frame.height > 0 ? window.frame.width / window.frame.height : 1
-    }
 
     private func windowActions(_ window: WindowSummary) -> WindowCardActions {
         WindowCardActions(window: window, connection: connection,
@@ -825,7 +779,7 @@ private struct WindowPicker: View {
     private var footer: some View {
         HStack(spacing: 16) {
             Text(mode == .windows ? "↩ or double-click opens"
-                                  : "↩ or double-click opens the app there")
+                                  : "↩ or a click opens the app there")
             Spacer()
             Text("⌃⌥⌘W closes on this Mac only · ⌃⌥⌘0 comes back here")
         }
@@ -850,7 +804,7 @@ private struct WindowPicker: View {
         }
         guard !flat.isEmpty else { return }
         if windowLayout == .all {
-            let placement = MasonryPlacement(aspects: flat.map(Self.aspect), columns: columns, width: gridWidth,
+            let placement = MasonryPlacement(aspects: flat.map(shownWindows.aspect), columns: columns, width: gridWidth,
                                              spacing: Self.masonrySpacing, captionHeight: WindowTile.captionHeight)
             if let current = flat.firstIndex(where: { $0.windowID == selection }) {
                 if let next = placement.neighbour(of: current, direction) { selection = flat[next].windowID }
@@ -877,11 +831,14 @@ private struct WindowPicker: View {
     private func appTile(_ app: HostApplication, key: String) -> some View {
         AppTile(application: app, icon: connection.applicationIcons[app.path],
                 isSelected: appSelection == key, isLaunching: launching == app.path)
-            .tiltOnHover(tilts: false)
             .id(key)
             .onAppear { connection.needIcon(forApplicationAt: app.path) }
-            .onTapGesture(count: 2) { launch(app) }
-            .simultaneousGesture(TapGesture().onEnded { appSelection = key; gridFocused = true })
+            // One click opens, as in the Mac's Apps view.
+            .onTapGesture {
+                appSelection = key
+                gridFocused = true
+                launch(app)
+            }
             .contextMenu {
                 Button(app.isRunning ? "Show" : "Open") { launch(app) }
                 if app.isRunning {
@@ -890,6 +847,9 @@ private struct WindowPicker: View {
                     Button("Force Quit") { connection.quit(app, force: true) }
                 }
             }
+            // Outside the tap gesture: the effect watches presses with a drag
+            // gesture, and a gesture inside wins over one attached outside.
+            .tiltOnHover(tilts: false)
     }
 
     private func open(_ window: WindowSummary) {
@@ -1023,6 +983,11 @@ private struct WindowCardActions: ViewModifier {
                 } else {
                     Button("Open", action: open)
                 }
+                if connection.applicationPath(of: window) != nil {
+                    Divider()
+                    Button("Quit \(window.applicationName)") { connection.quitApplication(of: window, force: false) }
+                    Button("Force Quit \(window.applicationName)") { connection.quitApplication(of: window, force: true) }
+                }
             }
     }
 }
@@ -1131,18 +1096,14 @@ private struct AddHostSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var address = ""
-    @State private var code = ""
-    @State private var working = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Add a Mac by Address").font(.title3.weight(.semibold))
-            Text("Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Find the pairing code on that Mac under the AnyRemote menu bar icon › ⋯ › Show Pairing Code.")
+            Text("Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Next, you pair with it: it shows a code to enter here.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Form {
                 TextField("Address", text: $address, prompt: Text("192.168.1.20 or mac-mini.local"))
-                TextField("Pairing Code", text: $code, prompt: Text("XXXXX-XXXXX-XXXXX-XXXXX"))
-                    .font(.system(.body, design: .monospaced))
                 TextField("Name", text: $name, prompt: Text("Optional; defaults to the Mac’s name"))
             }
             if let error = model.lastError {
@@ -1151,17 +1112,11 @@ private struct AddHostSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Connect") {
-                    guard let pairing = PairingCode(code) else { return }
-                    Task {
-                        working = true
-                        let added = await model.addManualHost(name: name, address: address, code: pairing)
-                        working = false
-                        if added { dismiss() }
-                    }
+                Button("Add") {
+                    if model.addManualHost(name: name, address: address) { dismiss() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(address.isEmpty || PairingCode(code) == nil || working)
+                .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(22)

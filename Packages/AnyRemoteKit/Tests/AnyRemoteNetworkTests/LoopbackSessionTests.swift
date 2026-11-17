@@ -8,13 +8,13 @@ import Testing
 
 /// End-to-end handshake and session admission over 127.0.0.1.
 @Suite(.serialized) struct LoopbackSessionTests {
-    private static func makeHost() throws -> (HostService, PairingCode) {
+    private static func makeHost() throws -> (HostService, PairingCredential) {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("anyremote-tests-\(UUID().uuidString)")
         setenv("ANYREMOTE_HOME", home.path, 1)
         let store = HostSettingsStore()
         let service = HostService(settings: store, options: .init(port: 0, advertise: false))
         try service.start()
-        return (service, store.settings.code!)
+        return (service, store.loopbackCredential)
     }
 
     private static func endpoint(_ service: HostService) async throws -> NWEndpoint {
@@ -30,7 +30,7 @@ import Testing
     @Test func pairedViewerConnectsAndSyncsClock() async throws {
         let (service, code) = try Self.makeHost()
         defer { service.stop() }
-        let client = RemoteHostClient(endpoint: try await Self.endpoint(service), code: code, viewerName: "test")
+        let client = RemoteHostClient(endpoint: try await Self.endpoint(service), credential: code, viewerName: "test")
         let welcome = try await client.connect()
         #expect(welcome.datagramPort != 0)
         #expect(!welcome.hostID.isEmpty)
@@ -48,7 +48,7 @@ import Testing
         let (service, _) = try Self.makeHost()
         defer { service.stop() }
         let client = RemoteHostClient(endpoint: try await Self.endpoint(service),
-                                      code: PairingCode.generate(), viewerName: "intruder")
+                                      credential: .generate(), viewerName: "intruder")
         await #expect(throws: (any Error).self) { try await client.connect() }
     }
 
@@ -58,12 +58,12 @@ import Testing
         let endpoint = try await Self.endpoint(service)
         var clients: [RemoteHostClient] = []
         for index in 0..<HostService.maximumViewers {
-            let client = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "viewer\(index)")
+            let client = RemoteHostClient(endpoint: endpoint, credential: code, viewerName: "viewer\(index)")
             _ = try await client.connect()
             clients.append(client)
         }
         #expect(service.currentStatus.viewers.map(\.name) == (0..<HostService.maximumViewers).map { "viewer\($0)" })
-        let extra = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "extra")
+        let extra = RemoteHostClient(endpoint: endpoint, credential: code, viewerName: "extra")
         do {
             _ = try await extra.connect()
             Issue.record("a viewer beyond the limit was admitted")
@@ -71,7 +71,7 @@ import Testing
             #expect(error.localizedDescription.contains("viewer0"))
         }
         // Taking over ends the longest-connected session.
-        let late = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "late")
+        let late = RemoteHostClient(endpoint: endpoint, credential: code, viewerName: "late")
         _ = try await late.connect(takeOver: true)
         try await Task.sleep(for: .milliseconds(200))
         #expect(service.currentStatus.viewers.first?.name == "viewer1")

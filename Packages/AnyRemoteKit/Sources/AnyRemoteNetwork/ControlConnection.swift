@@ -45,6 +45,48 @@ public struct SecureSessionInfo: Sendable {
     /// Host identity (viewer side) or viewer name (host side).
     public let peerID: String
     public let peerName: String
+    /// The key the viewer used (`PairingCredential.id`; nil for the legacy code).
+    public var credentialID: String? = nil
+}
+
+/// What a host has for the key a viewer names.
+public enum CredentialLookup: Sendable {
+    /// Remote control is off.
+    case disabled
+    /// No such key: never paired, or revoked.
+    case unknown
+    case found(PairingCredential)
+}
+
+/// A viewer asking to pair. `id` is the connection's session ID.
+public struct PairingRequest: Sendable, Equatable {
+    public let id: UInt32
+    public let viewerName: String
+    /// The viewer's own host ID, so pairing again replaces the earlier key.
+    public let viewerID: String
+}
+
+/// How a host takes part in pairing, asked on the connection's queue.
+public struct HostPairingHandler: Sendable {
+    public enum Start: Sendable {
+        /// Show these six digits.
+        case show(String)
+        case refuse(String)
+    }
+
+    public var begin: @Sendable (PairingRequest) -> Start
+    /// The viewer proved the code: keep its key.
+    public var complete: @Sendable (PairingRequest, PairingCredential) -> Void
+    /// The code is no longer needed. `wrongCodes`: attempts that failed.
+    public var end: @Sendable (PairingRequest, _ paired: Bool, _ wrongCodes: Int) -> Void
+
+    public init(begin: @escaping @Sendable (PairingRequest) -> Start,
+                complete: @escaping @Sendable (PairingRequest, PairingCredential) -> Void,
+                end: @escaping @Sendable (PairingRequest, Bool, Int) -> Void) {
+        self.begin = begin
+        self.complete = complete
+        self.end = end
+    }
 }
 
 /// Sealed control channel over TCP.
@@ -58,11 +100,27 @@ public struct SecureSessionInfo: Sendable {
 /// An update connection (`purpose: .update`) never gets keys: the host
 /// answers its hello with a challenge whatever the protocol, the viewer
 /// proves the pairing code over both nonces, and the host updates itself.
+///
+/// A pairing connection (`purpose: .pair`) never gets keys either: the host
+/// shows six digits, the two sides run SPAKE2 with them (`pairingShare`,
+/// `pairingReply`, `pairingConfirm`), and both derive the viewer's new key
+/// from the result. A wrong code fails the host's confirmation on the viewer,
+/// which may then try again, up to `maximumPairingAttempts` times.
 public final class ControlConnection: @unchecked Sendable {
     public enum Role: Sendable {
-        case viewer(code: PairingCode, viewerName: String)
-        case host(code: @Sendable () -> PairingCode?, hostID: String, hostName: String, sessionID: UInt32)
+        /// `credential` is nil only for pairing; `viewerID` is this Mac's
+        /// own host ID, needed for pairing.
+        case viewer(credential: PairingCredential?, viewerName: String, viewerID: String? = nil)
+        /// `credentials` finds the key a viewer names (nil: the legacy code).
+        case host(credentials: @Sendable (_ id: String?) -> CredentialLookup, hostID: String, hostName: String,
+                  sessionID: UInt32)
     }
+
+    public static let maximumPairingAttempts = 3
+    /// How long the host shows a code.
+    public static let pairingTimeout: TimeInterval = 180
+    /// Identifies this protocol's pairing in the SPAKE2 key schedule.
+    static let pairingContext = Data("anyremote pairing v1".utf8)
 
     public let queue: DispatchQueue
     private let connection: NWConnection
@@ -79,6 +137,25 @@ public final class ControlConnection: @unchecked Sendable {
     private var closed = false
     private var updateNonces: (client: Data, server: Data)?
     private var updateViewerName = ""
+    private var hostPairing: HostPairingState?
+    private var viewerPairing: ViewerPairingState?
+
+    private struct HostPairingState {
+        let request: PairingRequest
+        let code: String
+        let hostID: String
+        var attempts = 0
+        /// The latest attempt: its keys and the ID of the key it would make.
+        var pending: (result: SPAKE2.Result, credentialID: String)?
+        var paired = false
+    }
+
+    private struct ViewerPairingState {
+        let hostID: String
+        let hostName: String
+        var attempt: SPAKE2?
+        var credential: PairingCredential?
+    }
     public private(set) var session: SecureSessionInfo?
     /// Which AnyRemote the host runs, once it said (viewer side).
     public private(set) var peerVersion: AppVersionInfo?
@@ -90,6 +167,15 @@ public final class ControlConnection: @unchecked Sendable {
     public var updateHandler: RemoteUpdateHandler?
     /// Viewer side of an update connection: the host is relaunching with this version.
     public var onUpdateStarted: (@Sendable (String) -> Void)?
+    /// Host side: shows pairing codes and keeps the keys pairing makes.
+    /// Without one, pairing is refused.
+    public var pairingHandler: HostPairingHandler?
+    /// Viewer side of a pairing connection: the host shows a code now.
+    public var onPairingStarted: (@Sendable (_ hostID: String, _ hostName: String) -> Void)?
+    /// The code given was wrong; another may be given.
+    public var onPairingCodeRejected: (@Sendable () -> Void)?
+    /// Paired: the new key, then the connection closes.
+    public var onPaired: (@Sendable (PairingCredential, _ hostID: String, _ hostName: String) -> Void)?
 
     /// Keys are ready (sealed messages may be sent). Viewer: after
     /// serverHello. Host: after the first sealed frame opened.
@@ -131,13 +217,15 @@ public final class ControlConnection: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready:
-                if case .viewer(_, let viewerName) = self.role {
+                if case let .viewer(credential, viewerName, viewerID) = self.role {
                     let nonce = SessionKeys.randomNonce()
                     self.clientNonce = nonce
                     self.sendHandshake(.clientHello(version: self.protocolVersion, nonce: nonce,
                                                     viewerName: viewerName,
                                                     appVersion: AppVersionInfo.runningAppVersion,
-                                                    purpose: self.purpose == .update ? .update : nil))
+                                                    purpose: self.purpose == .session ? nil : self.purpose,
+                                                    credentialID: credential?.id,
+                                                    viewerID: self.purpose == .pair ? viewerID : nil))
                 }
                 self.receive()
             case .failed(let error):
@@ -271,12 +359,13 @@ public final class ControlConnection: @unchecked Sendable {
 
     private func handleHandshake(_ message: HandshakeMessage) throws {
         switch (role, message) {
-        case let (.host(code, _, _, _), .clientHello(_, nonce, viewerName, _, .update?)):
+        case let (.host(credentials, _, _, _), .clientHello(_, nonce, viewerName, _, .update?, credentialID, _)):
             guard session == nil, updateNonces == nil else { throw ConnectionError.handshake("duplicate hello") }
-            guard code() != nil else {
+            if case .disabled = credentials(credentialID) {
                 refuse("Remote control is turned off on this Mac.", reason: "disabled")
                 return
             }
+            updateCredentialID = credentialID
             guard updateHandler != nil else {
                 refuse("This Mac can't be updated from another Mac.", reason: "no updater", withVersion: true)
                 return
@@ -291,13 +380,14 @@ public final class ControlConnection: @unchecked Sendable {
                 self.finish(ConnectionError.timedOut)
             }
 
-        case let (.host(code, _, _, _), .updateRequest(proof)):
-            guard let nonces = updateNonces, !updateRequested, let code = code() else {
+        case let (.host(credentials, _, _, _), .updateRequest(proof)):
+            guard let nonces = updateNonces, !updateRequested else {
                 throw ConnectionError.handshake("unexpected update request")
             }
-            guard HMAC<SHA256>.isValidAuthenticationCode(
+            guard case .found(let credential) = credentials(updateCredentialID),
+                  HMAC<SHA256>.isValidAuthenticationCode(
                 proof, authenticating: Self.updateProofMessage(clientNonce: nonces.client, serverNonce: nonces.server),
-                using: code.preSharedKey) else {
+                using: credential.preSharedKey) else {
                 log.notice("update request failed authentication")
                 refuse("The pairing code is not valid for this Mac.", reason: "authentication failed")
                 return
@@ -319,33 +409,144 @@ public final class ControlConnection: @unchecked Sendable {
                 }
             }
 
-        case let (.host(code, hostID, hostName, sessionID), .clientHello(version, nonce, viewerName, _, _)):
+        case let (.host(credentials, hostID, hostName, sessionID),
+                  .clientHello(version, _, viewerName, _, .pair?, _, viewerID)):
+            guard session == nil, hostPairing == nil else { throw ConnectionError.handshake("duplicate hello") }
+            guard version == protocolVersion else {
+                refuse("This Mac runs an incompatible AnyRemote version.", reason: "version \(version)",
+                       withVersion: true)
+                return
+            }
+            if case .disabled = credentials(nil) {
+                refuse("Remote control is turned off on this Mac.", reason: "disabled")
+                return
+            }
+            guard let handler = pairingHandler else {
+                refuse("This Mac can’t be paired with right now.", reason: "no pairing")
+                return
+            }
+            let request = PairingRequest(id: sessionID, viewerName: viewerName, viewerID: viewerID ?? "")
+            switch handler.begin(request) {
+            case .refuse(let reason):
+                refuse(reason, reason: "pairing refused")
+            case .show(let code):
+                log.notice("\(viewerName, privacy: .public) asked to pair")
+                hostPairing = HostPairingState(request: request, code: code, hostID: hostID)
+                sendHandshake(.pairingStarted(hostID: hostID, hostName: hostName))
+                queue.asyncAfter(deadline: .now() + Self.pairingTimeout) { [weak self] in
+                    guard let self, !self.closed, self.hostPairing?.paired == false else { return }
+                    self.refuse("The pairing code expired. Start pairing again for a new one.", reason: "pairing timed out")
+                }
+            }
+
+        case (.host, .pairingShare(let share)):
+            guard var state = hostPairing, !state.paired else { throw ConnectionError.handshake("unexpected share") }
+            state.attempts += 1
+            hostPairing = state
+            guard state.attempts <= Self.maximumPairingAttempts else {
+                refuse("The pairing code was wrong too many times. Start pairing again for a new one.",
+                       reason: "too many attempts")
+                return
+            }
+            let attempt = SPAKE2(role: .b, identityA: Data(state.request.viewerID.utf8), identityB: Data(state.hostID.utf8),
+                                 password: PairingDigits.passwordScalar(state.code),
+                                 additionalData: Self.pairingContext)
+            let result: SPAKE2.Result
+            do { result = try attempt.finish(peerShare: share) } catch {
+                refuse("Pairing failed.", reason: "invalid share")
+                return
+            }
+            let credentialID = UUID().uuidString
+            state.pending = (result, credentialID)
+            hostPairing = state
+            sendHandshake(.pairingReply(share: attempt.share, confirmation: result.confirmation, credentialID: credentialID))
+
+        case (.host, .pairingConfirm(let confirmation)):
+            guard var state = hostPairing, !state.paired, let pending = state.pending else {
+                throw ConnectionError.handshake("unexpected confirmation")
+            }
+            // The viewer only confirms once ours checked out, so a mismatch
+            // here isn't a typo: someone is in between. Give up.
+            guard pending.result.verify(peerConfirmation: confirmation) else {
+                log.notice("pairing confirmation from \(state.request.viewerName, privacy: .public) failed")
+                refuse("Pairing failed.", reason: "confirmation failed")
+                return
+            }
+            state.paired = true
+            hostPairing = state
+            let credential = PairingCredential.derived(fromPairingSecret: pending.result.sharedKey, id: pending.credentialID)
+            log.notice("paired with \(state.request.viewerName, privacy: .public)")
+            pairingHandler?.complete(state.request, credential)
+            sendHandshake(.pairingDone, thenClose: true)
+            closed = true
+            endPairing()
+            onClose?(nil)
+
+        case let (.host(credentials, hostID, hostName, sessionID),
+                  .clientHello(version, nonce, viewerName, _, _, credentialID, _)):
             guard session == nil else { throw ConnectionError.handshake("duplicate hello") }
             guard version == protocolVersion else {
                 refuse("This Mac runs an incompatible AnyRemote version.", reason: "version \(version)",
                        withVersion: true)
                 return
             }
-            guard let code = code() else {
+            let credential: PairingCredential
+            switch credentials(credentialID) {
+            case .disabled:
                 refuse("Remote control is turned off on this Mac.", reason: "disabled")
                 return
+            case .unknown:
+                refuse("This Mac is no longer paired with that Mac. Pair them again.", reason: "unknown credential")
+                return
+            case .found(let found):
+                credential = found
             }
             let serverNonce = SessionKeys.randomNonce()
-            let keys = try SessionKeys(preSharedKey: code.preSharedKey, clientNonce: nonce, serverNonce: serverNonce)
+            let keys = try SessionKeys(preSharedKey: credential.preSharedKey, clientNonce: nonce, serverNonce: serverNonce)
             sealer = StreamSealer(key: keys.controlHostToViewer)
             opener = StreamOpener(key: keys.controlViewerToHost)
-            session = SecureSessionInfo(sessionID: sessionID, keys: keys, peerID: "", peerName: viewerName)
+            session = SecureSessionInfo(sessionID: sessionID, keys: keys, peerID: "", peerName: viewerName,
+                                        credentialID: credentialID)
             sendHandshake(.serverHello(version: protocolVersion, nonce: serverNonce,
                                        hostID: hostID, hostName: hostName, sessionID: sessionID))
 
-        case let (.viewer(code, _), .updateChallenge(nonce, host)):
+        case let (.viewer(credential?, _, _), .updateChallenge(nonce, host)):
             guard purpose == .update, let clientNonce, updateNonces == nil else {
                 throw ConnectionError.handshake("unexpected update challenge")
             }
             peerVersion = host
             updateNonces = (clientNonce, nonce)
-            sendHandshake(.updateRequest(proof: Self.updateProof(key: code.preSharedKey, clientNonce: clientNonce,
+            sendHandshake(.updateRequest(proof: Self.updateProof(key: credential.preSharedKey, clientNonce: clientNonce,
                                                                  serverNonce: nonce)))
+
+        case let (.viewer, .pairingStarted(hostID, hostName)):
+            guard purpose == .pair, viewerPairing == nil else { throw ConnectionError.handshake("unexpected pairing") }
+            viewerPairing = ViewerPairingState(hostID: hostID, hostName: hostName)
+            onPairingStarted?(hostID, hostName)
+
+        case let (.viewer, .pairingReply(share, confirmation, credentialID)):
+            guard var state = viewerPairing, let attempt = state.attempt else {
+                throw ConnectionError.handshake("unexpected pairing reply")
+            }
+            state.attempt = nil
+            let result = try attempt.finish(peerShare: share)
+            guard result.verify(peerConfirmation: confirmation) else {
+                viewerPairing = state
+                onPairingCodeRejected?()
+                return
+            }
+            state.credential = PairingCredential.derived(fromPairingSecret: result.sharedKey, id: credentialID)
+            viewerPairing = state
+            sendHandshake(.pairingConfirm(result.confirmation))
+
+        case (.viewer, .pairingDone):
+            guard let state = viewerPairing, let credential = state.credential else {
+                throw ConnectionError.handshake("unexpected pairing result")
+            }
+            closed = true
+            connection.cancel()
+            onPaired?(credential, state.hostID, state.hostName)
+            onClose?(nil)
 
         case let (.viewer, .updateStarted(version)):
             guard purpose == .update, updateNonces != nil else { throw ConnectionError.handshake("unexpected update") }
@@ -354,7 +555,7 @@ public final class ControlConnection: @unchecked Sendable {
             onUpdateStarted?(version)
             onClose?(nil)
 
-        case let (.viewer(code, _), .serverHello(version, nonce, hostID, hostName, sessionID)):
+        case let (.viewer(credential?, _, _), .serverHello(version, nonce, hostID, hostName, sessionID)):
             guard session == nil, let clientNonce else { throw ConnectionError.handshake("unexpected hello") }
             guard version == protocolVersion else { throw ConnectionError.incompatible(host: nil) }
             // A host from before protocol 20 ignores an update hello and
@@ -362,7 +563,7 @@ public final class ControlConnection: @unchecked Sendable {
             guard purpose == .session else {
                 throw ConnectionError.rejected("That Mac's AnyRemote can't be updated from another Mac.")
             }
-            let keys = try SessionKeys(preSharedKey: code.preSharedKey, clientNonce: clientNonce, serverNonce: nonce)
+            let keys = try SessionKeys(preSharedKey: credential.preSharedKey, clientNonce: clientNonce, serverNonce: nonce)
             sealer = StreamSealer(key: keys.controlViewerToHost)
             opener = StreamOpener(key: keys.controlHostToViewer)
             let info = SecureSessionInfo(sessionID: sessionID, keys: keys, peerID: hostID, peerName: hostName)
@@ -388,11 +589,43 @@ public final class ControlConnection: @unchecked Sendable {
     }
 
     private var updateRequested = false
+    private var updateCredentialID: String?
+
+    /// Viewer side of a pairing connection: the digits shown on the host.
+    /// Thread-safe; again after `onPairingCodeRejected`.
+    public func submitPairingCode(_ digits: String) {
+        queue.async { [self] in
+            guard !closed, case let .viewer(_, _, viewerID) = role, var state = viewerPairing,
+                  state.credential == nil else { return }
+            let attempt = SPAKE2(role: .a, identityA: Data((viewerID ?? "").utf8), identityB: Data(state.hostID.utf8),
+                                 password: PairingDigits.passwordScalar(digits), additionalData: Self.pairingContext)
+            state.attempt = attempt
+            viewerPairing = state
+            sendHandshake(.pairingShare(attempt.share))
+        }
+    }
+
+    /// Host side: stops a pairing under way (the user cancelled it here).
+    public func cancelPairing(reason: String) {
+        queue.async { [self] in
+            guard !closed, hostPairing != nil else { return }
+            refuse(reason, reason: "pairing cancelled")
+        }
+    }
+
+    /// Host side: the code shown for this connection is no longer needed.
+    private func endPairing() {
+        guard let state = hostPairing else { return }
+        hostPairing = nil
+        let wrong = state.attempts - (state.paired ? 1 : 0)
+        pairingHandler?.end(state.request, state.paired, max(0, wrong))
+    }
 
     /// Host side: answers with a failure and closes.
     private func refuse(_ message: String, reason: String, withVersion: Bool = false) {
         sendHandshake(.failure(reason: message, host: withVersion ? localVersion : nil), thenClose: true)
         closed = true
+        endPairing()
         onClose?(ConnectionError.handshake(reason))
     }
 
@@ -418,6 +651,7 @@ public final class ControlConnection: @unchecked Sendable {
     private func finish(_ error: Error?) {
         guard !closed else { return }
         closed = true
+        endPairing()
         connection.cancel()
         onClose?(error)
     }

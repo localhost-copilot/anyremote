@@ -206,6 +206,9 @@ final class HostSession: @unchecked Sendable {
     /// the window it last focused. New windows go to its virtual display.
     private var viewerScreen: ViewerScreen?
     private var ended = false
+    /// The key the viewer connected with (nil: the legacy code), so
+    /// revoking it ends this session. Queue-confined.
+    private(set) var credentialID: String?
     /// The viewer wants the sound of what it shows.
     private var audioRequested = false
     /// The viewer's own cap on each stream's bit rate (nil: none).
@@ -265,6 +268,7 @@ final class HostSession: @unchecked Sendable {
     // MARK: Lifecycle
 
     func secured(_ info: SecureSessionInfo) {
+        credentialID = info.credentialID
         datagramLock.lock()
         datagramOpener = DatagramOpener(key: info.keys.datagramViewerToHost, sessionID: sessionID)
         datagramSealer = DatagramSealer(key: info.keys.datagramHostToViewer, sessionID: sessionID)
@@ -668,7 +672,7 @@ final class HostSession: @unchecked Sendable {
             }
         }
         if let port = pairing.port, port != 0, let host = address { address = "\(host):\(port)" } else { address = nil }
-        log.notice("peer pairing from \(pairing.name, privacy: .public) at \(address ?? "Bonjour", privacy: .public): \(pairing.pairingCode == nil ? "withdrawn" : "offered", privacy: .public)")
+        log.notice("peer pairing from \(pairing.name, privacy: .public) at \(address ?? "Bonjour", privacy: .public): \(pairing.credential == nil ? "withdrawn" : "offered", privacy: .public)")
         let callback = service?.onPeerPairing
         DispatchQueue.main.async { callback?(pairing, address) }
     }

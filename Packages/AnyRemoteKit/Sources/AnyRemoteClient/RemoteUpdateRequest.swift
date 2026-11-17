@@ -5,7 +5,7 @@ import Network
 
 /// Asks a paired Mac to update its AnyRemote, whatever protocol it speaks
 /// (from protocol 20 on). The host downloads the latest release itself and
-/// checks its signature, so all this proves is that we hold its pairing code.
+/// checks its signature, so all this proves is that we hold a key it accepts.
 public enum RemoteUpdateRequest {
     public enum Failure: Error, LocalizedError, Equatable {
         /// The host refused or couldn't update (its words).
@@ -25,12 +25,12 @@ public enum RemoteUpdateRequest {
 
     /// Returns the version the host is relaunching with. The host answers
     /// once it has downloaded and checked the update, which may take minutes.
-    public static func send(to endpoint: NWEndpoint, code: PairingCode, viewerName: String,
+    public static func send(to endpoint: NWEndpoint, credential: PairingCredential, viewerName: String,
                             timeout: TimeInterval = 600) async throws -> String {
         let queue = DispatchQueue(label: "anyremote.update-request")
         let parameters = ControlConnection.parameters(bulk: true)
         let control = ControlConnection(connection: NWConnection(to: endpoint, using: parameters),
-                                        role: .viewer(code: code, viewerName: viewerName), queue: queue,
+                                        role: .viewer(credential: credential, viewerName: viewerName), queue: queue,
                                         purpose: .update)
         let once = Once<Result<String, Failure>>()
         return try await withCheckedThrowingContinuation { continuation in
@@ -60,10 +60,12 @@ public enum RemoteUpdateRequest {
 }
 
 /// Delivers the first result only.
-private final class Once<Value: Sendable>: @unchecked Sendable {
+final class Once<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
     var handler: ((Value) -> Void)?
+
+    var hasFired: Bool { lock.withLock { fired } }
 
     func fire(_ value: Value) {
         lock.lock()

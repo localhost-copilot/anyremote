@@ -30,7 +30,7 @@ func runDragBench(scenario: String, file: String?, from: CGPoint, to: CGPoint) a
     defer { host.stop() }
     while host.port == nil || host.port == 0 { try await Task.sleep(for: .milliseconds(20)) }
     let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: host.port!)!)
-    let client = RemoteHostClient(endpoint: endpoint, code: store.settings.code!, viewerName: "drag-bench")
+    let client = RemoteHostClient(endpoint: endpoint, credential: store.loopbackCredential, viewerName: "drag-bench")
 
     let events = AsyncStream<RemoteHostClient.Event>.makeStream()
     let drags = AsyncStream<DragManifest>.makeStream()

@@ -27,7 +27,8 @@ enum HostWindows {
     static func summary(_ window: SCWindow, app: SCRunningApplication) -> WindowSummary {
         WindowSummary(windowID: window.windowID, pid: app.processID, applicationName: app.applicationName,
                       bundleIdentifier: app.bundleIdentifier.isEmpty ? nil : app.bundleIdentifier,
-                      title: window.title ?? "", frame: window.frame)
+                      title: window.title ?? "", frame: window.frame,
+                      applicationPath: NSRunningApplication(processIdentifier: app.processID)?.bundleURL?.path)
     }
 
     static func scWindow(id: CGWindowID) async throws -> SCWindow? {

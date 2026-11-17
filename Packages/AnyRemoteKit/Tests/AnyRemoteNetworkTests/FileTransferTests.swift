@@ -12,7 +12,7 @@ import Testing
         var viewer: FileTransferChannel?
 
         init() throws {
-            let code = PairingCode.generate()
+            let code = PairingCredential.generate()
             let hostQueue = DispatchQueue(label: "test.host")
             listener = try ControlListener(port: 0, serviceName: nil, hostID: "test", queue: hostQueue)
             let ready = DispatchSemaphore(value: 0)
@@ -20,7 +20,8 @@ import Testing
             listener.onStateChange = { if case .ready = $0 { ready.signal() } }
             listener.onConnection = { [self] connection in
                 let control = ControlConnection(connection: connection,
-                                                role: .host(code: { code }, hostID: "test", hostName: "Host", sessionID: 7),
+                                                role: .host(credentials: { $0 == code.id ? .found(code) : .unknown },
+                                                            hostID: "test", hostName: "Host", sessionID: 7),
                                                 queue: hostQueue)
                 control.onSecured = { _ in secured.signal() }
                 host = FileTransferChannel(connection: control)
@@ -32,7 +33,7 @@ import Testing
             guard ready.wait(timeout: .now() + 10) == .success else { throw ListenerNotReady() }
             let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: listener.port!)!)
             let control = ControlConnection(connection: NWConnection(to: endpoint, using: ControlConnection.parameters(bulk: true)),
-                                            role: .viewer(code: code, viewerName: "Viewer"),
+                                            role: .viewer(credential: code, viewerName: "Viewer"),
                                             queue: DispatchQueue(label: "test.viewer"))
             viewer = FileTransferChannel(connection: control)
             control.onSecured = { [weak control] _ in control?.send(.transfer(.credit(requestID: 0, bytes: 0))) }

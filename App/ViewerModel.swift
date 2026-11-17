@@ -113,25 +113,30 @@ final class ViewerModel {
 
     func target(id: String) -> HostTarget? { allTargets.first { $0.id == id } }
 
-    /// The stored pairing code for a target, if any.
-    func code(for target: HostTarget) -> PairingCode? {
-        if target.kind == .thisMac { return hostService.settingsStore.settings.code }
-        if let id = target.savedID ?? target.hostID, let code = pairedStore.host(id: id)?.code { return code }
+    /// The key this Mac reaches a target with, once paired.
+    func credential(for target: HostTarget) -> PairingCredential? {
+        if target.kind == .thisMac { return hostService.settingsStore.loopbackCredential }
+        if let id = target.savedID ?? target.hostID, let credential = pairedStore.host(id: id)?.credential {
+            return credential
+        }
         return nil
     }
+
+    func isPaired(_ target: HostTarget) -> Bool { credential(for: target) != nil }
 
     func connection(for target: HostTarget) -> HostConnection? { connections[target.id] }
 
     /// The connection of the Mac selected in the picker.
     var selectedConnection: HostConnection? { selection.flatMap { connections[$0] } }
 
-    /// Connects with the stored code, or `code` when pairing; `sharesBack`
-    /// then says whether that Mac may also control this one.
-    func connect(_ target: HostTarget, code providedCode: PairingCode? = nil, sharesBack: Bool? = nil,
-                 takeOver: Bool = false) async {
-        guard let code = providedCode ?? self.code(for: target) else { return }
+    /// Connects with the stored key, or `credential` (a development launch
+    /// given a code); `sharesBack` says whether that Mac may also control
+    /// this one.
+    func connect(_ target: HostTarget, credential providedCredential: PairingCredential? = nil,
+                 sharesBack: Bool? = nil, takeOver: Bool = false) async {
+        guard let credential = providedCredential ?? self.credential(for: target) else { return }
         connections[target.id]?.disconnect()
-        let connection = HostConnection(target: target, code: code)
+        let connection = HostConnection(target: target, credential: credential)
         connection.onOpenedMirror = { [weak self] mirror in self?.onOpenedMirror?(mirror) }
         connection.onOpenedDesktop = { [weak self] desktop in self?.onOpenedDesktop?(desktop) }
         connections[target.id] = connection
@@ -142,20 +147,8 @@ final class ViewerModel {
             try await connection.connect(takeOver: takeOver)
             if target.kind != .thisMac, let welcome = connection.welcome,
                welcome.hostID != hostService.settingsStore.settings.hostID {
-                let previous = target.savedID
-                var address: String?
-                if case let .hostPort(host, port) = target.endpoint { address = "\(host):\(port)" }
-                // Keep a name the user gave this Mac, and its settings.
-                let existing = pairedStore.host(id: welcome.hostID) ?? previous.flatMap { pairedStore.host(id: $0) }
-                let host = PairedHost(id: welcome.hostID, name: existing?.name ?? welcome.hostName,
-                                      address: address ?? (target.kind == .saved ? existing?.address : nil),
-                                      bonjourName: target.kind == .discovered ? target.name : existing?.bonjourName,
-                                      pairingCode: code.canonical, lastConnected: Date(),
-                                      fromPeer: existing?.fromPeer ?? false,
-                                      sharesBack: sharesBack ?? existing?.sharesBack ?? true,
-                                      maximumBitRate: existing?.maximumBitRate, frameRate: existing?.frameRate)
-                pairedStore.save(host, replacing: previous)
-                saved = pairedStore.all
+                let host = remember(target, hostID: welcome.hostID, hostName: welcome.hostName, credential: credential,
+                                    sharesBack: sharesBack, connected: true)
                 connection.savedName = host.name
                 offerPairing(to: host, over: connection)
             }
@@ -165,15 +158,68 @@ final class ViewerModel {
         }
     }
 
-    /// Tells a connected Mac how to connect back here (this Mac's code), or
-    /// withdraws that. Sent on every connection, so a reset code reaches it.
+    /// Saves a Mac under its stable ID with the key to reach it, keeping a
+    /// name the user gave it and its settings, and replacing the entry it
+    /// had before its ID was known (one added by address).
+    @discardableResult
+    private func remember(_ target: HostTarget, hostID: String, hostName: String, credential: PairingCredential,
+                          sharesBack: Bool?, connected: Bool) -> PairedHost {
+        let previous = target.savedID
+        var address: String?
+        if case let .hostPort(host, port) = target.endpoint { address = "\(host):\(port)" }
+        let existing = pairedStore.host(id: hostID) ?? previous.flatMap { pairedStore.host(id: $0) }
+        let host = PairedHost(id: hostID, name: existing?.name ?? hostName,
+                              address: address ?? (target.kind == .saved ? existing?.address : nil),
+                              bonjourName: target.kind == .discovered ? target.name : existing?.bonjourName,
+                              credential: credential, lastConnected: connected ? Date() : existing?.lastConnected,
+                              fromPeer: existing?.fromPeer ?? false,
+                              sharesBack: sharesBack ?? existing?.sharesBack ?? true,
+                              maximumBitRate: existing?.maximumBitRate, frameRate: existing?.frameRate)
+        pairedStore.save(host, replacing: previous)
+        saved = pairedStore.all
+        return host
+    }
+
+    /// Pairs with a Mac: it shows six digits, which `codes` is asked for
+    /// (again after a wrong one). Then connects with the new key. Returns
+    /// the Mac's ID once paired.
+    @discardableResult
+    func pair(_ target: HostTarget, sharesBack: Bool, flow: PairingFlow) async -> String? {
+        let client = HostPairingClient(endpoint: target.endpoint, viewerName: ComputerNameProvider.name,
+                                       viewerID: hostService.settingsStore.settings.hostID)
+        flow.begin(client)
+        do {
+            let paired = try await client.run()
+            remember(target, hostID: paired.hostID, hostName: paired.hostName, credential: paired.credential,
+                     sharesBack: sharesBack, connected: false)
+            flow.finish(nil)
+            // A Mac added by address is now saved under its ID.
+            let current = allTargets.first { $0.savedID == paired.hostID } ?? target
+            if current.id != target.id, selection == target.id { selection = current.id }
+            await connect(current, sharesBack: sharesBack)
+            return paired.hostID
+        } catch {
+            log.error("pairing with \(target.name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            flow.finish(error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// Tells a connected Mac how to connect back here (a key made for it
+    /// alone), or withdraws that and revokes the key. Sent on every
+    /// connection.
     private func offerPairing(to host: PairedHost, over connection: HostConnection) {
-        let settings = hostService.settingsStore.settings
-        let usesAddress = host.address != nil
+        let store = hostService.settingsStore
+        let credential: PairingCredential?
+        if host.sharesBack {
+            credential = store.credential(forPeer: host.id, name: connection.welcome?.hostName ?? host.name)
+        } else {
+            hostService.revokePeer(host.id)
+            credential = nil
+        }
         connection.client.send(.peerPairing(PeerPairing(
-            hostID: settings.hostID, name: ComputerName.current,
-            pairingCode: host.sharesBack ? settings.code?.canonical : nil,
-            port: hostService.port, usesAddress: usesAddress)))
+            hostID: store.settings.hostID, name: ComputerName.current, credential: credential,
+            port: hostService.port, usesAddress: host.address != nil)))
     }
 
     func sharesBack(_ target: HostTarget) -> Bool { pairedHost(for: target)?.sharesBack ?? true }
@@ -238,12 +284,13 @@ final class ViewerModel {
     private(set) var remoteUpdates: [String: RemoteUpdateState] = [:]
 
     /// Asks the Mac to update its AnyRemote, then reconnects once it is back.
-    func updateHost(_ target: HostTarget, code providedCode: PairingCode? = nil) async {
-        guard let code = providedCode ?? code(for: target), remoteUpdates[target.id] != .asking else { return }
+    func updateHost(_ target: HostTarget, credential providedCredential: PairingCredential? = nil) async {
+        guard let credential = providedCredential ?? credential(for: target), remoteUpdates[target.id] != .asking
+        else { return }
         remoteUpdates[target.id] = .asking
         let version: String
         do {
-            version = try await RemoteUpdateRequest.send(to: target.endpoint, code: code,
+            version = try await RemoteUpdateRequest.send(to: target.endpoint, credential: credential,
                                                          viewerName: ComputerNameProvider.name)
         } catch {
             log.error("updating \(target.name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -256,7 +303,7 @@ final class ViewerModel {
         connections.removeValue(forKey: target.id)?.disconnect()
         try? await Task.sleep(for: .seconds(5))
         for _ in 0..<36 {
-            await connect(target, code: providedCode)
+            await connect(target, credential: providedCredential)
             let connection = connections[target.id]
             if connection?.state == .connected { break }
             // Back, but still on another protocol: say so instead of retrying.
@@ -282,26 +329,17 @@ final class ViewerModel {
         return theirs < mine
     }
 
-    func addManualHost(name: String, address: String, code: PairingCode) async -> Bool {
-        guard let endpoint = HostTarget.endpoint(fromAddress: address) else {
+    /// Saves a Mac by address. It then needs pairing, which its pane offers.
+    func addManualHost(name: String, address: String) -> Bool {
+        guard HostTarget.endpoint(fromAddress: address) != nil else {
             lastError = String(localized: "Enter an address like mac-mini.local or 192.168.1.20:47800.")
             return false
         }
         let provisionalID = "address:\(address)"
         pairedStore.save(PairedHost(id: provisionalID, name: name.isEmpty ? address : name, address: address,
-                                    bonjourName: nil, pairingCode: code.canonical))
+                                    bonjourName: nil, credential: nil))
         saved = pairedStore.all
-        let target = HostTarget(id: "saved:\(provisionalID)", name: name.isEmpty ? address : name, kind: .saved,
-                                endpoint: endpoint, hostID: nil, savedID: provisionalID)
-        selection = target.id
-        await connect(target, code: code)
-        if let connection = connections[target.id], connection.state == .connected,
-           let hostID = connection.welcome?.hostID {
-            // Re-key the connection under the host's stable ID.
-            connections.removeValue(forKey: target.id)
-            connections["saved:\(hostID)"] = connection
-            selection = "saved:\(hostID)"
-        }
+        selection = "saved:\(provisionalID)"
         return true
     }
 

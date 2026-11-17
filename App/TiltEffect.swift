@@ -7,8 +7,9 @@ import SwiftUI
 /// the card that should catch the light.
 ///
 /// The press is watched with a simultaneous gesture so it never takes the
-/// card's own clicks and double-clicks; with Reduce Motion the card only
-/// sinks, without tilting.
+/// card's own clicks and double-clicks, as long as those are attached
+/// inside it (apply this after them): a gesture inside a view wins over one
+/// attached outside. With Reduce Motion the card only sinks, without tilting.
 ///
 /// With `tilts` off the card itself stays still and only tells its content
 /// where the pointer is and whether it's pressed (`cardPointer`), for

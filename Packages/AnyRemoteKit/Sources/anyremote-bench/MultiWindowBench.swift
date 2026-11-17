@@ -24,7 +24,7 @@ import Network
 func runMultiWindowBench(_ options: Options, windowIDs ownWindowIDs: [CGWindowID], busy: Int) async throws {
     var service: HostService?
     let endpoint: NWEndpoint
-    let code: PairingCode
+    let credential: PairingCredential
     if let target = options.connect {
         let parts = target.split(separator: ":")
         guard parts.count >= 2, let port = UInt16(parts.last!), let parsed = PairingCode(options.code ?? "") else {
@@ -32,7 +32,7 @@ func runMultiWindowBench(_ options: Options, windowIDs ownWindowIDs: [CGWindowID
             exit(2)
         }
         endpoint = .hostPort(host: .init(parts.dropLast().joined(separator: ":")), port: .init(rawValue: port)!)
-        code = parsed
+        credential = .legacy(parsed)
     } else {
         setenv("ANYREMOTE_HOME", NSTemporaryDirectory() + "anyremote-bench", 1)
         let store = HostSettingsStore()
@@ -41,11 +41,11 @@ func runMultiWindowBench(_ options: Options, windowIDs ownWindowIDs: [CGWindowID
         try host.start()
         service = host
         while host.port == nil || host.port == 0 { try await Task.sleep(for: .milliseconds(20)) }
-        code = store.settings.code!
+        credential = store.loopbackCredential
         endpoint = .hostPort(host: "127.0.0.1", port: .init(rawValue: host.port!)!)
     }
 
-    let client = RemoteHostClient(endpoint: endpoint, code: code, viewerName: "anyremote-bench")
+    let client = RemoteHostClient(endpoint: endpoint, credential: credential, viewerName: "anyremote-bench")
     let welcome = try await client.connect()
     print("connected to \(welcome.hostName) (missing permissions: \(welcome.missingPermissions))")
 

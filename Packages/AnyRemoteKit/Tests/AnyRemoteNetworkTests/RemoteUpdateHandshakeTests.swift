@@ -9,13 +9,15 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(2))) struct RemoteUpdateHandshakeTests {
     final class Host: @unchecked Sendable {
         let listener: ControlListener
-        let code = PairingCode.generate()
+        let code: PairingCredential
         private let lock = NSLock()
         private var requesters: [String] = []
         private var connections: [ControlConnection] = []
 
         /// `outcome` nil: the host has no updater.
-        init(protocolVersion: UInt16 = anyRemoteProtocolVersion, outcome: RemoteUpdateOutcome?) throws {
+        init(protocolVersion: UInt16 = anyRemoteProtocolVersion, outcome: RemoteUpdateOutcome?,
+             credential: PairingCredential = .generate()) throws {
+            code = credential
             let queue = DispatchQueue(label: "test.update-host")
             listener = try ControlListener(port: 0, serviceName: nil, hostID: "test", queue: queue)
             let ready = DispatchSemaphore(value: 0)
@@ -23,7 +25,8 @@ import Testing
             let code = code
             listener.onConnection = { [self] connection in
                 let control = ControlConnection(connection: connection,
-                                                role: .host(code: { code }, hostID: "test", hostName: "Host", sessionID: 1),
+                                                role: .host(credentials: { $0 == code.id ? .found(code) : .unknown },
+                                                            hostID: "test", hostName: "Host", sessionID: 1),
                                                 queue: queue, protocolVersion: protocolVersion)
                 control.localVersion = AppVersionInfo(appVersion: "0.26.0", protocolVersion: protocolVersion,
                                                       canUpdateRemotely: outcome != nil)
@@ -49,15 +52,22 @@ import Testing
 
     @Test func pairedMacCanAskForAnUpdateWhateverItsProtocol() async throws {
         let host = try Host(protocolVersion: anyRemoteProtocolVersion + 1, outcome: .started(version: "0.27.0"))
-        let version = try await RemoteUpdateRequest.send(to: host.endpoint, code: host.code, viewerName: "Viewer")
+        let version = try await RemoteUpdateRequest.send(to: host.endpoint, credential: host.code, viewerName: "Viewer")
         #expect(version == "0.27.0")
         #expect(host.askedBy == ["Viewer"])
+    }
+
+    /// Macs paired before 0.31 prove the host's shared code, as they always did.
+    @Test func macPairedWithTheLegacyCodeCanStillAskForAnUpdate() async throws {
+        let host = try Host(outcome: .started(version: "0.31.0"), credential: .legacy(.generate()))
+        let version = try await RemoteUpdateRequest.send(to: host.endpoint, credential: host.code, viewerName: "Old")
+        #expect(version == "0.31.0")
     }
 
     @Test func wrongCodeCantAskForAnUpdate() async throws {
         let host = try Host(outcome: .started(version: "0.27.0"))
         await #expect(throws: RemoteUpdateRequest.Failure.self) {
-            try await RemoteUpdateRequest.send(to: host.endpoint, code: .generate(), viewerName: "Viewer")
+            try await RemoteUpdateRequest.send(to: host.endpoint, credential: .generate(), viewerName: "Viewer")
         }
         #expect(host.askedBy.isEmpty)
     }
@@ -65,18 +75,18 @@ import Testing
     @Test func hostWithoutUpdaterOrWithRefusalSaysSo() async throws {
         let plain = try Host(outcome: nil)
         await #expect(throws: RemoteUpdateRequest.Failure.unsupported) {
-            try await RemoteUpdateRequest.send(to: plain.endpoint, code: plain.code, viewerName: "Viewer")
+            try await RemoteUpdateRequest.send(to: plain.endpoint, credential: plain.code, viewerName: "Viewer")
         }
         let refusing = try Host(outcome: .refused(reason: "Already up to date."))
         await #expect(throws: RemoteUpdateRequest.Failure.refused("Already up to date.")) {
-            try await RemoteUpdateRequest.send(to: refusing.endpoint, code: refusing.code, viewerName: "Viewer")
+            try await RemoteUpdateRequest.send(to: refusing.endpoint, credential: refusing.code, viewerName: "Viewer")
         }
     }
 
     @Test func sessionOnAnotherProtocolLearnsTheHostsVersion() async throws {
         let host = try Host(protocolVersion: anyRemoteProtocolVersion + 1, outcome: .started(version: "0.27.0"))
         let control = ControlConnection(connection: NWConnection(to: host.endpoint, using: ControlConnection.parameters()),
-                                        role: .viewer(code: host.code, viewerName: "Viewer"),
+                                        role: .viewer(credential: host.code, viewerName: "Viewer"),
                                         queue: DispatchQueue(label: "test.viewer"))
         let error: ConnectionError? = await withCheckedContinuation { continuation in
             control.onClose = { continuation.resume(returning: $0 as? ConnectionError) }

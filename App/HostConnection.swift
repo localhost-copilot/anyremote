@@ -107,9 +107,9 @@ final class HostConnection {
     /// Sound statistics of the last second, while the host's sound plays here.
     @ObservationIgnored private(set) var audioReport: AudioStreamReceiver.Report?
 
-    init(target: HostTarget, code: PairingCode) {
+    init(target: HostTarget, credential: PairingCredential) {
         self.target = target
-        client = RemoteHostClient(endpoint: target.endpoint, code: code, viewerName: ComputerNameProvider.name)
+        client = RemoteHostClient(endpoint: target.endpoint, credential: credential, viewerName: ComputerNameProvider.name)
         // The host's virtual display for remote windows takes this size, so
         // they can grow as large as this screen and fill it in full screen.
         // The screen being worked on (its key window: where Connect was
@@ -361,6 +361,27 @@ final class HostConnection {
             for delay in [1.0, 4.0] {
                 try? await Task.sleep(for: .seconds(delay))
                 await loadApplications()
+            }
+        }
+    }
+
+    /// The bundle of a window's app on the host: as the host names it, or,
+    /// from hosts that predate that, the listed app with its bundle ID.
+    func applicationPath(of window: WindowSummary) -> String? {
+        if let path = window.applicationPath { return path }
+        guard let bundle = window.bundleIdentifier else { return nil }
+        return applications?.applications.first { $0.bundleIdentifier == bundle }?.path
+    }
+
+    /// Quits a window's app on the host; the window list follows once it
+    /// has gone (after any question to save).
+    func quitApplication(of window: WindowSummary, force: Bool) {
+        guard let path = applicationPath(of: window) else { return }
+        client.quitApplication(path: path, force: force)
+        Task {
+            for delay in [1.0, 4.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                await refresh(thumbnails: false)
             }
         }
     }

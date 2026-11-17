@@ -44,6 +44,18 @@ public final class HostService: @unchecked Sendable {
 
     public static let maximumViewers = 4
 
+    /// A Mac asking to pair: show `code` until `onPairingEnded` names this `id`.
+    public struct PairingPrompt: Sendable, Identifiable, Equatable {
+        public var id: UInt32
+        public var viewerName: String
+        public var code: String
+    }
+
+    /// Wrong pairing codes tolerated in `pairingFailureWindow` before
+    /// pairing pauses: with six digits, each guess is one in a million.
+    static let maximumPairingFailures = 10
+    static let pairingFailureWindow: TimeInterval = 15 * 60
+
     public let settingsStore: HostSettingsStore
     private let options: Options
     private let queue: DispatchQueue
@@ -76,6 +88,16 @@ public final class HostService: @unchecked Sendable {
     /// A connected viewer offered (or withdrew) the reverse pairing, with the
     /// address it connected from. Called on the main queue.
     public var onPeerPairing: (@MainActor @Sendable (PeerPairing, _ address: String?) -> Void)?
+    /// A Mac asks to pair: show the code. Main queue.
+    public var onPairingRequest: (@MainActor @Sendable (PairingPrompt) -> Void)?
+    /// The pairing `id` ended, `paired` or not: hide its code. Main queue.
+    public var onPairingEnded: (@MainActor @Sendable (_ id: UInt32, _ paired: Bool) -> Void)?
+    /// The paired Macs changed (one paired). Main queue.
+    public var onPairedViewersChange: (@MainActor @Sendable () -> Void)?
+
+    // Under `lock`.
+    private var activePairing: (id: UInt32, connection: ControlConnection)?
+    private var pairingFailures: [Date] = []
 
     private var storedUpdateHandler: RemoteUpdateHandler?
     /// Updates this Mac when a paired Mac asks (see `ControlConnection`).
@@ -210,12 +232,17 @@ public final class HostService: @unchecked Sendable {
         let store = settingsStore
         let control = ControlConnection(
             connection: connection,
-            role: .host(code: { store.settings.isEnabled ? store.settings.code : nil },
+            role: .host(credentials: { id in
+                            let settings = store.settings
+                            guard settings.isEnabled else { return .disabled }
+                            return settings.credential(id: id).map(CredentialLookup.found) ?? .unknown
+                        },
                         hostID: store.settings.hostID, hostName: ComputerName.current, sessionID: sessionID),
             queue: queue
         )
         control.localVersion = versionInfo
         control.updateHandler = updateHandler
+        control.pairingHandler = pairingHandler(for: control)
         let session = HostSession(sessionID: sessionID, connection: control, queue: queue, service: self)
         control.onSecured = { [weak session] info in session?.secured(info) }
         control.onMessage = { [weak session] message in session?.handle(message) }
@@ -228,6 +255,77 @@ public final class HostService: @unchecked Sendable {
         pending[sessionID] = session
         lock.unlock()
         control.start()
+    }
+
+    // MARK: Pairing
+
+    private func pairingHandler(for connection: ControlConnection) -> HostPairingHandler {
+        HostPairingHandler(
+            begin: { [weak self, weak connection] request in
+                guard let self, let connection else { return .refuse("Pairing failed.") }
+                return self.beginPairing(request, connection: connection)
+            },
+            complete: { [weak self] request, credential in
+                guard let self, let id = credential.id, let key = credential.key else { return }
+                self.settingsStore.addViewer(PairedViewer(id: id, name: request.viewerName,
+                                                          peerID: request.viewerID.isEmpty ? nil : request.viewerID,
+                                                          key: key))
+                let callback = self.onPairedViewersChange
+                DispatchQueue.main.async { callback?() }
+            },
+            end: { [weak self] request, paired, wrongCodes in
+                guard let self else { return }
+                self.lock.withLock {
+                    if self.activePairing?.id == request.id { self.activePairing = nil }
+                    self.pairingFailures += Array(repeating: Date(), count: wrongCodes)
+                }
+                let callback = self.onPairingEnded
+                DispatchQueue.main.async { callback?(request.id, paired) }
+            })
+    }
+
+    private func beginPairing(_ request: PairingRequest, connection: ControlConnection) -> HostPairingHandler.Start {
+        let now = Date()
+        let refusal: String? = lock.withLock {
+            pairingFailures.removeAll { now.timeIntervalSince($0) > Self.pairingFailureWindow }
+            if activePairing != nil { return "Another Mac is pairing with this Mac. Try again in a moment." }
+            if pairingFailures.count >= Self.maximumPairingFailures {
+                return "Too many wrong pairing codes were tried. Try again in a few minutes."
+            }
+            activePairing = (request.id, connection)
+            return nil
+        }
+        if let refusal { return .refuse(refusal) }
+        let prompt = PairingPrompt(id: request.id, viewerName: request.viewerName, code: PairingDigits.generate())
+        let callback = onPairingRequest
+        DispatchQueue.main.async { callback?(prompt) }
+        return .show(prompt.code)
+    }
+
+    /// Stops the pairing whose code is shown (the user cancelled it here).
+    public func cancelPairing(id: UInt32) {
+        let connection = lock.withLock { activePairing?.id == id ? activePairing?.connection : nil }
+        connection?.cancelPairing(reason: "Pairing was cancelled on “\(ComputerName.current)”.")
+    }
+
+    /// Revokes a paired Mac's key and ends its sessions. Nil: the legacy code.
+    public func revokeViewer(id: String?) {
+        if let id { settingsStore.removeViewer(id: id) } else { settingsStore.removeLegacyCode() }
+        endSessions(usingCredential: id)
+    }
+
+    /// Revokes the key offered to another Mac for connecting back.
+    public func revokePeer(_ peerID: String) {
+        guard let id = settingsStore.revokePeer(peerID) else { return }
+        endSessions(usingCredential: id)
+    }
+
+    private func endSessions(usingCredential id: String?) {
+        queue.async { [self] in
+            for session in sessions() where session.credentialID == id {
+                session.end(reason: "This Mac is no longer paired with that Mac. Pair them again.", notifyViewer: true)
+            }
+        }
     }
 
     /// Admits an authenticated session alongside the others. With every

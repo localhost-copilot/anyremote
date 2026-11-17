@@ -34,7 +34,6 @@
 "Disconnected." = "已断开连接。";
 "Display" = "显示";
 "Edit" = "编辑";
-"Enter it once on the Mac that will control this one. Anyone with this code can control this Mac, so keep it private." = "在要控制这台 Mac 的那台 Mac 上输入一次即可。拿到配对码的人都能控制这台 Mac，不要外传。";
 "Enter the 20-character code below. Each Mac only needs to be paired once." = "把那 20 位配对码输入到下面。每台 Mac 只需配对一次。";
 "Error: %@" = "出错：%@";
 "Follow System" = "跟随系统";
@@ -77,7 +76,6 @@
 "Other Macs need to run AnyRemote on the same network. If one doesn’t appear, check that AnyRemote is allowed in System Settings › Privacy & Security › Local Network, or use “Add by Address” below." = "其他 Mac 需要运行 AnyRemote 并在同一网络。没出现的话，检查 系统设置 › 隐私与安全性 › 本地网络 里是否允许了 AnyRemote，或者用下方「按地址添加」。";
 "Pair and Connect" = "配对并连接";
 "Pair with “%@”" = "与「%@」配对";
-"Paired Macs will need to enter the new code, and the current session will be disconnected." = "已经配对的 Mac 都需要重新输入新的配对码，当前的控制会被断开。";
 "Pairing Code" = "配对码";
 "Paste" = "粘贴";
 "Permissions" = "权限";
@@ -92,7 +90,6 @@
 "Remote" = "远程";
 "Rename “%@”" = "重命名「%@」";
 "Rename…" = "重命名…";
-"Reset" = "重置";
 "Reset Pairing Code…" = "重置配对码…";
 "Reset the pairing code?" = "重置配对码？";
 "Restart AnyRemote" = "重新启动 AnyRemote";
@@ -139,7 +136,7 @@
 "Windows" = "窗口";
 "Apps" = "App";
 "Windows open on that Mac, or apps to open there" = "那台 Mac 上打开的窗口，或可以在那里打开的 App";
-"↩ or double-click opens the app there" = "↩ 或双击在那台 Mac 上打开 App";
+"↩ or a click opens the app there" = "↩ 或单击在那台 Mac 上打开 App";
 "Running" = "正在运行";
 "Close All on This Mac" = "只在本机关闭全部窗口";
 "Show Remote Apps in the Dock" = "在程序坞中显示远程 App";
@@ -178,6 +175,8 @@
 /* Apps */
 "Quit" = "退出";
 "Force Quit" = "强制退出";
+"Quit %@" = "退出“%@”";
+"Force Quit %@" = "强制退出“%@”";
 
 "Fit Desktop to Window" = "桌面适应窗口大小";
 "Send System Shortcuts to Desktop" = "将系统快捷键发送到桌面";
@@ -366,3 +365,45 @@
 "By App" = "按 App";
 "All Windows" = "所有窗口";
 "Group windows by app, or show them all at once" = "按 App 分组显示窗口，或一次显示所有窗口";
+
+/* Menu bar panel, laid out like the system's own panels */
+"Macs" = "Mac";
+"Let Others Control This Mac" = "允许其他 Mac 控制这台 Mac";
+"Search apps and windows" = "搜索 App 和窗口";
+"Not connected" = "未连接";
+"Show Full Desktop" = "显示完整桌面";
+"Show All Windows and Apps…" = "显示所有窗口和 App…";
+"AnyRemote Settings…" = "AnyRemote 设置…";
+
+/* Pairing with a six-digit code */
+"Asking “%@” for a code…" = "正在请求“%@”显示配对码…";
+"“%@” shows a six-digit code, which you enter here. The two Macs only need to pair once." = "“%@”会显示一个六位数配对码，在这里输入即可。两台 Mac 只需配对一次。";
+"Pair" = "配对";
+"Enter the code shown on “%@”." = "输入“%@”上显示的配对码。";
+"Code" = "配对码";
+"That code isn’t right. Check it and try again." = "配对码不正确，请核对后重试。";
+"“%@” wants to pair with this Mac" = "“%@”想要与这台 Mac 配对";
+"Enter this code on “%@”:" = "请在“%@”上输入此配对码：";
+"Once paired, “%@” can control this Mac. Only pair with Macs you trust." = "配对后，“%@”可以控制这台 Mac。请只与你信任的 Mac 配对。";
+"Remove “%@”?" = "移除“%@”？";
+"It can no longer control this Mac until it pairs again. If it’s connected now, it’s disconnected." = "在重新配对之前，它将无法控制这台 Mac。如果它正连接着，连接会被断开。";
+"Remove the old pairing code?" = "移除旧配对码？";
+"Macs paired with the 20-character code of earlier versions can no longer control this Mac until they pair again." = "用旧版本 20 位配对码配对的 Mac 将无法控制这台 Mac，直到重新配对。";
+"Remove" = "移除";
+"Paired %@" = "配对于 %@";
+"Macs paired with the old code" = "用旧配对码配对的 Mac";
+"The 20-character code of AnyRemote before 0.31" = "AnyRemote 0.31 之前的 20 位配对码";
+"No Mac is paired with this one yet." = "还没有 Mac 与这台 Mac 配对。";
+"Paired Macs" = "已配对的 Mac";
+"To pair another Mac, choose this Mac in AnyRemote on it. This Mac then shows a six-digit code to enter there." = "要配对另一台 Mac，请在那台 Mac 的 AnyRemote 中选择这台 Mac。这台 Mac 随后会显示一个六位数配对码，在那里输入即可。";
+"Use this when the Mac isn’t on the same network or doesn’t show up under “Nearby”. Next, you pair with it: it shows a code to enter here." = "当那台 Mac 不在同一网络，或没有出现在“附近”中时使用。添加后进行配对：它会显示一个配对码，在这里输入。";
+"Add" = "添加";
+"Pair once in the AnyRemote window: that Mac shows a code to enter here." = "在 AnyRemote 窗口中配对一次：那台 Mac 会显示一个配对码，在这里输入。";
+"That Mac no longer accepts this Mac’s key. Pair them again." = "那台 Mac 不再接受这台 Mac 的密钥，请重新配对。";
+"This Mac is no longer paired with that Mac. Pair them again." = "这台 Mac 已不再与那台 Mac 配对，请重新配对。";
+"The code expired. Pair again to get a new one." = "配对码已过期，请重新配对以获取新的配对码。";
+"The code was wrong too many times. Pair again to get a new one." = "配对码错误次数过多，请重新配对以获取新的配对码。";
+"Another Mac is pairing with that Mac. Try again in a moment." = "另一台 Mac 正在与那台 Mac 配对，请稍后再试。";
+"That Mac refused pairing after too many wrong codes. Try again in a few minutes." = "由于错误的配对码过多，那台 Mac 暂时拒绝配对，请几分钟后再试。";
+"Pairing was cancelled on that Mac." = "配对已在那台 Mac 上取消。";
+"That Mac runs an older AnyRemote. Update it, then pair again." = "那台 Mac 运行的是旧版 AnyRemote，请更新后再配对。";

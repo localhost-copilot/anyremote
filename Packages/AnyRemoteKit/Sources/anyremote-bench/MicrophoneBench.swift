@@ -33,7 +33,7 @@ func runMicrophoneBench(seconds: Double) async throws {
     try host.start()
     while host.port == nil || host.port == 0 { try await Task.sleep(for: .milliseconds(20)) }
     let client = RemoteHostClient(endpoint: .hostPort(host: "127.0.0.1", port: .init(rawValue: host.port!)!),
-                                  code: store.settings.code!, viewerName: "anyremote-bench")
+                                  credential: store.loopbackCredential, viewerName: "anyremote-bench")
     client.onEvent = { event in
         if case .microphone(let state) = event { print("viewer microphone: \(state)") }
     }
