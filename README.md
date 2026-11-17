@@ -157,9 +157,13 @@ the window until it recovers. The Remote menu always shows the host,
 latency and frame rate of the key remote window.
 
 A window that appears on the host within 3 s of a click, key or menu command
-in a mirror opens as a new mirror: a new document, a Settings window, or
-another app's window such as Finder revealing a file. Windows that appear on
-their own stay on the host and can be opened from the picker. Sheets are
+in a mirror opens as a new mirror: a new document or a Settings window of
+that app, or the window of another, already running app that comes to the
+front with it, such as Finder revealing a file or a browser opening a link.
+Other windows stay on the host and can be opened from the picker: those that
+appear on their own, those of apps that start meanwhile (apps opened from the
+Apps list or a Dock icon here come anyway), and any after a click or key
+press on the host itself. Sheets are
 captured with their parent window.
 
 Each remote app with windows open here gets its own Dock icon and ⌘Tab entry,
