@@ -137,6 +137,7 @@ final class ViewerModel {
         connections[target.id] = connection
         lastError = nil
         connection.client.setMaximumBitRate(pairedHost(for: target)?.maximumBitRate)
+        connection.client.setFrameRate(pairedHost(for: target)?.frameRate)
         do {
             try await connection.connect(takeOver: takeOver)
             if target.kind != .thisMac, let welcome = connection.welcome,
@@ -152,7 +153,7 @@ final class ViewerModel {
                                       pairingCode: code.canonical, lastConnected: Date(),
                                       fromPeer: existing?.fromPeer ?? false,
                                       sharesBack: sharesBack ?? existing?.sharesBack ?? true,
-                                      maximumBitRate: existing?.maximumBitRate)
+                                      maximumBitRate: existing?.maximumBitRate, frameRate: existing?.frameRate)
                 pairedStore.save(host, replacing: previous)
                 saved = pairedStore.all
                 offerPairing(to: host, over: connection)
@@ -195,6 +196,19 @@ final class ViewerModel {
         pairedStore.save(host, replacing: host.id)
         saved = pairedStore.all
         connections[target.id]?.client.setMaximumBitRate(bitRate)
+    }
+
+    /// Frames a second to show that Mac's windows at (nil: 60).
+    func frameRate(_ target: HostTarget) -> Int? { pairedHost(for: target)?.frameRate }
+
+    /// On the open windows too.
+    func setFrameRate(_ target: HostTarget, _ rate: Int?) {
+        let rate = rate == FrameRate.standard ? nil : rate
+        guard var host = pairedHost(for: target), host.frameRate != rate else { return }
+        host.frameRate = rate
+        pairedStore.save(host, replacing: host.id)
+        saved = pairedStore.all
+        connections[target.id]?.client.setFrameRate(rate)
     }
 
     /// Another Mac paired with this one and offered the way back.

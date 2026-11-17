@@ -24,6 +24,18 @@ import Testing
         }
     }
 
+    @Test func frameRateRoundTrips() throws {
+        let message = ControlMessage.frameRate(144)
+        #expect(try ControlCoding.decode(ControlMessage.self, from: ControlCoding.encode(message)) == message)
+    }
+
+    @Test func frameRatesStayWithinWhatHostsSupport() {
+        #expect(FrameRate.clamped(30) == 60)
+        #expect(FrameRate.clamped(120) == 120)
+        #expect(FrameRate.clamped(500) == FrameRate.supported.last)
+        #expect(FrameRate.supported.contains(FrameRate.standard))
+    }
+
     @Test func olderViewersDecodeWithoutScreens() throws {
         // What viewers before the screens send.
         let authenticate = Data(#"{"authenticate":{"viewerName":"mini","takeOver":true}}"#.utf8)

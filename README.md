@@ -512,6 +512,12 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
   **Video Quality** (the picker's toolbar, or a Mac's context menu) caps
   each stream from that Mac, 6–120 Mbps, for slow or metered networks; it
   is stored per paired Mac and applies to open windows at once.
+- **Frame rate** — 60 fps unless the viewer asks for more (**Video
+  Quality** › Frame Rate: 60, 90, 120 or 144 Hz, stored per paired Mac;
+  `ControlMessage.frameRate`). The host's virtual displays (remote windows,
+  and the desktop's dynamic-resolution stand-in) refresh at that rate and
+  captures follow it, open ones included. A desktop shown at its own
+  resolution stays at its physical screen's refresh rate.
 - **Input** — mouse, scroll and keys as `CGEvent`s posted at the HID tap, at
   points relative to the window's top-left (frozen during a press so
   title-bar drags work). Focus via AX `AXFrontmost` + `AXMain` + `AXRaise`.
@@ -713,12 +719,13 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 112 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 115 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
 Packages/AnyRemoteKit/.build/release/anyremote-bench --windows 6 --busy 1    # several windows at once
 Packages/AnyRemoteKit/.build/release/anyremote-bench --microphone            # microphone delay (needs the driver)
+Packages/AnyRemoteKit/.build/release/anyremote-bench --refresh-test 60,120,144  # fps a virtual display delivers per rate
 Packages/AnyRemoteKit/.build/release/anyremote-bench --drag-test offer --file <path> --from x,y --to x,y
 ```
 
@@ -806,6 +813,11 @@ against this Mac's own host service unless `--connect` is given.
 
 - `--connect host[:port] --code CODE` — another Mac
 - `--synthetic 940x700 [--resize-test] [--display-test]`
+- `--video-quality` — the Video Quality popover's content in a window, for
+  a screenshot
+- `--frame-rates 144,60,120` — asks for the first frame rate before
+  anything opens, then the next every 8 s (with `ANYREMOTE_STATS_STDOUT=1`
+  the fps shows what arrives)
 - `--input-test` — clicks, keys, wheel and a context menu into a recorder
   window; prints what arrived and whether the menu showed as a child window
 - `--open <app> [--title <text>] [--menu-test [--choose Menu/Item]]`

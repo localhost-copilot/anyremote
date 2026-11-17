@@ -22,6 +22,9 @@
 // Several windows at once, some still (see MultiWindowBench.swift):
 //   anyremote-bench --windows N [--busy K] [--synthetic WxH] [--seconds N] [--connect … --code …]
 //
+// The frame rate virtual displays deliver at each refresh rate (see RefreshBench.swift):
+//   anyremote-bench --refresh-test 60,120,144 [--synthetic WxH] [--seconds N]
+//
 // `--synthetic` opens a window of W×H points that scrolls dense text every
 // display frame: a reproducible worst-case workload for latency comparisons.
 
@@ -56,6 +59,7 @@ struct Options: Sendable {
     var dragTo = CGPoint(x: 850, y: 300)
     var windows = 0
     var busy = 1
+    var refreshRates: [Int] = []
 }
 
 func parsePoint(_ text: String?) -> CGPoint? {
@@ -87,6 +91,7 @@ func parseOptions() -> Options {
         case "--windows": options.windows = Int(arguments.next() ?? "") ?? 0
         case "--busy": options.busy = Int(arguments.next() ?? "") ?? options.busy
         case "--microphone": options.microphone = true
+        case "--refresh-test": options.refreshRates = (arguments.next() ?? "").split(separator: ",").compactMap { Int($0) }
         case "--strips": options.strips = Int(arguments.next() ?? "") ?? options.strips
         case "--drag-test": options.dragScenario = arguments.next()
         case "--file": options.dragFile = arguments.next()
@@ -189,7 +194,17 @@ func runNetwork(_ options: Options, syntheticWindowID: CGWindowID?) async throws
             print("host listening on port \(host.port!) pairing code \(code)")
             let permissions = HostService.permissions
             print("permissions: screen=\(permissions.screenRecording) ax=\(permissions.accessibility) post=\(permissions.postEvents)")
-            while true { try await Task.sleep(for: .seconds(3600)) }
+            // How often the synthetic window redraws: its display's refresh rate.
+            var redraws = await MainActor.run { SyntheticWorkloadWindow.redraws }
+            while true {
+                try await Task.sleep(for: .seconds(syntheticWindowID == nil ? 3600 : 2))
+                let now = await MainActor.run { SyntheticWorkloadWindow.redraws }
+                if syntheticWindowID != nil {
+                    let screens = CGDisplayCopyDisplayMode(CGMainDisplayID()).map { "\($0.refreshRate)" } ?? "?"
+                    print("synthetic window redraws \((now - redraws) / 2)/s (main display \(screens) Hz)")
+                }
+                redraws = now
+            }
         }
     }
 
@@ -281,7 +296,7 @@ if options.windows > 0 {
                                          scrolls: index < options.busy)
         }
     }
-} else if let size = options.synthetic {
+} else if let size = options.synthetic, options.refreshRates.isEmpty {
     syntheticWindow = MainActor.assumeIsolated { SyntheticWorkloadWindow.open(size: size) }
 }
 let syntheticWindowID = syntheticWindow.map { CGWindowID($0.windowNumber) }
@@ -290,7 +305,10 @@ Task.detached {
     // Let the synthetic window reach the window server before enumerating.
     if syntheticWindowID != nil || !benchWindowIDs.isEmpty { try? await Task.sleep(for: .milliseconds(500)) }
     do {
-        if let scenario = options.dragScenario {
+        if !options.refreshRates.isEmpty {
+            try await runRefreshBench(rates: options.refreshRates, size: options.synthetic ?? CGSize(width: 1200, height: 800),
+                                      seconds: options.seconds, bitRate: options.bitrate * 1_000_000)
+        } else if let scenario = options.dragScenario {
             try await runDragBench(scenario: scenario, file: options.dragFile, from: options.dragFrom, to: options.dragTo)
         } else if options.microphone {
             try await runMicrophoneBench(seconds: options.seconds)

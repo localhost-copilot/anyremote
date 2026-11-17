@@ -93,6 +93,7 @@ public final class RemoteHostClient: @unchecked Sendable {
     // Queue-confined.
     private var wantsAudio = false
     private var maximumBitRate: Int?
+    private var frameRate = FrameRate.standard
     private var offersMicrophone = false
     private var notices = NoticeSubscription(notifications: false, badges: false)
     private var microphone: ViewerMicrophone?
@@ -200,6 +201,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         }
         // Ahead of any stream the viewer opens, so none starts above it.
         if let maximumBitRate { control?.send(.maximumBitRate(maximumBitRate)) }
+        if frameRate != FrameRate.standard { control?.send(.frameRate(frameRate)) }
         if wantsAudio { control?.send(.audio(enabled: true)) }
         if offersMicrophone { control?.send(.microphone(enabled: true)) }
         if !notices.isEmpty { control?.send(.notices(notices)) }
@@ -530,6 +532,17 @@ public final class RemoteHostClient: @unchecked Sendable {
             guard bitRate != maximumBitRate else { return }
             maximumBitRate = bitRate
             if welcome != nil { control?.send(.maximumBitRate(bitRate)) }
+        }
+    }
+
+    /// Frames a second to show this host's windows and desktops at (nil:
+    /// 60). Takes effect on the open streams right away.
+    public func setFrameRate(_ rate: Int?) {
+        queue.async { [self] in
+            let rate = FrameRate.clamped(rate ?? FrameRate.standard)
+            guard rate != frameRate else { return }
+            frameRate = rate
+            if welcome != nil { control?.send(.frameRate(rate)) }
         }
     }
 

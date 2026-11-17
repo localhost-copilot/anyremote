@@ -52,9 +52,11 @@ final class RemoteDisplays: @unchecked Sendable {
     var isEmpty: Bool { displayIDs.isEmpty }
 
     /// The display for windows shown on `screen` (nil: one shared display of
-    /// `fallbackSize`), made if needed, and the frame a window there may
-    /// take. Nil if no display can be made.
-    func target(for screen: ViewerScreen?, fallbackSize: CGSize) -> (displayID: CGDirectDisplayID, frame: CGRect)? {
+    /// `fallbackSize`), made if needed, refreshing `refreshRate` times a
+    /// second, and the frame a window there may take. Nil if no display can
+    /// be made.
+    func target(for screen: ViewerScreen?, fallbackSize: CGSize,
+                refreshRate: Int) -> (displayID: CGDirectDisplayID, frame: CGRect)? {
         let size = (screen?.size).map { CGSize(width: $0.width.rounded(), height: $0.height.rounded()) } ?? fallbackSize
         lock.lock()
         // No screen said: any display there is will do.
@@ -65,15 +67,17 @@ final class RemoteDisplays: @unchecked Sendable {
             display = existing.display
             // The viewer's screen changed resolution.
             if display.pointSize != size, size.width <= Self.maximumSize.width, size.height <= Self.maximumSize.height {
-                display.resize(to: size)
+                display.resize(to: size, refreshRate: Double(refreshRate))
+            } else {
+                display.setRefreshRate(Double(refreshRate))
             }
         } else {
-            guard let made = make(size: size) else { return nil }
+            guard let made = make(size: size, refreshRate: refreshRate) else { return nil }
             display = made
             lock.lock()
             entries.append(Entry(screenID: screen?.id, display: made))
             lock.unlock()
-            log.notice("made virtual display \(made.displayID) of \(Int(size.width))x\(Int(size.height)) for viewer screen \(screen.map { String($0.id) } ?? "-", privacy: .public)")
+            log.notice("made virtual display \(made.displayID) of \(Int(size.width))x\(Int(size.height)) at \(refreshRate) Hz for viewer screen \(screen.map { String($0.id) } ?? "-", privacy: .public)")
             place(made)
             // The window server needs a moment to settle the new arrangement.
             usleep(300_000)
@@ -95,7 +99,15 @@ final class RemoteDisplays: @unchecked Sendable {
         visibleFrame(CGPoint(x: display.bounds.midX, y: display.bounds.midY)) ?? display.bounds
     }
 
-    private func make(size: CGSize) -> VirtualDisplay? {
+    /// Every display refreshes `refreshRate` times a second from now on.
+    func setRefreshRate(_ refreshRate: Int) {
+        lock.lock()
+        let displays = entries.map(\.display)
+        lock.unlock()
+        for display in displays { display.setRefreshRate(Double(refreshRate)) }
+    }
+
+    private func make(size: CGSize, refreshRate: Int) -> VirtualDisplay? {
         // Displays with one product ID can't exist at once: one per display
         // here, and another AnyRemote host on this Mac (during development)
         // takes the next free ones.
@@ -105,7 +117,7 @@ final class RemoteDisplays: @unchecked Sendable {
             lock.unlock()
             if taken { continue }
             if let display = VirtualDisplay(pointSize: size, maximumPointSize: Self.maximumSize,
-                                            name: "AnyRemote", productID: productID) {
+                                            refreshRate: Double(refreshRate), name: "AnyRemote", productID: productID) {
                 return display
             }
         }

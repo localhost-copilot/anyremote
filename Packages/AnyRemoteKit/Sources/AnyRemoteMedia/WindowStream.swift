@@ -19,7 +19,9 @@ public final class WindowStreamSender: @unchecked Sendable {
     /// What captured frames go to: the encoder, which outlives a switch of window.
     private var encodeFrame: (@Sendable (CapturedFrame) -> Void)!
     /// Window streams: makes the capture of another window (see `switchWindow`).
-    private var makeWindowCapture: ((SCWindow) -> WindowCaptureSession)?
+    private var makeWindowCapture: ((SCWindow, Int) -> WindowCaptureSession)?
+    /// Frames a second captured at most. Owner's queue, like `capture`.
+    private var frameRate: Int
 
     /// Called on the capture queue when SCK stops the stream on its own
     /// (window closed, display gone, permission revoked).
@@ -42,8 +44,8 @@ public final class WindowStreamSender: @unchecked Sendable {
                                  alpha: configuration.alpha, backdrop: backdrop, handler: encode)
         }
         let encode = encodeFrame!
-        makeWindowCapture = { window in
-            WindowCaptureSession(window: window, frameRate: configuration.expectedFrameRate,
+        makeWindowCapture = { window, frameRate in
+            WindowCaptureSession(window: window, frameRate: frameRate,
                                  alpha: configuration.alpha, backdrop: backdrop, handler: encode)
         }
     }
@@ -83,6 +85,7 @@ public final class WindowStreamSender: @unchecked Sendable {
     ) {
         self.streamID = streamID
         self.stats = stats
+        self.frameRate = configuration.expectedFrameRate
         let emit: @Sendable (UInt16, HEVCEncoder.Output) -> Void = { streamID, output in
             stats.record(.capture, from: output.deliveredTimeNanos, to: output.capturedTimeNanos)
             stats.record(.encodeWait, from: output.deliveredTimeNanos, to: output.submittedTimeNanos)
@@ -161,7 +164,7 @@ public final class WindowStreamSender: @unchecked Sendable {
         guard let makeWindowCapture else { return done(nil) }
         let old = capture!
         old.onStop = nil
-        let new = makeWindowCapture(window)
+        let new = makeWindowCapture(window, frameRate)
         new.onStop = onStop
         capture = new
         Task {
@@ -174,6 +177,14 @@ public final class WindowStreamSender: @unchecked Sendable {
                 done(error)
             }
         }
+    }
+
+    /// Captures up to `frameRate` frames a second from now on (the viewer's
+    /// choice, `ControlMessage.frameRate`). Called on the owner's queue.
+    public func setFrameRate(_ frameRate: Int) {
+        guard frameRate != self.frameRate else { return }
+        self.frameRate = frameRate
+        capture.setFrameRate(frameRate)
     }
 
     /// The captured window is going away for another (see `switchWindow`):

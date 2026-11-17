@@ -6,6 +6,10 @@ import AppKit
 /// that is open but not in use.
 @MainActor
 public enum SyntheticWorkloadWindow {
+    /// Redraws so far, across every such window: how fast the display it
+    /// is on refreshes.
+    public internal(set) static var redraws = 0
+
     public static func open(size: CGSize, origin: CGPoint = CGPoint(x: 40, y: 40),
                             scrolls: Bool = true) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(origin: origin, size: size),
@@ -40,6 +44,7 @@ final class ScrollingTextView: NSView {
 
     @objc private func tick() {
         offset = (offset + 3).truncatingRemainder(dividingBy: 18 * 40)
+        SyntheticWorkloadWindow.redraws += 1
         needsDisplay = true
     }
 

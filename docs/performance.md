@@ -150,6 +150,34 @@ microphone's. Steady to 0.1 ms within a run.
   feed and the microphone never drift apart; the viewer's and host's clocks
   do, and the jitter buffer absorbs that as it does for sound.
 
+## Frame rates above 60 (M6, macOS 27)
+
+`CGVirtualDisplayMode` takes any refresh rate; a display made at 120 or
+144 Hz reports that mode and apps on it draw that often (a `CADisplayLink`
+fires 120/143 times a second). `anyremote-bench --refresh-test 60,120,144
+--synthetic 1200x800` (2400×1656 px window scrolling text, in-process
+capture → encode → decode, no viewer on screen):
+
+| Display | Decoded fps (median) | Encode p50 | Mbps |
+|---|---|---|---|
+| 60 Hz | 63 | 5.6 ms | 36–45 |
+| 120 Hz | 119 | 5.2 ms | 31–63 |
+| 144 Hz | 145 | 5.2 ms | 28–62 |
+
+Some seconds dropped to ~83 fps; the window's own redraws dropped with them
+(the drawing app fell behind, not the pipeline). The average bit rate stays
+at the target, so each frame gets fewer bits at higher rates.
+
+Through the real host and viewer in loopback (`--frame-rates 144,60,120`),
+a change applies to the open window within a second, and the window then
+redraws at the new rate. The viewer received more frames than the window
+drew (60 Hz: ~82 fps, 120 Hz: ~160): ScreenCaptureKit also hands over a
+window frame whenever something else on the screen changes (here the
+viewer's own mirror window on the 60 Hz main display), and
+`UnchangedFrameFilter` lets unchanged frames through while the window keeps
+changing (its settle time). The capture interval of 1/(1.5 × rate) caps
+them. A host whose screen is otherwise still sends about the refresh rate.
+
 ## Findings behind the settings
 
 - `RealTime` is off and `PrioritizeEncodingSpeedOverQuality` on. In

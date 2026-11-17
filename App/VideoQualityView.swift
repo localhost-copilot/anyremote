@@ -1,3 +1,4 @@
+import AnyRemoteWire
 import SwiftUI
 
 /// How much video a paired Mac may send: as much as the network carries, or
@@ -11,6 +12,7 @@ struct VideoQualityView: View {
     @State private var automatic = true
     @State private var megabits: Double = 40
     @State private var showsStatistics = StatisticsPreferences.isShown
+    @State private var frameRate = FrameRate.standard
 
     /// The host's floor (`HostSession.minimumBitRate`) to its full-desktop ceiling.
     static let range: ClosedRange<Double> = 6...120
@@ -50,6 +52,18 @@ struct VideoQualityView: View {
                 Text(hint).explanation()
             }
             Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Frame Rate").font(.headline)
+                Picker("Frame Rate", selection: $frameRate) {
+                    ForEach(FrameRate.supported, id: \.self) { rate in
+                        Text("\(rate) Hz").tag(rate)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Text(frameRateHint).explanation()
+            }
+            Divider()
             // For every Mac: it shows what this setting achieves.
             Toggle("Show Statistics over Remote Windows", isOn: $showsStatistics)
                 .onChange(of: showsStatistics) { StatisticsPreferences.isShown = showsStatistics }
@@ -66,8 +80,10 @@ struct VideoQualityView: View {
             let bitRate = model.maximumBitRate(target)
             automatic = bitRate == nil
             if let bitRate { megabits = min(max(Double(bitRate) / 1_000_000, Self.range.lowerBound), Self.range.upperBound) }
+            frameRate = model.frameRate(target) ?? FrameRate.standard
         }
         .onChange(of: automatic) { save() }
+        .onChange(of: frameRate) { model.setFrameRate(target, frameRate) }
         // Keyboard changes don't end an edit; keep them too.
         .onDisappear(perform: save)
     }
@@ -81,6 +97,18 @@ struct VideoQualityView: View {
         default: String(localized: "Suits wired and fast Wi-Fi networks.")
         }
         return String(localized: "\(use) Each window and the full desktop use up to this much.")
+    }
+
+    /// What a rate above 60 needs, and what this Mac's screens can show.
+    private var frameRateHint: String {
+        let fastest = NSScreen.screens.map(\.maximumFramesPerSecond).max() ?? 60
+        if frameRate > fastest {
+            return String(localized: "This Mac's screens show at most \(fastest) frames a second, so the extra frames would be wasted.")
+        }
+        if frameRate > FrameRate.standard {
+            return String(localized: "Smoother motion, at the cost of more work for the other Mac and more network. Large windows may not reach it.")
+        }
+        return String(localized: "What most screens show. Choose more for a screen that refreshes faster.")
     }
 
     private func save() {

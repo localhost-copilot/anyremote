@@ -61,7 +61,8 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
     public let windowID: CGWindowID
     private let queue = DispatchQueue(label: "anyremote.capture", qos: .userInteractive)
     private let handler: @Sendable (CapturedFrame) -> Void
-    private let frameRate: Int
+    /// Queue-confined.
+    private var frameRate: Int
     private let pixelFormat: OSType
     private let backdrop: Bool
     private var stream: SCStream?
@@ -69,6 +70,8 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
 
     // Queue-confined.
     private var configuredPixelSize: (width: Int, height: Int) = (0, 0)
+    /// The rate the running capture was configured with.
+    private var configuredFrameRate = 0
     private var reconfiguring = false
     private var pendingPixelSize: (width: Int, height: Int)?
     private var lastLoggedGeometry = ""
@@ -126,7 +129,10 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         guard let filter else { return }
         let scale = CGFloat(filter.pointPixelScale)
         let size = Self.pixelSize(points: filter.contentRect.size, scale: scale)
-        let configuration = makeConfiguration(width: size.width, height: size.height)
+        let configuration = queue.sync {
+            configuredFrameRate = frameRate
+            return makeConfiguration(width: size.width, height: size.height)
+        }
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         queue.sync { configuredPixelSize = size }
@@ -139,6 +145,20 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         guard let stream else { return }
         self.stream = nil
         try? await stream.stopCapture()
+    }
+
+    /// Captures up to `frameRate` frames a second from now on.
+    public func setFrameRate(_ frameRate: Int) {
+        queue.async { [self] in
+            guard frameRate != self.frameRate else { return }
+            self.frameRate = frameRate
+            // Both rebuild the whole configuration, which reads the rate.
+            if crop != nil {
+                requestCrop()
+            } else {
+                requestPixelSize(configuredPixelSize)
+            }
+        }
     }
 
     /// The window moved or was resized (global points, top-left origin).
@@ -256,6 +276,7 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
             shapeDisplay = display
             shapeOthers = content.windows.filter { $0.windowID != window.windowID && $0.frame.intersects(frame) }
             let size = Self.pixelSize(points: frame.size, scale: scale)
+            configuredFrameRate = frameRate
             let configuration = makeConfiguration(width: size.width, height: size.height)
             configuration.sourceRect = cropRect
             return (configuration, size)
@@ -430,6 +451,7 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         displayBounds().contains { $0 != frame && $0.contains(point) }
     }
 
+    /// Queue-confined (reads the frame rate).
     private func makeConfiguration(width: Int, height: Int) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
         configuration.width = width
@@ -550,13 +572,16 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
         return shown > 0 ? shown : HostClock.nowNanos()
     }
 
-    /// Queue-confined. Coalesces resize requests while one is in flight.
+    /// Queue-confined. Coalesces resize (and frame rate) requests while one
+    /// is in flight.
     private func requestPixelSize(_ size: (width: Int, height: Int)) {
         guard !reconfiguring else {
             pendingPixelSize = size
             return
         }
-        guard let stream, crop == nil, !switching, size != configuredPixelSize else { return }
+        guard let stream, crop == nil, !switching,
+              size != configuredPixelSize || frameRate != configuredFrameRate else { return }
+        let frameRate = frameRate
         reconfiguring = true
         let configuration = makeConfiguration(width: size.width, height: size.height)
         stream.updateConfiguration(configuration) { [weak self] error in
@@ -567,6 +592,7 @@ public final class WindowCaptureSession: NSObject, SCStreamOutput, SCStreamDeleg
                     log.error("capture reconfigure failed: \(error.localizedDescription, privacy: .public)")
                 } else {
                     self.configuredPixelSize = size
+                    self.configuredFrameRate = frameRate
                 }
                 if let pending = self.pendingPixelSize {
                     self.pendingPixelSize = nil

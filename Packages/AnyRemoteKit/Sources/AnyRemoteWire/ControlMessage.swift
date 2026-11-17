@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 22
+public let anyRemoteProtocolVersion: UInt16 = 23
 
 /// Cleartext handshake exchanged before the session keys exist.
 ///
@@ -526,6 +526,12 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     /// host still lowers the rate on loss. Sent once connected and on every
     /// change, before any stream opens.
     case maximumBitRate(Int?)
+    /// Viewer → host: frames a second to show this viewer's windows and
+    /// desktops at, up to `FrameRate.supported`'s largest (60 until the
+    /// viewer says otherwise). The virtual displays its windows are on
+    /// refresh at it, and captures follow. Sent once connected and on every
+    /// change, before any stream opens.
+    case frameRate(Int)
     case hostReport(streamID: UInt16, HostStreamReport)
 
     // Window control
@@ -616,6 +622,17 @@ public enum ControlMessage: Codable, Equatable, Sendable {
 /// One of the viewer's screens. The host keeps a virtual display for remote
 /// windows per screen, the screen's size, so a window can be as large as the
 /// screen its mirror is on and fills it exactly in full screen.
+/// The frame rates a viewer may ask for (`ControlMessage.frameRate`).
+public enum FrameRate {
+    public static let standard = 60
+    public static let supported = [60, 90, 120, 144]
+
+    /// `rate` within what hosts support.
+    public static func clamped(_ rate: Int) -> Int {
+        min(max(rate, supported.first!), supported.last!)
+    }
+}
+
 public struct ViewerScreen: Codable, Equatable, Hashable, Sendable {
     /// The viewer's display ID, telling its screens apart.
     public var id: UInt32

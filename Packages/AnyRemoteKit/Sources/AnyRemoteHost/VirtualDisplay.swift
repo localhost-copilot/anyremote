@@ -18,7 +18,8 @@ public final class VirtualDisplay: @unchecked Sendable {
     public static let vendorID: UInt32 = 0x4152
     public private(set) var pointSize: CGSize
     private let display: CGVirtualDisplay
-    private let refreshRate: Double
+    /// Frames per second; the viewer chooses it (`ControlMessage.frameRate`).
+    public private(set) var refreshRate: Double
 
     /// - Parameters:
     ///   - maximumPointSize: the largest size `resize(to:)` may set later.
@@ -61,7 +62,7 @@ public final class VirtualDisplay: @unchecked Sendable {
         self.productID = productID
         self.pointSize = pointSize
         self.refreshRate = refreshRate
-        log.info("virtual display \(display.displayID) \(Int(pointSize.width))x\(Int(pointSize.height))pt @2x")
+        log.info("virtual display \(display.displayID) \(Int(pointSize.width))x\(Int(pointSize.height))pt @2x \(Int(refreshRate)) Hz")
     }
 
     /// macOS may put a new display into a mirror set with an existing one
@@ -112,22 +113,32 @@ public final class VirtualDisplay: @unchecked Sendable {
         return result == .success
     }
 
-    /// Switches to a new HiDPI mode of `pointSize` (within the maximum given at creation).
+    /// Switches to a new HiDPI mode of `pointSize` (within the maximum given
+    /// at creation), at `refreshRate` (nil: the current one).
     @discardableResult
-    public func resize(to pointSize: CGSize) -> Bool {
+    public func resize(to pointSize: CGSize, refreshRate: Double? = nil) -> Bool {
+        let refreshRate = refreshRate ?? self.refreshRate
         let settings = CGVirtualDisplaySettings()
         settings.hiDPI = 1
         settings.modes = [
             CGVirtualDisplayMode(width: UInt(pointSize.width), height: UInt(pointSize.height), refreshRate: refreshRate),
         ]
         guard display.apply(settings) else {
-            log.error("virtual display resize to \(pointSize.debugDescription, privacy: .public) failed")
+            log.error("virtual display resize to \(pointSize.debugDescription, privacy: .public) @\(refreshRate) Hz failed")
             return false
         }
         self.pointSize = pointSize
+        self.refreshRate = refreshRate
         selectHiDPIMode()
-        log.info("virtual display \(self.displayID) now \(Int(pointSize.width))x\(Int(pointSize.height))pt @2x")
+        log.info("virtual display \(self.displayID) now \(Int(pointSize.width))x\(Int(pointSize.height))pt @2x \(Int(refreshRate)) Hz")
         return true
+    }
+
+    /// Another refresh rate at the same size.
+    @discardableResult
+    public func setRefreshRate(_ refreshRate: Double) -> Bool {
+        guard refreshRate != self.refreshRate else { return true }
+        return resize(to: pointSize, refreshRate: refreshRate)
     }
 
     public func waitUntilOnline(timeout: TimeInterval = 2) -> Bool {
@@ -166,14 +177,15 @@ public final class VirtualDisplay: @unchecked Sendable {
         return true
     }
 
-    /// The mode of `pointSize` rendered at 2x. With a mirror or a large
-    /// maximum size macOS may otherwise pick the same pixels at 1x.
+    /// The mode of `pointSize` rendered at 2x, at the refresh rate if
+    /// listed. With a mirror or a large maximum size macOS may otherwise
+    /// pick the same pixels at 1x.
     private var hiDPIMode: CGDisplayMode? {
         let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
-        let modes = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] ?? []
-        return modes.first {
+        let modes = (CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] ?? []).filter {
             $0.width == Int(pointSize.width) && $0.height == Int(pointSize.height) && $0.pixelWidth == $0.width * 2
         }
+        return modes.first { abs($0.refreshRate - refreshRate) < 1 } ?? modes.first
     }
 
     /// The new mode list takes a moment after `apply`; until then setting a
@@ -194,7 +206,8 @@ public final class VirtualDisplay: @unchecked Sendable {
         for attempt in 0..<10 {
             if attempt > 0 { usleep(50_000) }
             guard let mode = hiDPIMode, let current = CGDisplayCopyDisplayMode(displayID) else { continue }
-            if current.pixelWidth == mode.pixelWidth, current.width == mode.width { return }
+            if current.pixelWidth == mode.pixelWidth, current.width == mode.width,
+               abs(current.refreshRate - mode.refreshRate) < 1 { return }
             var config: CGDisplayConfigRef?
             guard CGBeginDisplayConfiguration(&config) == .success, let config else { return }
             CGConfigureDisplayWithDisplayMode(config, displayID, mode, nil)

@@ -321,8 +321,8 @@ public final class HostService: @unchecked Sendable {
     /// Where a window shown on the viewer's `screen` goes, as the settings
     /// say (see `RemoteDisplays`): a virtual display (made if needed) and
     /// the frame a window there may take; nil to stay on this Mac's
-    /// screens. On the queue.
-    func remoteWindowTarget(for screen: ViewerScreen?) -> (displayID: CGDirectDisplayID, frame: CGRect)? {
+    /// screens. The display refreshes `refreshRate` times a second. On the queue.
+    func remoteWindowTarget(for screen: ViewerScreen?, refreshRate: Int) -> (displayID: CGDirectDisplayID, frame: CGRect)? {
         let settings = settingsStore.settings
         let fixed = CGSize(width: settings.virtualDisplayWidth, height: settings.virtualDisplayHeight)
         lock.lock()
@@ -332,9 +332,15 @@ public final class HostService: @unchecked Sendable {
         // A viewer on this Mac itself (loopback) sees these displays as its
         // own screens; one of them isn't a screen to make a display for.
         let screen = screen.flatMap { remoteDisplays.displayIDs.contains($0.id) ? nil : $0 }
-        let target = remoteDisplays.target(for: screen, fallbackSize: fixed)
+        let target = remoteDisplays.target(for: screen, fallbackSize: fixed, refreshRate: refreshRate)
         if target != nil { watchDisplayArrangement() }
         return target
+    }
+
+    /// The viewer's frame rate changed: the displays its windows are on
+    /// follow. On the queue.
+    func setRemoteDisplayRefreshRate(_ refreshRate: Int) {
+        remoteDisplays.setRefreshRate(refreshRate)
     }
 
     /// The frame a window may take on the virtual display `displayID`.

@@ -267,6 +267,11 @@
 "Suits most Wi-Fi networks." = "适合大多数 Wi-Fi 网络。";
 "Suits wired and fast Wi-Fi networks." = "适合有线网络和高速 Wi-Fi。";
 "%@ Each window and the full desktop use up to this much." = "%@每个窗口和完整桌面最多使用这么多。";
+"Frame Rate" = "帧率";
+"%lld Hz" = "%lld Hz";
+"This Mac's screens show at most %lld frames a second, so the extra frames would be wasted." = "这台 Mac 的屏幕每秒最多显示 %lld 帧，多出的帧会被浪费。";
+"Smoother motion, at the cost of more work for the other Mac and more network. Large windows may not reach it." = "画面更流畅，但对方 Mac 的负担和网络用量都会增加。大窗口可能达不到这个帧率。";
+"What most screens show. Choose more for a screen that refreshes faster." = "大多数屏幕的刷新率。屏幕刷新更快时可以选更高的值。";
 "Done" = "完成";
 
 /* Statistics panel */

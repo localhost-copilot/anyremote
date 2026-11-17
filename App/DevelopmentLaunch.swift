@@ -2,6 +2,7 @@ import AnyRemoteDiagnostics
 import AnyRemoteHost
 import AnyRemoteWire
 import AppKit
+import SwiftUI
 
 /// Command-line launches used for development and measurement:
 ///
@@ -325,6 +326,32 @@ enum DevelopmentLaunch {
                         try? await Task.sleep(for: .seconds(8))
                         print("dev: video cap \(step.map { "\($0 / 1_000_000) Mbps" } ?? "automatic")")
                         model.setMaximumBitRate(target, step)
+                    }
+                }
+            }
+            if arguments.contains("--video-quality") {
+                // The Video Quality popover's content in a window, for a
+                // screenshot (`screencapture -l <window>`).
+                let window = NSWindow(contentViewController: NSHostingController(
+                    rootView: VideoQualityView(target: target, model: model)))
+                window.title = "Video Quality"
+                window.makeKeyAndOrderFront(nil)
+                print("dev: video quality window \(window.windowNumber)")
+                return
+            }
+            // The first rate before anything opens, then one more every 8 s.
+            if let rates = value("--frame-rates")?.split(separator: ",").compactMap({ Int($0) }), let first = rates.first {
+                print("dev: frame rate \(first)")
+                // Also straight to the connection: on a first connection the
+                // Mac may not be a paired one, which keeps the setting.
+                model.setFrameRate(target, first)
+                connection.client.setFrameRate(first)
+                Task { @MainActor in
+                    for rate in rates.dropFirst() {
+                        try? await Task.sleep(for: .seconds(8))
+                        print("dev: frame rate \(rate)")
+                        model.setFrameRate(target, rate)
+                        connection.client.setFrameRate(rate)
                     }
                 }
             }

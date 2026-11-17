@@ -202,6 +202,8 @@ final class HostSession: @unchecked Sendable {
     private var audioRequested = false
     /// The viewer's own cap on each stream's bit rate (nil: none).
     private var bitRateLimit: Int?
+    /// Frames a second the viewer wants (`ControlMessage.frameRate`).
+    private var frameRate = FrameRate.standard
     private var audio: (scope: AudioScope, tap: ProcessAudioTap)?
     private let menuQueue = DispatchQueue(label: "anyremote.menu", qos: .userInitiated)
     private let caretQueue = DispatchQueue(label: "anyremote.caret", qos: .userInitiated)
@@ -341,6 +343,8 @@ final class HostSession: @unchecked Sendable {
             perform(action, streamID: streamID)
         case let .maximumBitRate(limit):
             setBitRateLimit(limit)
+        case let .frameRate(rate):
+            setFrameRate(rate)
         case let .audio(enabled):
             audioRequested = enabled
             updateAudio()
@@ -791,7 +795,8 @@ final class HostSession: @unchecked Sendable {
                                             parentStreamID: nil, frame: geometry.frame, layer: 0,
                                             title: name, applicationName: ComputerName.current,
                                             tileStreamIDs: tileStreamIDs)
-        let configuration = HEVCEncoder.Configuration(averageBitRate: initialBitRate(for: .display))
+        let configuration = HEVCEncoder.Configuration(averageBitRate: initialBitRate(for: .display),
+                                                      expectedFrameRate: frameRate)
         let audience = StreamAudience()
         audience.add(self)
         // Development: a viewer on this same Mac would see its own desktop
@@ -938,7 +943,7 @@ final class HostSession: @unchecked Sendable {
         // Another viewer's desktop already stands in for this display.
         guard CGDisplayMirrorsDisplay(stream.windowID) == kCGNullDirectDisplay else { return }
         guard let standIn = VirtualDisplay(pointSize: size, maximumPointSize: Self.maximumDesktopSize,
-                                           name: "AnyRemote Desktop",
+                                           refreshRate: Double(frameRate), name: "AnyRemote Desktop",
                                            productID: 0x100 + stream.windowID % 0xFF00) else { return }
         guard standIn.replace(stream.windowID) else {
             log.error("dynamic resolution: could not replace display \(stream.windowID)")
@@ -1005,6 +1010,7 @@ final class HostSession: @unchecked Sendable {
                                             parentStreamID: parent, frame: window.frame, layer: layer,
                                             title: title, applicationName: applicationName)
         let configuration = HEVCEncoder.Configuration(averageBitRate: initialBitRate(for: role),
+                                                      expectedFrameRate: frameRate,
                                                       alpha: role == .child || role == .popup)
         // Menus, popovers and alerts have glass that blurs what's behind
         // them; captured alone, it turns gray.
@@ -1046,7 +1052,7 @@ final class HostSession: @unchecked Sendable {
     /// Moves the window onto the virtual display for the viewer's screen in
     /// use, when the settings call for them (see `RemoteDisplays`).
     private func prepareForStreaming(_ stream: HostStream) {
-        guard let service, let target = service.remoteWindowTarget(for: viewerScreen),
+        guard let service, let target = service.remoteWindowTarget(for: viewerScreen, refreshRate: frameRate),
               let ax = stream.axWindow, let origin = ax.position else { return }
         stream.virtualDisplayID = target.displayID
         stream.originalOrigin = homeOrigin(from: origin, size: ax.size)
@@ -1077,7 +1083,7 @@ final class HostSession: @unchecked Sendable {
     private func follow(_ stream: HostStream, to screen: ViewerScreen) {
         guard stream.description.role == .window, let current = stream.virtualDisplayID, !stream.fullScreenOnHost,
               stream.fullScreenRequested == nil, let service, let ax = stream.axWindow,
-              let target = service.remoteWindowTarget(for: screen), target.displayID != current else { return }
+              let target = service.remoteWindowTarget(for: screen, refreshRate: frameRate), target.displayID != current else { return }
         log.notice("window \(stream.windowID) follows the viewer to another screen")
         stream.virtualDisplayID = target.displayID
         // The click that focused the mirror may be pressed still; this move
@@ -1296,6 +1302,20 @@ final class HostSession: @unchecked Sendable {
             let bitRate = min(raised ? max(current, initialBitRate(for: role)) : current, bitRateCeiling(for: role))
             stream.viewerBitRates[sessionID] = (bitRate, 0)
             applyLowestBitRate(stream)
+        }
+    }
+
+    /// The viewer's new frame rate, for every stream it watches and the
+    /// displays they are on, right away.
+    private func setFrameRate(_ rate: Int) {
+        let rate = FrameRate.clamped(rate)
+        guard rate != frameRate else { return }
+        frameRate = rate
+        log.notice("\(self.viewerName, privacy: .public) wants \(rate) fps")
+        service?.setRemoteDisplayRefreshRate(rate)
+        for stream in streams.values {
+            stream.sender.setFrameRate(rate)
+            stream.standIn?.setRefreshRate(Double(rate))
         }
     }
 

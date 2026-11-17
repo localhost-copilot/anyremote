@@ -21,10 +21,12 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
     /// The most video each stream from that Mac may use, in bits per
     /// second; nil leaves it to the host.
     public var maximumBitRate: Int?
+    /// Frames a second to show that Mac's windows at; nil: 60.
+    public var frameRate: Int?
 
     public init(id: String, name: String, address: String?, bonjourName: String?, pairingCode: String,
                 lastConnected: Date? = nil, fromPeer: Bool = false, sharesBack: Bool = true,
-                maximumBitRate: Int? = nil) {
+                maximumBitRate: Int? = nil, frameRate: Int? = nil) {
         self.id = id
         self.name = name
         self.address = address
@@ -34,10 +36,11 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
         self.fromPeer = fromPeer
         self.sharesBack = sharesBack
         self.maximumBitRate = maximumBitRate
+        self.frameRate = frameRate
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, address, bonjourName, pairingCode, lastConnected, fromPeer, sharesBack, maximumBitRate
+        case id, name, address, bonjourName, pairingCode, lastConnected, fromPeer, sharesBack, maximumBitRate, frameRate
     }
 
     public init(from decoder: Decoder) throws {
@@ -52,6 +55,7 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
         // Pairings from before this setting existed share back too.
         sharesBack = try container.decodeIfPresent(Bool.self, forKey: .sharesBack) ?? true
         maximumBitRate = try container.decodeIfPresent(Int.self, forKey: .maximumBitRate)
+        frameRate = try container.decodeIfPresent(Int.self, forKey: .frameRate)
     }
 
     public var code: PairingCode? { PairingCode(pairingCode) }
