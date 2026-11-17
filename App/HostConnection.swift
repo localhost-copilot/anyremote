@@ -96,7 +96,7 @@ final class HostConnection {
     @ObservationIgnored var onOpenedMirror: ((MirrorWindowController) -> Void)?
     @ObservationIgnored var onOpenedDesktop: ((DesktopWindowController) -> Void)?
     @ObservationIgnored var onClosed: (() -> Void)?
-    @ObservationIgnored private var pasteboard: PasteboardBridge?
+    @ObservationIgnored private var clipboard: SharedClipboard.Peer?
     @ObservationIgnored private var sharingObserver: NSObjectProtocol?
     @ObservationIgnored private var soundObserver: NSObjectProtocol?
     @ObservationIgnored private var microphoneObserver: NSObjectProtocol?
@@ -234,21 +234,28 @@ final class HostConnection {
     /// Starts or stops sharing the clipboard with the host, per the setting.
     private func updateClipboardSharing() {
         let enabled = ClipboardSharing.isEnabled && state == .connected
-        guard enabled != (pasteboard != nil) else { return }
+        guard enabled != (clipboard != nil) else { return }
+        clipboard?.leave()
+        clipboard = nil
+        client.setClipboard(nil)
+        // Ahead of this side's first offer, on the same queue.
         client.send(.pasteboardSharing(enabled: enabled))
-        pasteboard?.stop()
-        pasteboard = nil
         guard enabled else { return }
         let client = client
-        let bridge = PasteboardBridge { items in client.send(.pasteboard(items: items)) }
         // What was copied here before connecting can be pasted there right away.
-        bridge.start(sendingCurrent: true)
-        pasteboard = bridge
+        let peer = SharedClipboard.shared.join(
+            sendingCurrent: true,
+            send: { client.send(.pasteboardOffer($0)) },
+            fetch: { client.fetchPasteboard(offerID: $0, item: $1, type: $2, completion: $3) })
+        client.setClipboard(.init(receive: { peer.receive($0) },
+                                  provide: { peer.provide(offerID: $0, item: $1, type: $2, reply: $3) }))
+        clipboard = peer
     }
 
     private func stopClipboardSharing() {
-        pasteboard?.stop()
-        pasteboard = nil
+        clipboard?.leave()
+        clipboard = nil
+        client.setClipboard(nil)
         if let sharingObserver { NotificationCenter.default.removeObserver(sharingObserver) }
         sharingObserver = nil
         if let soundObserver { NotificationCenter.default.removeObserver(soundObserver) }
@@ -487,8 +494,6 @@ final class HostConnection {
         case let .caret(streamID, rect, font):
             mirrors[streamID]?.setCaret(rect, font: font)
             desktops[streamID]?.setCaret(rect, font: font)
-        case let .pasteboard(items):
-            pasteboard?.apply(items)
         case .microphone(let state):
             if state == .denied { MicrophoneSharing.explainDenial(hostName: hostName) }
         case let .hostDragBegan(streamID, manifest):

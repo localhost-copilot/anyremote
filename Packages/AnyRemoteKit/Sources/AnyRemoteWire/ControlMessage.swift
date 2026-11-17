@@ -3,7 +3,7 @@ import Foundation
 
 /// Protocol revision carried in the handshake. Bump on any incompatible change
 /// to control messages, framing, datagram layout or key schedule.
-public let anyRemoteProtocolVersion: UInt16 = 21
+public let anyRemoteProtocolVersion: UInt16 = 22
 
 /// Cleartext handshake exchanged before the session keys exist.
 ///
@@ -106,12 +106,49 @@ public struct WindowSummary: Codable, Hashable, Sendable {
 }
 
 /// An application installed (or running) on the host.
-/// One clipboard item: its data by type identifier.
-public struct PasteboardItem: Codable, Hashable, Sendable {
-    public var types: [String: Data]
+/// What one Mac's clipboard now holds, offered to the other.
+///
+/// Short text travels in the offer, so pasting it never waits. Every other
+/// type (rich text, images, long text) is only named here, with a digest
+/// of its bytes, and fetched over the transfer connection
+/// (`TransferMessage.pasteboard`) when something pastes it, so a large
+/// copy never holds up input or the pings that keep the connection, and
+/// one that is never pasted never crosses the network.
+public struct PasteboardOffer: Codable, Equatable, Sendable {
+    /// A type larger than this is not shared (it would be held in memory
+    /// on both Macs); the item's other types still are.
+    public static let maximumTypeBytes = 64 << 20
 
-    public init(types: [String: Data]) {
-        self.types = types
+    /// Names this offer in fetches. Chosen by the sender; a newer offer
+    /// makes the older ones unavailable.
+    public var offerID: UInt32
+    /// The Mac where this was copied (a random ID per launch) and which of
+    /// its copies it is, so a copy relayed through other Macs is applied
+    /// once and never comes back to where it started.
+    public var origin: UUID
+    public var copy: UInt32
+    public var items: [PasteboardOfferItem]
+
+    public init(offerID: UInt32, origin: UUID, copy: UInt32, items: [PasteboardOfferItem]) {
+        self.offerID = offerID
+        self.origin = origin
+        self.copy = copy
+        self.items = items
+    }
+}
+
+/// One clipboard item of an offer.
+public struct PasteboardOfferItem: Codable, Equatable, Sendable {
+    /// Data sent along, by type identifier.
+    public var inline: [String: Data]
+    /// Types fetched when needed: the SHA-256 of each one's bytes, by type
+    /// identifier. With the inline data it tells one copy from another
+    /// without fetching anything.
+    public var fetched: [String: Data]
+
+    public init(inline: [String: Data] = [:], fetched: [String: Data] = [:]) {
+        self.inline = inline
+        self.fetched = fetched
     }
 }
 
@@ -464,8 +501,8 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case peerPairing(PeerPairing)
     /// Viewer → host: share the clipboard (or stop).
     case pasteboardSharing(enabled: Bool)
-    /// Both ways: new clipboard contents.
-    case pasteboard(items: [PasteboardItem])
+    /// Both ways: the clipboard changed (see `PasteboardOffer`).
+    case pasteboardOffer(PasteboardOffer)
 
     // Streams
     case openWindow(windowID: UInt32)

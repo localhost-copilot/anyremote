@@ -152,6 +152,28 @@ import Testing
         #expect(received[.windowIcon(bundleIdentifier: "missing")] == nil)
     }
 
+    /// Clipboard contents go both ways, in chunks within the credit window.
+    @Test func clipboardTypesArriveEitherWay() async throws {
+        let pair = try Pair()
+        defer { pair.close() }
+        // Several times the window, so the sender must wait for credit.
+        let big = Data((0..<(13 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        pair.viewer?.providePasteboard = { offerID, item, type, reply in
+            DispatchQueue.global().async {
+                reply(offerID == 3 && item == 1 && type == "public.png" ? big : nil)
+            }
+        }
+        let fetch: @Sendable (FileTransferChannel, UInt32, String) async -> Data? = { channel, offerID, type in
+            await withCheckedContinuation { continuation in
+                channel.fetchPasteboard(offerID: offerID, item: 1, type: type) { continuation.resume(returning: $0) }
+            }
+        }
+        #expect(await fetch(pair.host!, 3, "public.png") == big)
+        #expect(await fetch(pair.host!, 2, "public.png") == nil)
+        // The host has no provider: nothing to fetch, and no hang.
+        #expect(await fetch(pair.viewer!, 3, "public.png") == nil)
+    }
+
     @Test func imagesWithoutAProviderEndEmpty() async throws {
         let pair = try Pair()
         defer { pair.close() }

@@ -325,9 +325,11 @@ nothing behind.
 ### Clipboard, displays, language
 
 - The clipboard is shared both ways while connected (Settings → General →
-  *Share Clipboard*): text, rich text, HTML, images and links, up to 16 MB.
-  Concealed or transient contents (password managers) and copied files stay
-  on their Mac.
+  *Share Clipboard*): text, rich text, HTML, images and links, up to 64 MB
+  each. Short text arrives at once; anything larger crosses only when
+  something pastes it, so copying a large image never slows clicks and
+  typing. Concealed or transient contents (password managers) and copied
+  files stay on their Mac.
 - Settings → *Match the Other Mac's Screens* (on by default): while a
   viewer is connected, the windows it
   opens move to virtual displays rendered at 2x, one per viewer screen its
@@ -491,6 +493,19 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
   thumbnails on every refresh, their apps' icons once, and an app's icon
   when its tile first appears. Each image is one binary chunk within a
   1 MB credit window, and the viewer keeps icons for the connection.
+- **Clipboard** — one `SharedClipboard` per process, which every
+  connection sharing it joins: it polls the pasteboard (on a queue of its
+  own, every 0.5 s), reads a copy once and offers it to all of them as
+  `pasteboardOffer`: text up to 64 KB inline, every other type by name and
+  SHA-256. The receiver writes the inline types and promises the rest; when
+  an app pastes one, macOS asks for it on the main thread, which fetches it
+  over the transfer connection (`transfer(.pasteboard)`, 256 KB chunks
+  within a 4 MB credit window, 15 s at most) and checks the digest. What
+  arrives from one Mac is offered on to the others and served from the
+  first. Contents equal to the current ones (inline data and digests) are
+  not a new copy, which stops a write coming back through Universal
+  Clipboard or a viewer of the same Mac; an offer's `origin` and `copy`
+  stop one going around a ring of connections.
 - **Bitrate** — receiver reports every second; ×0.75 on loss, +10% after
   four clean seconds; windows 6–80 Mbps, desktops up to 120 Mbps, child
   windows ≤20 Mbps. A shared stream runs at its viewers' lowest rate.
@@ -698,7 +713,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 106 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 112 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -850,6 +865,9 @@ Environment:
   frames shown a refresh late although sent on time).
 - `ANYREMOTE_STATS=1` starts with the statistics panel on (the switch then can't turn it off).
 - `ANYREMOTE_HOME=<dir>` uses a separate settings directory.
+- `ANYREMOTE_PASTEBOARD=<name>` shares a pasteboard of that name instead of
+  the clipboard, so a host and a viewer on one Mac each have their own and
+  the real clipboard is left alone.
 - `ANYREMOTE_UPDATE_FEED=<url>` reads the update manifest from there (plain
   HTTP is allowed from 127.0.0.1). Development builds only update when
   signed with the release identity; see the Releases section.

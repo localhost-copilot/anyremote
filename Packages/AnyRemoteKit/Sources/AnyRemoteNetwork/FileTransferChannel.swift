@@ -6,7 +6,8 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 
 /// Moves dragged files and folders between Macs over a connection of their
 /// own, so a large copy never delays input or video. The viewer's list
-/// images (app icons, window thumbnails) travel here too, for the same reason.
+/// images (app icons, window thumbnails) and clipboard contents travel here
+/// too, for the same reason.
 ///
 /// Either side fetches items the other side offered in a drag. An item
 /// travels as a `ditto` archive (folders, symbolic links, extended
@@ -58,10 +59,20 @@ public final class FileTransferChannel: @unchecked Sendable {
     public typealias ImageProvider = @Sendable (_ images: [HostImage],
                                                 _ reply: @escaping @Sendable ([Data?]) -> Void) -> Void
 
+    /// Serves the other side's fetches of what this side's clipboard
+    /// offered. `reply` (any thread) takes the bytes, or nil when the offer
+    /// is gone or the type can't be read.
+    public typealias PasteboardProvider = @Sendable (_ offerID: UInt32, _ item: Int, _ type: String,
+                                                     _ reply: @escaping @Sendable (Data?) -> Void) -> Void
+
     static let chunkSize = 256 * 1024
     static let window: Int64 = 8 << 20
     /// Small, so a drag's file that starts during a list of icons waits for little.
     static let imageWindow: Int64 = 1 << 20
+    /// Clipboard contents are held in memory on both sides; this bounds what
+    /// is in flight between them.
+    static let pasteboardWindow: Int64 = 4 << 20
+    static let maximumPasteboardBytes = PasteboardOffer.maximumTypeBytes
     static let ditto = URL(fileURLWithPath: "/usr/bin/ditto")
 
     public let connection: ControlConnection
@@ -70,6 +81,8 @@ public final class FileTransferChannel: @unchecked Sendable {
     public var resolve: Resolver?
     /// Serves the other side's image requests. Called on the connection's queue.
     public var provideImages: ImageProvider?
+    /// Serves the other side's clipboard fetches. Called on the connection's queue.
+    public var providePasteboard: PasteboardProvider?
     public var onClose: (@Sendable () -> Void)?
 
     private let idLock = NSLock()
@@ -79,6 +92,8 @@ public final class FileTransferChannel: @unchecked Sendable {
     private var sends: [UInt32: Outgoing] = [:]
     private var imageFetches: [UInt32: ImageFetch] = [:]
     private var imageSends: [UInt32: ImageSend] = [:]
+    private var pasteboardFetches: [UInt32: PasteboardFetch] = [:]
+    private var pasteboardSends: [UInt32: PasteboardSend] = [:]
     private var closed = false
     private var ready: Bool
     /// Requests made before the connection could carry them.
@@ -184,6 +199,80 @@ public final class FileTransferChannel: @unchecked Sendable {
         connection.send(.transfer(.ended(requestID: requestID, error: nil)))
     }
 
+    // MARK: Clipboard
+
+    /// Fetches one type of an item the other side's clipboard offered.
+    /// `completion` (on a queue of the channel's) gets the bytes, or nil if
+    /// they're unavailable, too large, or `timeout` passed first.
+    public func fetchPasteboard(offerID: UInt32, item: Int, type: String, timeout: TimeInterval = 30,
+                                completion: @escaping @Sendable (Data?) -> Void) {
+        idLock.lock()
+        nextRequestID &+= 1
+        let requestID = nextRequestID
+        idLock.unlock()
+        queue.async { [self] in
+            guard !closed, let index = UInt16(exactly: item) else { return completion(nil) }
+            pasteboardFetches[requestID] = PasteboardFetch(completion: completion)
+            request(.pasteboard(requestID: requestID, offerID: offerID, item: index, type: type))
+            queue.asyncAfter(deadline: .now() + timeout) { [self] in
+                guard let fetch = pasteboardFetches.removeValue(forKey: requestID) else { return }
+                log.notice("clipboard fetch timed out after \(fetch.data.count) bytes")
+                connection.send(.transfer(.cancel(requestID: requestID)))
+                fetch.completion(nil)
+            }
+        }
+    }
+
+    private func receivePasteboard(_ bytes: Data, requestID: UInt32) {
+        guard let fetch = pasteboardFetches[requestID] else { return }
+        fetch.data.append(bytes)
+        guard fetch.data.count <= Self.maximumPasteboardBytes else {
+            pasteboardFetches[requestID] = nil
+            connection.send(.transfer(.cancel(requestID: requestID)))
+            return fetch.completion(nil)
+        }
+        connection.send(.transfer(.credit(requestID: requestID, bytes: Int64(bytes.count))))
+    }
+
+    private func servePasteboard(requestID: UInt32, offerID: UInt32, item: Int, type: String) {
+        let send = PasteboardSend()
+        pasteboardSends[requestID] = send
+        guard let providePasteboard else { return finishPasteboard(requestID, data: nil) }
+        providePasteboard(offerID, item, type) { [weak self] data in
+            guard let self else { return }
+            self.queue.async {
+                guard self.pasteboardSends[requestID] === send else { return }
+                self.finishPasteboard(requestID, data: data)
+            }
+        }
+    }
+
+    private func finishPasteboard(_ requestID: UInt32, data: Data?) {
+        guard let send = pasteboardSends[requestID] else { return }
+        guard let data, data.count <= Self.maximumPasteboardBytes else {
+            pasteboardSends[requestID] = nil
+            connection.send(.transfer(.ended(requestID: requestID, error: "The clipboard has changed.")))
+            return
+        }
+        send.data = data
+        sendPasteboard(requestID)
+    }
+
+    /// Sends what the credit allows, then `ended` once all is out.
+    private func sendPasteboard(_ requestID: UInt32) {
+        guard let send = pasteboardSends[requestID], let data = send.data else { return }
+        while send.credit > 0, send.offset < data.count {
+            let end = min(send.offset + Self.chunkSize, data.count)
+            let bytes = data.subdata(in: (data.startIndex + send.offset)..<(data.startIndex + end))
+            send.offset = end
+            send.credit -= Int64(bytes.count)
+            connection.send(data: TransferChunk.encode(requestID: requestID, bytes: bytes))
+        }
+        guard send.offset == data.count else { return }
+        pasteboardSends[requestID] = nil
+        connection.send(.transfer(.ended(requestID: requestID, error: nil)))
+    }
+
     // MARK: Fetching
 
     /// Fetches an item into `destination` (the path to create; an existing
@@ -227,6 +316,9 @@ public final class FileTransferChannel: @unchecked Sendable {
     private func receive(_ data: Data) {
         guard let chunk = try? TransferChunk.decode(data) else { return }
         if imageFetches[chunk.requestID] != nil { return receiveImage(chunk.bytes, requestID: chunk.requestID) }
+        if pasteboardFetches[chunk.requestID] != nil {
+            return receivePasteboard(chunk.bytes, requestID: chunk.requestID)
+        }
         fetches[chunk.requestID]?.write(chunk.bytes)
     }
 
@@ -243,13 +335,23 @@ public final class FileTransferChannel: @unchecked Sendable {
                 send.credit += bytes
                 sendImages(requestID)
             }
+            if let send = pasteboardSends[requestID] {
+                send.credit += bytes
+                sendPasteboard(requestID)
+            }
         case let .cancel(requestID):
             sends.removeValue(forKey: requestID)?.cancel()
             imageSends[requestID] = nil
+            pasteboardSends[requestID] = nil
         case let .images(requestID, images):
             serveImages(requestID: requestID, images: images)
+        case let .pasteboard(requestID, offerID, item, type):
+            servePasteboard(requestID: requestID, offerID: offerID, item: Int(item), type: type)
         case let .ended(requestID, error):
             if let fetch = imageFetches.removeValue(forKey: requestID) { return fetch.completion(fetch.received) }
+            if let fetch = pasteboardFetches.removeValue(forKey: requestID) {
+                return fetch.completion(error == nil ? fetch.data : nil)
+            }
             guard let incoming = fetches.removeValue(forKey: requestID) else { return }
             incoming.finish(error: error.map { TransferError.unavailable($0) })
         case .attach:
@@ -295,6 +397,9 @@ public final class FileTransferChannel: @unchecked Sendable {
         for fetch in imageFetches.values { fetch.completion(fetch.received) }
         imageFetches.removeAll()
         imageSends.removeAll()
+        for fetch in pasteboardFetches.values { fetch.completion(nil) }
+        pasteboardFetches.removeAll()
+        pasteboardSends.removeAll()
         waiting.removeAll()
         onClose?()
     }
@@ -320,6 +425,26 @@ private final class ImageSend: @unchecked Sendable {
     /// Nil while rendering.
     var pending: [(index: Int, image: Data)]?
     var next = 0
+}
+
+// MARK: - Clipboard
+
+/// A clipboard type arriving. Confined to the channel's queue.
+private final class PasteboardFetch: @unchecked Sendable {
+    let completion: @Sendable (Data?) -> Void
+    var data = Data()
+
+    init(completion: @escaping @Sendable (Data?) -> Void) {
+        self.completion = completion
+    }
+}
+
+/// A clipboard type being sent: it waits here for credit. Confined to the channel's queue.
+private final class PasteboardSend: @unchecked Sendable {
+    var credit = FileTransferChannel.pasteboardWindow
+    /// Nil while the clipboard is read.
+    var data: Data?
+    var offset = 0
 }
 
 // MARK: - Sending

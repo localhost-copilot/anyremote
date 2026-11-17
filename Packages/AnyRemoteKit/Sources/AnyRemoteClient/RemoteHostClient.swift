@@ -38,7 +38,6 @@ public final class RemoteHostClient: @unchecked Sendable {
         case windowControls(streamID: UInt16, WindowControls)
         case windowStateRequest(streamID: UInt16, HostWindowStateRequest)
         case caret(streamID: UInt16, rect: CGRect?, font: CaretFont?)
-        case pasteboard([PasteboardItem])
         /// This Mac's microphone opened or closed for the host, or the host
         /// wanted it and it isn't allowed here.
         case microphone(MicrophoneState)
@@ -328,8 +327,8 @@ public final class RemoteHostClient: @unchecked Sendable {
             emit(.windowStateRequest(streamID: streamID, request))
         case let .caret(streamID, rect, font):
             emit(.caret(streamID: streamID, rect: rect, font: font))
-        case let .pasteboard(items):
-            emit(.pasteboard(items))
+        case let .pasteboardOffer(offer):
+            transferLock.withLock { clipboard }?.receive(offer)
         case .audioStream(let format):
             startAudio(format)
         case .microphoneWanted(let wanted):
@@ -439,6 +438,10 @@ public final class RemoteHostClient: @unchecked Sendable {
             guard let resolver = self?.dragResolver else { return reply(nil) }
             resolver(dragID, itemID, reply)
         }
+        channel.providePasteboard = { [weak self] offerID, item, type, reply in
+            guard let clipboard = self?.transferLock.withLock({ self?.clipboard }) else { return reply(nil) }
+            clipboard.provide(offerID, item, type, reply)
+        }
         channel.onClose = { [weak self, weak channel] in
             guard let self else { return }
             self.queue.asyncAfter(deadline: .now() + 2) {
@@ -455,6 +458,37 @@ public final class RemoteHostClient: @unchecked Sendable {
     }
 
     private var currentTransfer: FileTransferChannel? // under transferLock
+    private var clipboard: ClipboardLink? // under transferLock
+
+    // MARK: Clipboard
+
+    /// Where this connection's clipboard sharing goes on this Mac: the
+    /// host's offers to `receive`, its fetches to `provide`. Both are called
+    /// on queues of the client's.
+    public struct ClipboardLink: Sendable {
+        public var receive: @Sendable (PasteboardOffer) -> Void
+        public var provide: FileTransferChannel.PasteboardProvider
+
+        public init(receive: @escaping @Sendable (PasteboardOffer) -> Void,
+                    provide: @escaping FileTransferChannel.PasteboardProvider) {
+            self.receive = receive
+            self.provide = provide
+        }
+    }
+
+    /// Where the host's offers and fetches go, or nil to drop them.
+    /// Thread-safe. Telling the host (`.pasteboardSharing`) is the caller's.
+    public func setClipboard(_ link: ClipboardLink?) {
+        transferLock.withLock { clipboard = link }
+    }
+
+    /// Fetches one type of what the host's clipboard offered. Thread-safe;
+    /// `completion` gets nil when it's unavailable.
+    public func fetchPasteboard(offerID: UInt32, item: Int, type: String,
+                                completion: @escaping @Sendable (Data?) -> Void) {
+        guard let channel = transferLock.withLock({ currentTransfer }) else { return completion(nil) }
+        channel.fetchPasteboard(offerID: offerID, item: item, type: type, completion: completion)
+    }
 
     /// Fetches an item of the host's drag. Thread-safe; callbacks run on a
     /// queue of the channel's.

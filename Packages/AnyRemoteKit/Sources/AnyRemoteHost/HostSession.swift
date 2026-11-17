@@ -232,6 +232,8 @@ final class HostSession: @unchecked Sendable {
     /// The viewer's transfer connection presents this to join the session.
     private var transferToken: Data?
     private var transfer: FileTransferChannel?
+    private var awaitingTransfer: [@Sendable (FileTransferChannel?) -> Void] = []
+    private var clipboard: SharedClipboard.Peer?
     private lazy var dragBridge: HostDragBridge = {
         let connection = connection
         let bridge = HostDragBridge(queue: queue, injector: injector) { connection.send($0) }
@@ -307,10 +309,8 @@ final class HostSession: @unchecked Sendable {
             receivePeerPairing(pairing)
         case let .pasteboardSharing(enabled):
             setPasteboardSharing(enabled)
-        case let .pasteboard(items):
-            DispatchQueue.main.async { [self] in
-                MainActor.assumeIsolated { pasteboardBridge?.apply(items) }
-            }
+        case let .pasteboardOffer(offer):
+            clipboard?.receive(offer)
         case let .closeStream(streamID):
             endStream(streamID, reason: "Closed by viewer.", notify: false)
         case let .requestKeyframe(streamID):
@@ -376,8 +376,6 @@ final class HostSession: @unchecked Sendable {
     }
 
     /// Main-thread only.
-    nonisolated(unsafe) private var pasteboardBridge: PasteboardBridge?
-    /// Main-thread only.
     nonisolated(unsafe) private var keyboardLayout: HostKeyboardLayout?
 
     private func applyTextInput(_ settings: TextInputSettings) {
@@ -406,17 +404,31 @@ final class HostSession: @unchecked Sendable {
     }
 
     private func setPasteboardSharing(_ enabled: Bool) {
+        clipboard?.leave()
+        clipboard = nil
+        guard enabled else { return }
         let connection = connection
-        DispatchQueue.main.async { [self] in
-            MainActor.assumeIsolated {
-                pasteboardBridge?.stop()
-                pasteboardBridge = nil
-                guard enabled else { return }
-                // The viewer sends its clipboard when sharing starts; this side waits for a copy.
-                let bridge = PasteboardBridge { items in connection.send(.pasteboard(items: items)) }
-                bridge.start(sendingCurrent: false)
-                pasteboardBridge = bridge
-            }
+        // The viewer sends its clipboard when sharing starts; this side waits for a copy.
+        clipboard = SharedClipboard.shared.join(
+            sendingCurrent: false,
+            send: { connection.send(.pasteboardOffer($0)) },
+            fetch: { [weak self] offerID, item, type, reply in
+                guard let self else { return reply(nil) }
+                self.withTransfer { transfer in
+                    guard let transfer else { return reply(nil) }
+                    transfer.fetchPasteboard(offerID: offerID, item: item, type: type, completion: reply)
+                }
+            })
+    }
+
+    /// Runs `body` with the transfer connection, once it's there (nil if
+    /// the session ends first): the viewer's first clipboard offer may
+    /// arrive before it.
+    private func withTransfer(_ body: @escaping @Sendable (FileTransferChannel?) -> Void) {
+        queue.async { [self] in
+            if let transfer { return body(transfer) }
+            if ended { return body(nil) }
+            awaitingTransfer.append(body)
         }
     }
 
@@ -433,6 +445,8 @@ final class HostSession: @unchecked Sendable {
             dragBridge.cancel()
             transfer?.close()
             transfer = nil
+            for body in awaitingTransfer { body(nil) }
+            awaitingTransfer.removeAll()
             if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             for id in Array(streams.keys) { endStream(id, reason: reason, notify: false) }
             stopAudio()
@@ -1158,9 +1172,8 @@ final class HostSession: @unchecked Sendable {
     private func streamsMayHaveEnded() {
         updateAudio()
         if !streams.values.contains(where: { $0.description.role != .child }) {
+            // The transfer connection stays: the viewer's lists and clipboard use it without windows open.
             dragBridge.cancel()
-            transfer?.close()
-            transfer = nil
             if injector.isPressed { injector.releaseAll(windowOrigin: .zero) }
             cursor?.stop()
             cursor = nil
@@ -2031,7 +2044,13 @@ final class HostSession: @unchecked Sendable {
         channel.resolve = { dragID, itemID, reply in bridge.resolve(dragID: dragID, itemID: itemID, reply: reply) }
         let service = service
         channel.provideImages = { images, reply in Self.images(images, service: service, reply: reply) }
+        channel.providePasteboard = { [weak self] offerID, item, type, reply in
+            guard let clipboard = self?.clipboard else { return reply(nil) }
+            clipboard.provide(offerID: offerID, item: item, type: type, reply: reply)
+        }
         transfer = channel
+        for body in awaitingTransfer { body(channel) }
+        awaitingTransfer.removeAll()
         bridge.transfer = channel
         log.notice("transfer connection joined")
     }

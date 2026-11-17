@@ -35,14 +35,14 @@ public enum DragContents {
     static let promisedNameType = "com.apple.pasteboard.promised-file-name"
     static let promisedContentType = "com.apple.pasteboard.promised-file-content-type"
     /// Inline contents travel up to this size in all.
-    public static let maximumInlineBytes = PasteboardBridge.maximumBytes
+    public static let maximumInlineBytes = 16 << 20
     /// Icons for the drag image: the first few items get one.
     static let iconCount = 4
 
     /// True when the pasteboard holds something worth carrying to another Mac.
     public static func isTransferable(_ flavors: Set<String>) -> Bool {
         flavors.contains(fileURLType) || !flavors.isDisjoint(with: promiseTypes)
-            || !flavors.isDisjoint(with: PasteboardBridge.sharedTypes.map(\.rawValue) + [NSPasteboard.PasteboardType.tiff.rawValue])
+            || !flavors.isDisjoint(with: SharedClipboard.sharedTypes.map(\.rawValue) + [NSPasteboard.PasteboardType.tiff.rawValue])
     }
 
     public static func read(_ entries: [PasteboardEntry], dragID: UInt32,
@@ -111,7 +111,7 @@ public enum DragContents {
     private static func inlineTypes(_ entry: PasteboardEntry, flavors: Set<String>, budget: Int) -> [String: Data] {
         var types: [String: Data] = [:]
         var used = 0
-        for type in PasteboardBridge.sharedTypes.map(\.rawValue) where flavors.contains(type) {
+        for type in SharedClipboard.sharedTypes.map(\.rawValue) where flavors.contains(type) {
             guard let data = entry.data(type), used + data.count <= budget else { continue }
             types[type] = data
             used += data.count

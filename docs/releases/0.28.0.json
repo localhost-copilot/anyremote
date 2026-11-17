@@ -1,0 +1,12 @@
+{
+  "en": [
+    "Copying something large no longer slows clicks and typing: images and long text cross to the other Mac only when you paste them there.",
+    "Copies of up to 64 MB per type are shared.",
+    "With several Macs connected, a copy reaches all of them once and no longer bounces between them."
+  ],
+  "zh-Hans": [
+    "复制大内容不再拖慢点击和输入：图片和长文本只有在另一台 Mac 上粘贴时才会传过去。",
+    "每种类型最大 64 MB 的复制内容都可以共享。",
+    "连接多台 Mac 时，复制的内容只会送达每台一次，不再来回反弹。"
+  ]
+}

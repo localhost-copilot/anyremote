@@ -82,8 +82,8 @@ public enum DragEvent: Codable, Equatable, Sendable {
     case finish(dragID: UInt32, accepted: Bool)
 }
 
-/// Frames of the transfer connection (a second sealed connection, so files
-/// never hold up input). Contents flow as raw `TransferChunk`s between these.
+/// Frames of the transfer connection (a second sealed connection, so files,
+/// images and clipboard contents never hold up input). Contents flow as raw `TransferChunk`s between these.
 public enum TransferMessage: Codable, Equatable, Sendable {
     /// The first message: joins the session that sent `transferToken`.
     case attach(sessionID: UInt32, token: Data)
@@ -98,6 +98,11 @@ public enum TransferMessage: Codable, Equatable, Sendable {
     /// Asks for these images. The reply is one chunk per image the host has
     /// (an `ImageChunk`), within the requester's credit, then `ended`.
     case images(requestID: UInt32, [HostImage])
+    /// Asks for one type of an item the other Mac's clipboard offered
+    /// (`PasteboardOffer`). The reply is its bytes in chunks, within the
+    /// requester's credit, then `ended` (with an error when the clipboard
+    /// has changed since).
+    case pasteboard(requestID: UInt32, offerID: UInt32, item: UInt16, type: String)
 }
 
 /// An image a viewer fetches from the host for its lists.
