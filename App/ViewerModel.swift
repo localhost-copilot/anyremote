@@ -156,6 +156,7 @@ final class ViewerModel {
                                       maximumBitRate: existing?.maximumBitRate, frameRate: existing?.frameRate)
                 pairedStore.save(host, replacing: previous)
                 saved = pairedStore.all
+                connection.savedName = host.name
                 offerPairing(to: host, over: connection)
             }
         } catch {
@@ -309,6 +310,9 @@ final class ViewerModel {
         host.name = name
         pairedStore.save(host, replacing: host.id)
         saved = pairedStore.all
+        for connection in connections.values where connection.welcome?.hostID == host.id {
+            connection.savedName = name
+        }
     }
 
     /// Connects to this Mac at `address` from now on (another subnet, a new

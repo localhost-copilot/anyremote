@@ -1,0 +1,10 @@
+{
+  "en": [
+    "The name you give a Mac now shows in titles, Dock icons and alerts too, not just the sidebar.",
+    "Apps looks like macOS's Apps view, Windows can show all windows as in Mission Control, and search filters as you type, including pinyin."
+  ],
+  "zh-Hans": [
+    "你给 Mac 起的名字现在也会显示在标题、Dock 图标和提示中，而不只是边栏。",
+    "“App”页面改成 macOS“App”视图的样式，“窗口”页面可以像调度中心一样显示所有窗口，搜索会随输入实时筛选，也支持拼音。"
+  ]
+}

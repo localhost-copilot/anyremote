@@ -130,7 +130,12 @@ final class HostConnection {
         }
     }
 
-    var hostName: String { welcome?.hostName ?? target.name }
+    /// The name the user gave this Mac here (sidebar › Rename), which wins
+    /// over the name the Mac reports, so every title and alert matches the
+    /// sidebar. Set by `ViewerModel` once connected and on each rename.
+    var savedName: String?
+
+    var hostName: String { savedName ?? welcome?.hostName ?? target.name }
 
     /// The other Mac's AnyRemote, once it said: in the welcome, or when it
     /// refused another protocol.
