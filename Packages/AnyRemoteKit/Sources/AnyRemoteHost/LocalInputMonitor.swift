@@ -17,7 +17,8 @@ final class LocalInputMonitor: @unchecked Sendable {
     static let shared = LocalInputMonitor()
 
     private let lock = NSLock()
-    private var last: UInt64 = 0
+    /// The latest clicks and key presses, oldest first.
+    private var recent: [UInt64] = []
     private var tap: CFMachPort?
     private var started = false
 
@@ -26,7 +27,15 @@ final class LocalInputMonitor: @unchecked Sendable {
     /// Accessibility access a tap needs.
     var lastInputNanos: UInt64 {
         lock.lock(); defer { lock.unlock() }
-        return last
+        return recent.last ?? 0
+    }
+
+    /// Whether this Mac's user clicked or pressed a key in this span (after
+    /// `start`, up to and including `end`). Only the latest few are kept,
+    /// which reach back further than anything asked.
+    func hadInput(after start: UInt64, through end: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return recent.contains { $0 > start && $0 <= end }
     }
 
     /// Starts the tap the first time; later calls do nothing.
@@ -73,7 +82,8 @@ final class LocalInputMonitor: @unchecked Sendable {
         guard event.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
         let now = HostClock.nowNanos()
         lock.lock()
-        last = now
+        recent.append(now)
+        if recent.count > 32 { recent.removeFirst(recent.count - 32) }
         lock.unlock()
     }
 }

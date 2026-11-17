@@ -161,16 +161,18 @@ final class HostSession: @unchecked Sendable {
     /// Layer-0 windows on screen at the last tracking pass; nil until the first stream.
     private var knownWindows: Set<CGWindowID>?
     private var lastInputTime: UInt64 = 0
+    /// The viewer's latest clicks, key presses and menu commands of the
+    /// last few seconds, and the app each went to, oldest first.
+    private var recentInputs: [(time: UInt64, pid: pid_t)] = []
     /// The app the viewer last clicked or typed in.
-    private var lastInputPID: pid_t?
+    private var lastInputPID: pid_t? { recentInputs.last?.pid }
     /// When the viewer last clicked or typed. Queue-confined.
     var lastInputNanos: UInt64 { lastInputTime }
     /// New windows that may still turn out to be standard windows, by first sighting.
     private var newWindowCandidates: [CGWindowID: UInt64] = [:]
-    /// Candidates of an app other than the one given input: they open only
-    /// if their app was already running and has come to the front (see
-    /// `openNewWindows`).
-    private var otherAppCandidates: Set<CGWindowID> = []
+    /// Candidates of an app other than the one given input, by where they
+    /// come from (see `openNewWindows`).
+    private var otherAppCandidates: [CGWindowID: WindowOrigin] = [:]
     /// Layer-0 windows that came on screen in the last moment, by first
     /// sighting: one of them may be the tab taking a streamed window's place.
     private var recentArrivals: [CGWindowID: UInt64] = [:]
@@ -1668,20 +1670,39 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
+    /// Notes a click, key press or menu command going to this app.
+    private func noteInput(pid: pid_t) {
+        let now = HostClock.nowNanos()
+        lastInputTime = now
+        // Typing sends many in a row; one per app every 100 ms is enough to
+        // tell what came right before a launch.
+        if let last = recentInputs.last, last.pid == pid, now - last.time < 100_000_000 { return }
+        recentInputs.append((now, pid))
+        recentInputs.removeAll { now - $0.time > Self.inputHistoryInterval }
+    }
+
+    private static let inputHistoryInterval: UInt64 = 10_000_000_000
+
     /// A window that appears right after the viewer clicked or typed is one
     /// the viewer caused, and opens on the viewer like a window picked from
-    /// the list: a new document or a Settings window of the app given input,
-    /// or another app's window that came to the front with it, such as
-    /// Finder revealing a file or a browser opening a link. Time alone is not
-    /// enough: while the viewer works, this Mac's user, a script or a
-    /// background app opens windows too (an app launched from this Mac's Dock
-    /// or at login, an updater's prompt), and those stay on the host and can
-    /// be opened from the picker.
+    /// the list. Time alone is not enough: while the viewer works, this
+    /// Mac's user, a script or a background app opens windows too (an app
+    /// launched from this Mac's Dock or at login, an updater's prompt), and
+    /// those stay on the host and can be opened from the picker. A window
+    /// comes over when it leads back to the viewer's input:
+    ///
+    /// - it belongs to the app the viewer is using: a new document, Settings;
+    /// - its app was launched by the app the viewer was using, or by this
+    ///   host for the viewer: a document or app double-clicked in Finder, a
+    ///   mail link (see `WindowOrigin.viewerLaunch`);
+    /// - its app was running already and has come to the front: Finder
+    ///   revealing a file, a browser opening a link.
+    ///
+    /// Each also requires that this Mac's user didn't click or type in
+    /// between, or what follows is theirs.
     private func openNewWindows(_ onScreen: [WindowServerWindow]) {
         let now = HostClock.nowNanos()
         let current = Self.trackedWindowIDs(onScreen)
-        // Input on this Mac after the viewer's takes over: what opens next is
-        // this Mac's user's doing.
         let viewerCaused = now - lastInputTime < Self.causedWindowInterval
             && LocalInputMonitor.shared.lastInputNanos < lastInputTime
         if let known = knownWindows {
@@ -1694,9 +1715,14 @@ final class HostSession: @unchecked Sendable {
                 if (launchPID != nil && window.pid == launchPID) || (successorPID != nil && window.pid == successorPID)
                     || (viewerCaused && window.pid == lastInputPID) {
                     newWindowCandidates[window.id] = now
-                } else if viewerCaused {
+                    continue
+                }
+                // An app the viewer launched may take a while to show its
+                // window; other windows are looked at only right after input.
+                let origin = windowOrigin(pid: window.pid, now: now)
+                if origin == .viewerLaunch || viewerCaused {
                     newWindowCandidates[window.id] = now
-                    otherAppCandidates.insert(window.id)
+                    otherAppCandidates[window.id] = origin
                 }
             }
         }
@@ -1716,22 +1742,28 @@ final class HostSession: @unchecked Sendable {
                 newWindowCandidates[window.id] = nil
                 continue
             }
-            // Another app's window comes only from an app that was already
-            // running and has come to the front, as the viewer's click brings
-            // Finder or the browser, and only while this Mac's user hasn't
-            // taken over since. A window that shows up behind stays, and so
-            // does the window of an app that started meanwhile: macOS brings
-            // a newly launched app to the front by itself, whoever launched
-            // it. Apps the viewer launches from its app list come as
-            // `pendingLaunch` instead.
-            if otherAppCandidates.contains(window.id) {
-                let app = NSRunningApplication(processIdentifier: window.pid)
-                let sinceInput = Double(now - lastInputTime) / 1e9
-                if !viewerCaused || app.flatMap(\.launchDate).map({ -$0.timeIntervalSinceNow < sinceInput }) ?? true {
-                    newWindowCandidates[window.id] = nil
-                    continue
+            if var origin = otherAppCandidates[window.id] {
+                // LaunchServices may note the launcher a moment after the
+                // app's first window shows.
+                if origin == .otherLaunch {
+                    origin = windowOrigin(pid: window.pid, now: now)
+                    otherAppCandidates[window.id] = origin
                 }
-                guard app?.isActive == true else { continue }
+                switch origin {
+                case .viewerLaunch:
+                    break
+                case .otherLaunch:
+                    continue
+                case .running:
+                    // It waits for its app to come to the front, as the
+                    // viewer's click brings Finder or the browser; one that
+                    // shows up behind stays.
+                    guard viewerCaused else {
+                        newWindowCandidates[window.id] = nil
+                        continue
+                    }
+                    guard NSRunningApplication(processIdentifier: window.pid)?.isActive == true else { continue }
+                }
             }
             guard window.frame.width >= 160, window.frame.height >= 100, window.alpha > 0.01, !mayBeTab(window),
                   !Self.panelServiceNames.contains(where: { window.ownerName.contains($0) }),
@@ -1747,8 +1779,41 @@ final class HostSession: @unchecked Sendable {
             openWindow(window.id)
         }
         newWindowCandidates = newWindowCandidates.filter { current.contains($0.key) }
-        otherAppCandidates.formIntersection(newWindowCandidates.keys)
+        otherAppCandidates = otherAppCandidates.filter { newWindowCandidates[$0.key] != nil }
     }
+
+    /// Where a new window of an app other than the one in use comes from.
+    enum WindowOrigin {
+        /// Launched by an app the viewer had just clicked or typed in, with
+        /// no input on this Mac in between, or by this host: it comes over.
+        case viewerLaunch
+        /// Launched lately by anything else, or with no launcher noted
+        /// (`open`, a login item, this Mac's Dock): it stays. macOS brings a
+        /// newly launched app to the front by itself, so being in front
+        /// says nothing about who launched it.
+        case otherLaunch
+        /// Running before the viewer's latest input.
+        case running
+    }
+
+    private func windowOrigin(pid: pid_t, now: UInt64) -> WindowOrigin {
+        guard let launched = LaunchOrigin.launchNanos(of: pid, now: now) else { return .running }
+        // Long-running apps need no LaunchServices lookup.
+        if now - launched > Self.viewerLaunchInterval { return launched < lastInputTime ? .running : .otherLaunch }
+        let launcher = LaunchOrigin.launcherPID(of: pid)
+        if launcher == getpid() { return .viewerLaunch }
+        let causes = recentInputs.filter { $0.time <= launched && launched - $0.time < Self.causedWindowInterval }
+        if causes.isEmpty { return launched < lastInputTime ? .running : .otherLaunch }
+        if let launcher, let cause = causes.last(where: { $0.pid == launcher }),
+           !LocalInputMonitor.shared.hadInput(after: cause.time, through: launched) {
+            return .viewerLaunch
+        }
+        return .otherLaunch
+    }
+
+    /// How long after its launch a viewer-launched app's first windows still
+    /// come over: a big app can take a while to show them.
+    private static let viewerLaunchInterval: UInt64 = 30_000_000_000
 
     private static let causedWindowInterval: UInt64 = 3_000_000_000
 
@@ -1959,8 +2024,7 @@ final class HostSession: @unchecked Sendable {
         var origin = stream.description.frame.origin
         switch event {
         case .mouseDown, .mouseUp, .key(_, true, _, _), .text:
-            lastInputTime = HostClock.nowNanos()
-            lastInputPID = stream.pid
+            noteInput(pid: stream.pid)
         default:
             break
         }
@@ -2348,8 +2412,7 @@ final class HostSession: @unchecked Sendable {
 
     private func performMenuItem(streamID: UInt16, path: [Int]) {
         guard let stream = streams[streamID] else { return }
-        lastInputTime = HostClock.nowNanos()
-        lastInputPID = stream.pid
+        noteInput(pid: stream.pid)
         focus(stream, force: true)
         let pid = stream.pid
         menuQueue.async {
