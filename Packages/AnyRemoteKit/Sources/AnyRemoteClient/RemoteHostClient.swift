@@ -114,10 +114,14 @@ public final class RemoteHostClient: @unchecked Sendable {
         self.viewerName = viewerName
     }
 
-    /// Round trip of the latest ping, in milliseconds.
+    /// Round trip of the latest ping, in milliseconds. Thread-safe, and never
+    /// waits for the client's queue: the main thread reads it every second.
     public var roundTripMilliseconds: Double? {
-        queue.sync { clockSync.latestRoundTripNanos.map { Double($0) / 1_000_000 } }
+        receiverLock.lock()
+        defer { receiverLock.unlock() }
+        return latestRoundTripNanos.map { Double($0) / 1_000_000 }
     }
+    private var latestRoundTripNanos: UInt64? // under receiverLock
 
     // MARK: Connection
 
@@ -300,6 +304,10 @@ public final class RemoteHostClient: @unchecked Sendable {
             lastPongNanos = now
             clockSync.add(viewerSent: viewerTime, hostTime: hostTime, viewerReceived: now)
             if let best = clockSync.best { clock.update(offsetNanos: best.offsetNanos) }
+            let roundTrip = clockSync.latestRoundTripNanos
+            receiverLock.lock()
+            latestRoundTripNanos = roundTrip
+            receiverLock.unlock()
         case let .windowList(requestID, windows, displays, missing):
             listings.removeValue(forKey: requestID)?.resume(returning: WindowListing(
                 windows: windows, displays: displays, missingPermissions: missing))

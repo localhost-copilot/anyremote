@@ -1,0 +1,12 @@
+{
+  "en": [
+    "Clicks and keys keep reaching the other Mac even when its picture stops: a stuck video stream no longer freezes the whole window.",
+    "A frame macOS never confirms on screen no longer freezes the picture: the next one goes ahead.",
+    "AnyRemote logs when a picture stops moving, and why, so freezes can be tracked down."
+  ],
+  "zh-Hans": [
+    "即使对方画面停住，点击和按键也能照常发到对方 Mac：一路视频卡住不会再让整个窗口失去响应。",
+    "macOS 迟迟不确认某一帧已显示时，画面不会再冻住：下一帧会照常显示。",
+    "画面停住时，AnyRemote 会在日志里记下原因，便于排查卡顿。"
+  ]
+}

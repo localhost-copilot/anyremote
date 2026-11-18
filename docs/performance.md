@@ -216,6 +216,13 @@ them. A host whose screen is otherwise still sends about the refresh rate.
   measurable (synthetic 940×700 pt, four interleaved 25 s runs each: hitches
   2.08/s with vs 1.78/s without, run-to-run 1.53–2.33; total p50 20.8 vs
   20.9 ms). In full screen they are hidden until the pointer reaches them.
+- While a window changes size (`--resize-stress`), the presented handler of
+  every frame runs with `presentedTime` 0, yet window screenshots show the
+  picture keeps moving: the frames reach the screen, only unconfirmed, so
+  `present`/`total` stats pause meanwhile. Presenting with transactions from
+  the render queue during a resize wedged presentation (`nextDrawable` timed
+  out); presenting on the main thread changed nothing. A frame not
+  confirmed within 250 ms no longer holds back the next one.
 - `displaySyncEnabled = false` on the windowed layer: decode → glass 25 → 7 ms.
   `ANYREMOTE_DISPLAY_SYNC=1` restores vsync for comparison.
 - ScreenCaptureKit's `minimumFrameInterval` at exactly the refresh period

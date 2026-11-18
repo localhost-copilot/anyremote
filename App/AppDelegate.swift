@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MainThreadWatchdog.start()
         NSApp.mainMenu = makeMainMenu()
         PermissionGuide.cleanUpStaleEntries()
         let update = SoftwareUpdate.shared

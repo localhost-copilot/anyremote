@@ -211,6 +211,24 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
     /// Frames waiting for their presentation time, oldest first. Under `lock`.
     private var waiting: [(picture: Picture, due: UInt64, paced: Bool)] = []
     private var inFlight = false
+    /// Under `lock`: progress, for `monitor`.
+    private var progress = Progress()
+    private var monitor: StallMonitor?
+    /// How long a frame may take to reach the screen before the next one is
+    /// let through anyway. The next frame is drawn only once the previous one
+    /// is on glass, so a presented handler that never runs (or a command
+    /// buffer that never completes) would otherwise freeze the picture for good.
+    private static let presentTimeout = 250_000_000
+
+    private struct Progress {
+        var inFlightSince: UInt64 = 0
+        var lastEnqueued: UInt64 = 0
+        var lastRendered: UInt64 = 0
+        var lastShown: UInt64 = 0
+        var timedOut = 0
+        var noDrawable = 0
+        var lastTimeoutLog: UInt64 = 0
+    }
     private var wakeScheduledFor: UInt64 = 0
     private let pacer = FramePacer()
     private var lastGeometry: (Int, Int, Int) = (0, 0, 0)
@@ -253,6 +271,7 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
             return
         }
         device = context.device
+        monitor = StallMonitor(name: "picture") { [weak self] in self?.stallDescription() }
         pixelFormat = .bgra8Unorm
         framebufferOnly = true
         maximumDrawableCount = 2
@@ -309,6 +328,9 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
     /// Thread-safe. Strips of a tiled stream (from every strip's receiver)
     /// are shown together: those of one host frame wait for each other.
     public func enqueue(_ frame: DecodedFrame) {
+        lock.lock()
+        progress.lastEnqueued = HostClock.nowNanos()
+        lock.unlock()
         if let tile = frame.tile {
             gather(frame, tile: tile)
         } else {
@@ -340,7 +362,10 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         guard let context = NV24MetalContext.shared else { return }
         lock.lock()
         let busy = inFlight || lastPicture != nil
-        if !busy { inFlight = true }
+        if !busy {
+            inFlight = true
+            progress.inFlightSince = HostClock.nowNanos()
+        }
         let target = targetSize
         lock.unlock()
         guard !busy else { return }
@@ -489,11 +514,58 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         let skipped = waiting[..<shown].filter(\.paced).count
         waiting.removeFirst(index + 1)
         inFlight = true
+        progress.inFlightSince = now
         lock.unlock()
         for _ in 0..<skipped { stats?.recordSkipped() }
         if chosen.paced { stats?.record(.hold, from: chosen.picture.lead.decodedTimeNanos, to: now) }
         let held = chosen.paced && now > chosen.picture.lead.decodedTimeNanos + 500_000
         render(chosen.picture, startedAt: held ? 0 : now)
+    }
+
+    private func noteShown() {
+        lock.lock()
+        progress.lastShown = HostClock.nowNanos()
+        lock.unlock()
+    }
+
+    /// Render queue. A frame not confirmed on screen in time; the next goes ahead.
+    private func presentTimedOut() {
+        let now = HostClock.nowNanos()
+        lock.lock()
+        progress.timedOut += 1
+        let count = progress.timedOut
+        let logs = now - progress.lastTimeoutLog > 10_000_000_000
+        if logs { progress.lastTimeoutLog = now }
+        lock.unlock()
+        if logs {
+            log.notice("a frame was not confirmed on screen within 250 ms; drawing the next anyway (\(count) so far)")
+        }
+        finish()
+    }
+
+    /// Monitor queue. What keeps decoded frames off the screen, if anything.
+    private func stallDescription() -> String? {
+        let now = HostClock.nowNanos()
+        lock.lock()
+        let progress = progress
+        let inFlight = inFlight
+        let waitingCount = waiting.count
+        lock.unlock()
+        let since = { StallMonitor.seconds(since: $0, now: now) }
+        let state = "\(waitingCount) waiting, \(progress.timedOut) unconfirmed, \(progress.noDrawable) without a drawable"
+        if inFlight, now - progress.inFlightSince > 1_000_000_000 {
+            return "drawing one frame has taken \(since(progress.inFlightSince)) (\(state))"
+        }
+        // Only while frames arrive: an unchanged screen sends none.
+        guard now - progress.lastEnqueued < 1_000_000_000 else { return nil }
+        if now - progress.lastRendered > 1_000_000_000 {
+            return "frames arrive but none was drawn for \(since(progress.lastRendered)) (\(state))"
+        }
+        if progress.lastShown > 0, now - progress.lastShown > 2_000_000_000 {
+            // Also while the window is being resized: frames then show without being confirmed.
+            return "frames are drawn but none was confirmed on screen for \(since(progress.lastShown)) (\(state))"
+        }
+        return nil
     }
 
     private func finish() {
@@ -578,9 +650,13 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
                                        height: Double(CGFloat(part.pixelHeight) * scaleY), znear: 0, zfar: 1)
             draws.append((metal, viewport))
         }
-        guard !draws.isEmpty,
-              let drawable = nextDrawable(),
-              let commandBuffer = context.commandQueue.makeCommandBuffer() else { return finish() }
+        guard !draws.isEmpty else { return finish() }
+        guard let drawable = nextDrawable(), let commandBuffer = context.commandQueue.makeCommandBuffer() else {
+            lock.lock()
+            progress.noDrawable += 1
+            lock.unlock()
+            return finish()
+        }
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
@@ -623,6 +699,7 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
             withExtendedLifetime(retained) {}
             let presented = HostClock.nanos(fromSeconds: drawable.presentedTime)
             if presented > 0 {
+                self?.noteShown()
                 self?.pacer.presented(startedAt: startedAt, presented: presented)
                 self?.recordCadence(captured: frame.captureTimeNanos, presented: presented)
                 stats?.record(.present, from: frame.decodedTimeNanos, to: presented)
@@ -639,9 +716,13 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         }
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        renderQueue.asyncAfter(deadline: .now() + .nanoseconds(Self.presentTimeout)) { [weak self] in
+            if release.claim() { self?.presentTimedOut() }
+        }
 
         lock.lock()
         lastPicture = picture
+        progress.lastRendered = HostClock.nowNanos()
         lock.unlock()
 
         let geometry = (width, height, Int(frame.scale))

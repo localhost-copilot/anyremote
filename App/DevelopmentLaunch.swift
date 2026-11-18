@@ -33,6 +33,7 @@ import SwiftUI
 ///     --permission-guide                    show Settings and the permission guide card
 ///     --video-caps <Mbps|auto,…>            after connecting, cap the video from the host at each
 ///                                           value in turn, 8 s apart (needs a paired --connect host)
+///     --desktop --resize-stress <seconds>   resize the desktop window every frame, like a drag
 ///     --exit-after <seconds>
 ///
 /// Set ANYREMOTE_STATS_STDOUT=1 to print pipeline statistics every second,
@@ -183,6 +184,19 @@ enum DevelopmentLaunch {
                     let location = CGEvent(source: nil)?.location ?? .zero
                     let origin = desktop.stream.frame.origin
                     print("dev: desktop input moved to \(location) (wanted \(CGPoint(x: origin.x + target.x, y: origin.y + target.y)))")
+                    // Resizes the window every frame for that many seconds, like a
+                    // drag on its edge, to check that the picture keeps up.
+                    if let seconds = value("--resize-stress").flatMap(Double.init), let window = desktop.window {
+                        let start = window.contentLayoutRect.size
+                        for step in 0..<Int(seconds * 60) {
+                            let phase = Double(step) / 30
+                            window.setContentSize(NSSize(width: start.width - 200 + 200 * cos(phase),
+                                                         height: start.height - 120 + 120 * cos(phase)))
+                            try? await Task.sleep(for: .milliseconds(16))
+                        }
+                        window.setContentSize(start)
+                        print("dev: resize stress done")
+                    }
                     for desktopSize in desktopSizes {
                     guard let window = desktop.window else { return }
                     if let desktopSize {
