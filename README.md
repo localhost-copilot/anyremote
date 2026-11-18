@@ -166,17 +166,21 @@ than 80 ms after the host shows them, or keep getting lost, a small
 the window until it recovers. The Remote menu always shows the host,
 latency and frame rate of the key remote window.
 
-A window opens as a new mirror when it leads back to a click, key or menu
-command in a mirror: a new document or a Settings window of that app within
-3 s; the windows of an app that this app launched right after it (a document
-or app double-clicked in Finder, a mail link), as LaunchServices notes the
-launcher; or the window of an already running app that comes to the front
-with it within 3 s, such as Finder revealing a file or a browser opening a
-link. Other windows stay on the host and can be opened from the picker:
-those that appear on their own, those of apps launched by anything else (the
-host's Dock, a login item, `open`), and any after a click or key press on
-the host itself. Apps opened from the Apps list or a Dock icon here come
-anyway. Sheets are
+A window opens as a new mirror when its app is working for this viewer: the
+app the viewer last clicked, typed or chose a menu command in, or one of
+whose windows it opened, or an app launched by such an app (a document or
+app double-clicked in Finder, a mail link), as LaunchServices notes the
+launcher. Whoever acts on an app last has it, so no time limit decides:
+after a click or key press on the host itself the app is the host's, and an
+app launched by anything else (the host's Dock, a login item, `open` from a
+script) is nobody's; their windows stay on the host and can be opened from
+the picker. A window that isn't the viewer's but came up on one of its
+virtual displays (macOS opens new windows on the display in use, and apps
+reopen where they were) moves to the host's main screen. macOS doesn't tell
+who asks a running app to open something, so a script opening a document in
+the app the viewer uses brings that window over, and a link the viewer
+clicks in Mail opens on the host when the host's user used the browser last. Apps opened from
+the Apps list or a Dock icon here come anyway. Sheets are
 captured with their parent window.
 
 Each remote app with windows open here gets its own Dock icon and ⌘Tab entry,
@@ -758,7 +762,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 143 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 144 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips

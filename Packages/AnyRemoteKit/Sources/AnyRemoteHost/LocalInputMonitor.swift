@@ -1,15 +1,13 @@
-import AnyRemoteMedia
 import CoreGraphics
 import Foundation
 import OSLog
 
 private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category: "LocalInputMonitor")
 
-/// Notes when this Mac's own user last clicked or pressed a key, as opposed
-/// to the viewers, whose input this process posts. A window that opens after
-/// a click here (an app launched from this Mac's Dock, a document opened in
-/// its Finder) was opened by this Mac's user and stays on this Mac, even if
-/// a viewer was typing a moment before.
+/// Tells which app this Mac's own user clicks or types in, as opposed to
+/// the viewers, whose input this process posts. That app acts for this
+/// Mac's user from then on (see `AppActors`): what it opens stays here, and
+/// so do the windows of an app launched from this Mac's Dock or Finder.
 ///
 /// The tap only reads the events and lets them through unchanged, on a
 /// thread of its own so a busy queue never holds up this Mac's input.
@@ -17,25 +15,15 @@ final class LocalInputMonitor: @unchecked Sendable {
     static let shared = LocalInputMonitor()
 
     private let lock = NSLock()
-    /// The latest clicks and key presses, oldest first.
-    private var recent: [UInt64] = []
     private var tap: CFMachPort?
     private var started = false
+    private var receiver: (@Sendable (pid_t) -> Void)?
 
-    /// When this Mac's user last clicked or pressed a key (`HostClock`
-    /// nanoseconds); 0 if not since the monitor started, or without the
-    /// Accessibility access a tap needs.
-    var lastInputNanos: UInt64 {
-        lock.lock(); defer { lock.unlock() }
-        return recent.last ?? 0
-    }
-
-    /// Whether this Mac's user clicked or pressed a key in this span (after
-    /// `start`, up to and including `end`). Only the latest few are kept,
-    /// which reach back further than anything asked.
-    func hadInput(after start: UInt64, through end: UInt64) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return recent.contains { $0 > start && $0 <= end }
+    /// Called on the tap's thread with the app each click or key press of
+    /// this Mac's user goes to.
+    var onInput: (@Sendable (pid_t) -> Void)? {
+        get { lock.withLock { receiver } }
+        set { lock.withLock { receiver = newValue } }
     }
 
     /// Starts the tap the first time; later calls do nothing.
@@ -80,10 +68,22 @@ final class LocalInputMonitor: @unchecked Sendable {
         // keyboard and mouse here, other apps' synthetic events) counts as
         // this Mac's user.
         guard event.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
-        let now = HostClock.nowNanos()
-        lock.lock()
-        recent.append(now)
-        if recent.count > 32 { recent.removeFirst(recent.count - 32) }
-        lock.unlock()
+        guard let receiver = onInput, let pid = Self.target(of: event, type: type) else { return }
+        receiver(pid)
+    }
+
+    /// The app the event goes to: for a click, the owner of the window
+    /// under the pointer (the Dock, a window behind the frontmost app's),
+    /// else the app macOS sends it to (for a key press, the frontmost app).
+    private static func target(of event: CGEvent, type: CGEventType) -> pid_t? {
+        if type != .keyDown {
+            let windowID = CGWindowID(truncatingIfNeeded: event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
+            if windowID != 0, let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID) as? [[String: Any]],
+               let owner = info.first?[kCGWindowOwnerPID as String] as? NSNumber {
+                return owner.int32Value
+            }
+        }
+        let target = pid_t(truncatingIfNeeded: event.getIntegerValueField(.eventTargetUnixProcessID))
+        return target > 0 ? target : nil
     }
 }

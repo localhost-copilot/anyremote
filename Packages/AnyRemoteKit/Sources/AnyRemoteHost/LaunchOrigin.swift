@@ -1,4 +1,3 @@
-import AnyRemoteMedia
 import AppKit
 import Foundation
 
@@ -31,13 +30,5 @@ enum LaunchOrigin {
               let launcher = functions.copy(session, parent, "pid" as CFString)?.takeRetainedValue() as? NSNumber
         else { return nil }
         return launcher.int32Value
-    }
-
-    /// When the app was launched, on the `HostClock`; nil for processes
-    /// LaunchServices didn't start.
-    static func launchNanos(of pid: pid_t, now: UInt64 = HostClock.nowNanos()) -> UInt64? {
-        guard let date = NSRunningApplication(processIdentifier: pid)?.launchDate else { return nil }
-        let age = UInt64(max(0, -date.timeIntervalSinceNow) * 1e9)
-        return now > age ? now - age : 0
     }
 }

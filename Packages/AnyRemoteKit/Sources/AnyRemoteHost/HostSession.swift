@@ -161,18 +161,10 @@ final class HostSession: @unchecked Sendable {
     /// Layer-0 windows on screen at the last tracking pass; nil until the first stream.
     private var knownWindows: Set<CGWindowID>?
     private var lastInputTime: UInt64 = 0
-    /// The viewer's latest clicks, key presses and menu commands of the
-    /// last few seconds, and the app each went to, oldest first.
-    private var recentInputs: [(time: UInt64, pid: pid_t)] = []
-    /// The app the viewer last clicked or typed in.
-    private var lastInputPID: pid_t? { recentInputs.last?.pid }
     /// When the viewer last clicked or typed. Queue-confined.
     var lastInputNanos: UInt64 { lastInputTime }
     /// New windows that may still turn out to be standard windows, by first sighting.
     private var newWindowCandidates: [CGWindowID: UInt64] = [:]
-    /// Candidates of an app other than the one given input, by where they
-    /// come from (see `openNewWindows`).
-    private var otherAppCandidates: [CGWindowID: WindowOrigin] = [:]
     /// Layer-0 windows that came on screen in the last moment, by first
     /// sighting: one of them may be the tab taking a streamed window's place.
     private var recentArrivals: [CGWindowID: UInt64] = [:]
@@ -262,7 +254,7 @@ final class HostSession: @unchecked Sendable {
         self.connection = connection
         self.queue = queue
         self.service = service
-        LocalInputMonitor.shared.start()
+        queue.async { service.followAppActors() }
     }
 
     // MARK: Lifecycle
@@ -642,6 +634,7 @@ final class HostSession: @unchecked Sendable {
                     return
                 }
                 pendingLaunch?.pid = pid
+                service?.appActors.note(.viewer(sessionID), pid: pid)
                 // Already running: no new window may come; show the ones it has.
                 queue.asyncAfter(deadline: .now() + 1) { [self] in openExistingWindows(pid: pid) }
             }
@@ -1039,7 +1032,11 @@ final class HostSession: @unchecked Sendable {
         stream.axWindow = role == .window ? try? AXWindow(pid: pid, windowID: window.windowID) : nil
         streams[streamID] = stream
         if let parent { streams[parent]?.children[window.windowID] = streamID }
-        if role == .window { updateAudio() }
+        if role == .window {
+            // Its app works for the viewer now, which has it on screen.
+            service?.appActors.note(.viewer(sessionID), pid: pid)
+            updateAudio()
+        }
         sender.onStop = { [weak self] error in
             self?.queue.async {
                 self?.endStream(streamID, reason: error == nil ? "Capture stopped." : "The window was closed.")
@@ -1386,8 +1383,11 @@ final class HostSession: @unchecked Sendable {
         if let launch = pendingLaunch, HostClock.nowNanos() > launch.deadline { pendingLaunch = nil }
         if let successor = awaitingSuccessor, HostClock.nowNanos() > successor.deadline { awaitingSuccessor = nil }
         guard !mains.isEmpty else {
-            // Nothing to follow, but an app opened from the viewer may still bring its window.
-            if pendingLaunch != nil || awaitingSuccessor != nil {
+            // Nothing to follow, but an app opened from the viewer may still
+            // bring its window, and the virtual displays may stay without
+            // windows (see `HostService.streamsDidEnd`): one an app opens
+            // there for this Mac's user goes back to its screens.
+            if pendingLaunch != nil || awaitingSuccessor != nil || !(service?.virtualDisplayIDs.isEmpty ?? true) {
                 openNewWindows(WindowServerWindow.onScreen())
             } else {
                 knownWindows = nil
@@ -1674,60 +1674,38 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
-    /// Notes a click, key press or menu command going to this app.
+    /// Notes a click, key press or menu command going to this app, which
+    /// acts for the viewer from now on.
     private func noteInput(pid: pid_t) {
-        let now = HostClock.nowNanos()
-        lastInputTime = now
-        // Typing sends many in a row; one per app every 100 ms is enough to
-        // tell what came right before a launch.
-        if let last = recentInputs.last, last.pid == pid, now - last.time < 100_000_000 { return }
-        recentInputs.append((now, pid))
-        recentInputs.removeAll { now - $0.time > Self.inputHistoryInterval }
+        lastInputTime = HostClock.nowNanos()
+        service?.appActors.note(.viewer(sessionID), pid: pid)
     }
 
-    private static let inputHistoryInterval: UInt64 = 10_000_000_000
-
-    /// A window that appears right after the viewer clicked or typed is one
-    /// the viewer caused, and opens on the viewer like a window picked from
-    /// the list. Time alone is not enough: while the viewer works, this
-    /// Mac's user, a script or a background app opens windows too (an app
-    /// launched from this Mac's Dock or at login, an updater's prompt), and
-    /// those stay on the host and can be opened from the picker. A window
-    /// comes over when it leads back to the viewer's input:
+    /// A new window opens on the viewer when it is the viewer's: its app
+    /// acts for this viewer (see `AppActors`), because the viewer clicked
+    /// or typed in it last, opened one of its windows, or launched it (from
+    /// the app list, or a document double-clicked in its Finder), or the
+    /// viewer just launched the app or closed the window this one replaces.
+    /// What this Mac's user, a script or a background app opens stays on
+    /// this Mac and can be opened from the picker. No time limit decides
+    /// this: a window an app opens on its own after the viewer's click stays
+    /// unless the viewer acted on that app, and a window of the app the
+    /// viewer uses comes whenever it opens.
     ///
-    /// - it belongs to the app the viewer is using: a new document, Settings;
-    /// - its app was launched by the app the viewer was using, or by this
-    ///   host for the viewer: a document or app double-clicked in Finder, a
-    ///   mail link (see `WindowOrigin.viewerLaunch`);
-    /// - its app was running already and has come to the front: Finder
-    ///   revealing a file, a browser opening a link.
-    ///
-    /// Each also requires that this Mac's user didn't click or type in
-    /// between, or what follows is theirs.
+    /// A window that isn't the viewer's but came up on a virtual display
+    /// moves to this Mac's screens: macOS puts a new window on the display
+    /// in use, which is often the viewer's, and an app reopens its windows
+    /// where they were, so this Mac's user would launch an app and not see
+    /// its window.
     private func openNewWindows(_ onScreen: [WindowServerWindow]) {
         let now = HostClock.nowNanos()
         let current = Self.trackedWindowIDs(onScreen)
-        let viewerCaused = now - lastInputTime < Self.causedWindowInterval
-            && LocalInputMonitor.shared.lastInputNanos < lastInputTime
         if let known = knownWindows {
-            let launchPID = pendingLaunch?.pid
-            let successorPID = awaitingSuccessor?.pid
             let spaceSwitch = now - lastHostFullScreen < Self.spaceSwitchInterval
                 || streams.values.contains { $0.fullScreenOnHost }
             for window in onScreen where current.contains(window.id) && !known.contains(window.id)
                 && !(spaceSwitch && window.id <= newestWindowIDAtFullScreen) {
-                if (launchPID != nil && window.pid == launchPID) || (successorPID != nil && window.pid == successorPID)
-                    || (viewerCaused && window.pid == lastInputPID) {
-                    newWindowCandidates[window.id] = now
-                    continue
-                }
-                // An app the viewer launched may take a while to show its
-                // window; other windows are looked at only right after input.
-                let origin = windowOrigin(pid: window.pid, now: now)
-                if origin == .viewerLaunch || viewerCaused {
-                    newWindowCandidates[window.id] = now
-                    otherAppCandidates[window.id] = origin
-                }
+                newWindowCandidates[window.id] = now
             }
         }
         knownWindows = current
@@ -1735,44 +1713,40 @@ final class HostSession: @unchecked Sendable {
         guard !newWindowCandidates.isEmpty, now - lastCandidateCheck >= 100_000_000 else { return }
         lastCandidateCheck = now
         let streamed = Set(streams.values.filter { $0.description.role == .window }.map(\.windowID))
+        let virtualDisplays = (service?.virtualDisplayIDs ?? []).map { CGDisplayBounds($0) }
         // A new window is often listed before it has its final size and
         // before Accessibility knows it, so look again for a moment. Until
         // then it may have been taken for a child of the app's other window
         // (Chrome's browser window, opened from its profile picker); it then
-        // becomes a window of its own, which outlives the other one.
+        // becomes a window of its own, which outlives the other one. Whom
+        // its app acts for is looked at each time too (see `AppActors.actor`).
         for window in onScreen {
             guard let seen = newWindowCandidates[window.id] else { continue }
             if streamed.contains(window.id) || now - seen > 3_000_000_000 {
                 newWindowCandidates[window.id] = nil
                 continue
             }
-            if var origin = otherAppCandidates[window.id] {
-                // LaunchServices may note the launcher a moment after the
-                // app's first window shows.
-                if origin == .otherLaunch {
-                    origin = windowOrigin(pid: window.pid, now: now)
-                    otherAppCandidates[window.id] = origin
-                }
-                switch origin {
-                case .viewerLaunch:
-                    break
-                case .otherLaunch:
-                    continue
-                case .running:
-                    // It waits for its app to come to the front, as the
-                    // viewer's click brings Finder or the browser; one that
-                    // shows up behind stays.
-                    guard viewerCaused else {
-                        newWindowCandidates[window.id] = nil
-                        continue
-                    }
-                    guard NSRunningApplication(processIdentifier: window.pid)?.isActive == true else { continue }
-                }
+            let actor = service?.appActors.actor(of: window.pid)
+            let forViewer = window.pid == pendingLaunch?.pid || window.pid == awaitingSuccessor?.pid
+                || actor == .viewer(sessionID)
+            if !forViewer {
+                // Another viewer's window is that session's to open.
+                if case .viewer = actor { continue }
+                let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+                // Development loopback: the viewer's own mirrors may be on them.
+                guard virtualDisplays.contains(where: { $0.contains(center) }),
+                      !Self.systemPromptOwners.contains(window.ownerName),
+                      !(Self.isLoopback && window.ownerName.hasPrefix("AnyRemote")),
+                      now - seen >= Self.launcherNoteInterval else { continue }
             }
             guard window.frame.width >= 160, window.frame.height >= 100, window.alpha > 0.01, !mayBeTab(window),
                   !Self.panelServiceNames.contains(where: { window.ownerName.contains($0) }),
                   standardWindowIDs(pid: window.pid, after: seen)?.contains(window.id) == true else { continue }
             newWindowCandidates[window.id] = nil
+            guard forViewer else {
+                sendHome(window)
+                continue
+            }
             if window.pid == pendingLaunch?.pid { settleLaunch() }
             if window.pid == awaitingSuccessor?.pid { awaitingSuccessor = nil }
             for main in streams.values where main.description.role == .window {
@@ -1783,41 +1757,22 @@ final class HostSession: @unchecked Sendable {
             openWindow(window.id)
         }
         newWindowCandidates = newWindowCandidates.filter { current.contains($0.key) }
-        otherAppCandidates = otherAppCandidates.filter { newWindowCandidates[$0.key] != nil }
     }
 
-    /// Where a new window of an app other than the one in use comes from.
-    enum WindowOrigin {
-        /// Launched by an app the viewer had just clicked or typed in, with
-        /// no input on this Mac in between, or by this host: it comes over.
-        case viewerLaunch
-        /// Launched lately by anything else, or with no launcher noted
-        /// (`open`, a login item, this Mac's Dock): it stays. macOS brings a
-        /// newly launched app to the front by itself, so being in front
-        /// says nothing about who launched it.
-        case otherLaunch
-        /// Running before the viewer's latest input.
-        case running
-    }
+    /// How long a window that isn't the viewer's stays where it opened
+    /// before it is moved off a virtual display: LaunchServices may note
+    /// the app that launched its app, which may make it the viewer's, a
+    /// moment after the window shows.
+    private static let launcherNoteInterval: UInt64 = 300_000_000
 
-    private func windowOrigin(pid: pid_t, now: UInt64) -> WindowOrigin {
-        guard let launched = LaunchOrigin.launchNanos(of: pid, now: now) else { return .running }
-        // Long-running apps need no LaunchServices lookup.
-        if now - launched > Self.viewerLaunchInterval { return launched < lastInputTime ? .running : .otherLaunch }
-        let launcher = LaunchOrigin.launcherPID(of: pid)
-        if launcher == getpid() { return .viewerLaunch }
-        let causes = recentInputs.filter { $0.time <= launched && launched - $0.time < Self.causedWindowInterval }
-        if causes.isEmpty { return launched < lastInputTime ? .running : .otherLaunch }
-        if let launcher, let cause = causes.last(where: { $0.pid == launcher }),
-           !LocalInputMonitor.shared.hadInput(after: cause.time, through: launched) {
-            return .viewerLaunch
-        }
-        return .otherLaunch
+    /// Moves a window off the virtual displays, to the middle of this Mac's
+    /// main screen.
+    private func sendHome(_ window: WindowServerWindow) {
+        guard let ax = try? AXWindow(pid: window.pid, windowID: window.id) else { return }
+        let origin = homeOrigin(from: window.frame.origin, size: window.frame.size)
+        log.notice("window \(window.id) of \(window.ownerName, privacy: .public) opened on a virtual display for no viewer; moving it to this Mac's screen")
+        try? ax.setPosition(origin)
     }
-
-    /// How long after its launch a viewer-launched app's first windows still
-    /// come over: a big app can take a while to show them.
-    private static let viewerLaunchInterval: UInt64 = 30_000_000_000
 
     private static let causedWindowInterval: UInt64 = 3_000_000_000
 
@@ -2078,6 +2033,7 @@ final class HostSession: @unchecked Sendable {
     /// a window it opens comes as a mirror.
     private func openStatusItem(_ id: String) {
         guard let pid = StatusItemReader.pid(of: id), let service else { return }
+        service.appActors.note(.viewer(sessionID), pid: pid)
         let before = Set(WindowServerWindow.onScreen().lazy.filter { $0.pid == pid }.map(\.id))
         service.statusItems.open(id, reply: queue) { [weak self] menu in
             guard let self else { return }

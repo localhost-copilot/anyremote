@@ -82,6 +82,9 @@ public final class HostService: @unchecked Sendable {
     let notices = HostNotices()
     /// The items on the right of the menu bar, for viewers that show them.
     let statusItems = HostStatusItems()
+    /// Whom each app acts for, which decides where its new windows go.
+    /// Confined to `queue`.
+    let appActors = AppActors()
 
     /// Called on the main queue.
     public var onStatusChange: (@MainActor @Sendable (Status) -> Void)?
@@ -121,6 +124,15 @@ public final class HostService: @unchecked Sendable {
     }
 
     var settings: HostSettings { settingsStore.settings }
+
+    /// Starts following whom apps act for, as far as this Mac's own input
+    /// tells. Once a viewer connects; on the queue.
+    func followAppActors() {
+        let actors = appActors
+        let queue = queue
+        LocalInputMonitor.shared.onInput = { pid in queue.async { actors.note(.host, pid: pid) } }
+        LocalInputMonitor.shared.start()
+    }
 
     public var currentStatus: Status {
         lock.lock()
