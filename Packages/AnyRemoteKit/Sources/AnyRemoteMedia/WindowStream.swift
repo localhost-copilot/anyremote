@@ -334,20 +334,21 @@ public final class WindowStreamReceiver: @unchecked Sendable {
         let progress = progress
         lock.unlock()
         let since = { StallMonitor.seconds(since: $0, now: now) }
-        if let start = progress.submittingSince, now - start > 1_000_000_000 {
+        let age = { StallMonitor.elapsed(since: $0, now: now) }
+        if let start = progress.submittingSince, age(start) > 1_000_000_000 {
             return "the decoder has not taken a frame for \(since(start)); the receive queue waits for it"
         }
-        if let start = progress.busySince, now - start > 1_000_000_000 {
+        if let start = progress.busySince, age(start) > 1_000_000_000 {
             return "the receive queue has been busy for \(since(start))"
         }
         // Only while the host sends: an unchanged screen sends nothing.
-        guard now - progress.lastDatagram < 1_000_000_000 else { return nil }
-        if let start = progress.awaitingKeyframeSince, now - start > 2_000_000_000 {
+        guard age(progress.lastDatagram) < 1_000_000_000 else { return nil }
+        if let start = progress.awaitingKeyframeSince, age(start) > 2_000_000_000 {
             return "waiting for a keyframe for \(since(start)) (\(progress.keyframeRequests) requested)"
         }
         let lastOutput = max(decodedAt, progress.lastDecoded)
-        if progress.lastSubmitted > lastOutput, now - progress.lastSubmitted < 1_000_000_000,
-           now - max(lastOutput, progress.awaitingKeyframeSince ?? 0) > 2_000_000_000 {
+        if progress.lastSubmitted > lastOutput, age(progress.lastSubmitted) < 1_000_000_000,
+           age(max(lastOutput, progress.awaitingKeyframeSince ?? 0)) > 2_000_000_000 {
             return "frames go into the decoder but none came out "
                 + (lastOutput > 0 ? "for \(since(lastOutput))" : "since the stream began")
         }

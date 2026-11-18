@@ -33,7 +33,7 @@ public final class StallMonitor: @unchecked Sendable {
                 log.error("\(name, privacy: .public): \(description, privacy: .public)")
             case let (nil, previous?):
                 stalled = nil
-                let seconds = Double(now - previous.since) / 1e9
+                let seconds = Double(Self.elapsed(since: previous.since, now: now)) / 1e9
                 log.notice("\(name, privacy: .public) moves again, \(seconds, format: .fixed(precision: 1)) s after it was reported stuck")
             default:
                 break
@@ -46,8 +46,17 @@ public final class StallMonitor: @unchecked Sendable {
 
     deinit { timer.cancel() }
 
+    /// Nanoseconds from `nanos` to `now`, or 0 if `nanos` is later.
+    ///
+    /// Checks read `now` before the stage's timestamps, and the stage keeps
+    /// stamping while they run, so a timestamp can be newer than `now`; a
+    /// plain subtraction would then trap.
+    public static func elapsed(since nanos: UInt64, now: UInt64) -> UInt64 {
+        now > nanos ? now - nanos : 0
+    }
+
     /// Seconds since `nanos`, for descriptions.
     public static func seconds(since nanos: UInt64, now: UInt64 = HostClock.nowNanos()) -> String {
-        String(format: "%.1f s", Double(now &- nanos) / 1e9)
+        String(format: "%.1f s", Double(elapsed(since: nanos, now: now)) / 1e9)
     }
 }

@@ -552,16 +552,17 @@ public final class VideoFrameLayer: CAMetalLayer, @unchecked Sendable {
         let waitingCount = waiting.count
         lock.unlock()
         let since = { StallMonitor.seconds(since: $0, now: now) }
+        let age = { StallMonitor.elapsed(since: $0, now: now) }
         let state = "\(waitingCount) waiting, \(progress.timedOut) unconfirmed, \(progress.noDrawable) without a drawable"
-        if inFlight, now - progress.inFlightSince > 1_000_000_000 {
+        if inFlight, age(progress.inFlightSince) > 1_000_000_000 {
             return "drawing one frame has taken \(since(progress.inFlightSince)) (\(state))"
         }
         // Only while frames arrive: an unchanged screen sends none.
-        guard now - progress.lastEnqueued < 1_000_000_000 else { return nil }
-        if now - progress.lastRendered > 1_000_000_000 {
+        guard age(progress.lastEnqueued) < 1_000_000_000 else { return nil }
+        if age(progress.lastRendered) > 1_000_000_000 {
             return "frames arrive but none was drawn for \(since(progress.lastRendered)) (\(state))"
         }
-        if progress.lastShown > 0, now - progress.lastShown > 2_000_000_000 {
+        if progress.lastShown > 0, age(progress.lastShown) > 2_000_000_000 {
             // Also while the window is being resized: frames then show without being confirmed.
             return "frames are drawn but none was confirmed on screen for \(since(progress.lastShown)) (\(state))"
         }
