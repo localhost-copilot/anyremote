@@ -52,7 +52,7 @@ final class HostStream: @unchecked Sendable {
     /// Display streams: every session watching, the one that opened it first.
     let audience: StreamAudience?
     /// Shared streams: each viewer's own adaptation; the stream runs at the lowest.
-    var viewerBitRates: [UInt32: (bitRate: Int, cleanReports: Int)] = [:]
+    var viewerBitRates: [UInt32: ViewerRateControl] = [:]
     /// Shared streams: each viewer's dynamic-resolution request (nil: off);
     /// the first viewer's is applied.
     var desktopSizes: [UInt32: CGSize?] = [:]
@@ -322,13 +322,13 @@ final class HostSession: @unchecked Sendable {
             endStream(streamID, reason: "Closed by viewer.", notify: false)
         case let .requestKeyframe(streamID):
             // A strip's receiver asks for that strip only.
-            streams[tileOwners[streamID] ?? streamID]?.sender.requestKeyframe(streamID: streamID)
-        case let .receiverReport(streamID, received, dropped):
+            streams[tileOwners[streamID] ?? streamID]?.sender.requestRecoveryKeyframe(streamID: streamID)
+        case let .receiverReport(streamID, received, dropped, queuing):
             if let owner = tileOwners[streamID] {
-                // Strips: the first one's reports pace the stream; loss in any backs it off.
-                if dropped > 0 { adaptBitRate(streamID: owner, received: 0, dropped: dropped) }
+                // Strips: the first one's reports pace the stream; loss or a queue in any backs it off.
+                adaptBitRate(streamID: owner, received: 0, dropped: dropped, queuingMilliseconds: queuing)
             } else {
-                adaptBitRate(streamID: streamID, received: received, dropped: dropped)
+                adaptBitRate(streamID: streamID, received: received, dropped: dropped, queuingMilliseconds: queuing)
             }
         case let .resize(streamID, size):
             scheduleResize(streamID: streamID, size: size)
@@ -852,7 +852,7 @@ final class HostSession: @unchecked Sendable {
         streams[streamID] = stream
         audience.add(self)
         // This viewer's cap may be below what the others let the stream run at.
-        stream.viewerBitRates[sessionID] = (min(stream.bitRate, bitRateCeiling(for: .display)), 0)
+        stream.viewerBitRates[sessionID] = ViewerRateControl(bitRate: min(stream.bitRate, bitRateCeiling(for: .display)))
         applyLowestBitRate(stream)
         updateAudio()
         log.notice("\(self.viewerName, privacy: .public) joins display \(stream.windowID) (\(audience.sessions.count) watching)")
@@ -1260,20 +1260,16 @@ final class HostSession: @unchecked Sendable {
         log.notice("stopped sound to \(self.viewerName, privacy: .public)")
     }
 
-    private func adaptBitRate(streamID: UInt16, received: UInt32, dropped: UInt32) {
+    private func adaptBitRate(streamID: UInt16, received: UInt32, dropped: UInt32, queuingMilliseconds: Double?) {
         guard let stream = streams[streamID] else { return }
         let ceiling = bitRateCeiling(for: stream.description.role)
         // Each viewer adapts its own rate; the stream runs at the lowest.
-        var rate = stream.viewerBitRates[sessionID] ?? (min(stream.bitRate, ceiling), 0)
-        if dropped > 0 {
-            rate.bitRate = max(min(Self.minimumBitRate, ceiling), rate.bitRate * 3 / 4)
-            rate.cleanReports = 0
-        } else if received > 0 {
-            rate.cleanReports += 1
-            if rate.cleanReports >= 4 {
-                rate.bitRate = min(ceiling, rate.bitRate + rate.bitRate / 10)
-                rate.cleanReports = 0
-            }
+        var rate = stream.viewerBitRates[sessionID] ?? ViewerRateControl(bitRate: min(stream.bitRate, ceiling))
+        let before = rate.bitRate
+        rate.report(received: received, dropped: dropped, queuingMilliseconds: queuingMilliseconds,
+                    floor: min(Self.minimumBitRate, ceiling), ceiling: ceiling, now: HostClock.nowNanos())
+        if rate.bitRate < before, dropped == 0 {
+            log.info("\(self.viewerName, privacy: .public): \(Int(queuingMilliseconds ?? 0)) ms queued in the network, video \(before / 1_000_000) → \(rate.bitRate / 1_000_000) Mbps")
         }
         stream.viewerBitRates[sessionID] = rate
         applyLowestBitRate(stream)
@@ -1310,7 +1306,7 @@ final class HostSession: @unchecked Sendable {
             let role = stream.description.role
             let current = stream.viewerBitRates[sessionID]?.bitRate ?? stream.bitRate
             let bitRate = min(raised ? max(current, initialBitRate(for: role)) : current, bitRateCeiling(for: role))
-            stream.viewerBitRates[sessionID] = (bitRate, 0)
+            stream.viewerBitRates[sessionID] = ViewerRateControl(bitRate: bitRate)
             applyLowestBitRate(stream)
         }
     }

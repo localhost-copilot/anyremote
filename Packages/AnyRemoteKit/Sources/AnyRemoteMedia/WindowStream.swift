@@ -144,6 +144,15 @@ public final class WindowStreamSender: @unchecked Sendable {
         }
     }
 
+    /// A viewer's request after loss: ignored while the last keyframe may
+    /// still be on its way (`HEVCEncoder.requestRecoveryKeyframe`).
+    public func requestRecoveryKeyframe(streamID: UInt16? = nil) {
+        switch encoding {
+        case let .whole(encoder): encoder.requestRecoveryKeyframe()
+        case let .strips(tiled): tiled.requestKeyframe(streamID: streamID, recovery: true)
+        }
+    }
+
     /// The window's current frame (global points), for captures that crop it from its display.
     public func windowFrameChanged(_ frame: CGRect) {
         (capture as? WindowCaptureSession)?.windowFrameChanged(frame)
@@ -219,6 +228,8 @@ public final class WindowStreamReceiver: @unchecked Sendable {
     public struct Report: Sendable {
         public var framesReceived: UInt32
         public var framesDropped: UInt32
+        /// See `QueuingDelay`; nil when no frame arrived or clocks aren't synced.
+        public var queuingMilliseconds: Double?
     }
 
     public let streamID: UInt16
@@ -232,6 +243,7 @@ public final class WindowStreamReceiver: @unchecked Sendable {
     private var gate = KeyframeGate()
     private var lastKeyframeRequestNanos: UInt64 = 0
     private var report = Report(framesReceived: 0, framesDropped: 0)
+    private var queuing = QueuingDelay()
     private static let keyframeRequestInterval: UInt64 = 100_000_000
 
     /// Maps sender capture times into this clock for the `receive` stage.
@@ -272,7 +284,8 @@ public final class WindowStreamReceiver: @unchecked Sendable {
     /// Counts since the previous call.
     public func takeReport() -> Report {
         queue.sync {
-            let current = report
+            var current = report
+            current.queuingMilliseconds = queuing.take()
             report = Report(framesReceived: 0, framesDropped: 0)
             return current
         }
@@ -304,6 +317,7 @@ public final class WindowStreamReceiver: @unchecked Sendable {
             }
             if let captured = remoteClock?.localTime(fromSender: frame.handedOverTimeNanos) {
                 stats.record(.receive, from: captured, to: received)
+                queuing.record(transitMilliseconds: (Double(received) - Double(captured)) / 1e6)
             }
             guard gate.admit(isKeyframe: frame.isKeyframe) else {
                 requestKeyframeIfDue()

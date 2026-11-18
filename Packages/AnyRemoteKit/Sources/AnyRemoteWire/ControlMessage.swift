@@ -549,7 +549,10 @@ public enum ControlMessage: Codable, Equatable, Sendable {
     case streamEnded(streamID: UInt16, reason: String)
     case closeStream(streamID: UInt16)
     case requestKeyframe(streamID: UInt16)
-    case receiverReport(streamID: UInt16, framesReceived: UInt32, framesDropped: UInt32)
+    /// `queuingMilliseconds`: how long video waited in the network's queues
+    /// this second (absent from viewers before 0.32).
+    case receiverReport(streamID: UInt16, framesReceived: UInt32, framesDropped: UInt32,
+                        queuingMilliseconds: Double? = nil)
     /// Viewer → host: the most video each of this viewer's streams may use,
     /// in bits per second; nil leaves it to the host's own ceilings. The
     /// host still lowers the rate on loss. Sent once connected and on every

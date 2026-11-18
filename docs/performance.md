@@ -191,6 +191,16 @@ them. A host whose screen is otherwise still sends about the refresh rate.
   Capture → decoded with four strips (`anyremote-bench --tiles` vs
   `--realtime`): typing 16.2 → 9.8 ms, scrolling 13.2 → 8.7 ms,
   full-screen motion 16.0 → 10.3 ms.
+- Keeping `RealTime` off also avoids the engine's slow state after quiet
+  spells (Sill's "33 fps plateau"). A standalone probe with these session
+  settings (444f, hardware, one frame in flight, latest wins) fed 60 fps of
+  motion, then 2 fps / nothing / 1 fps for 3–4 s, then motion again (M6,
+  macOS 27.0.1). With `RealTime` on at 3024×1964, a fresh session's 11.4 ms
+  rose to 26 ms within 4 s and stayed there through every later motion
+  phase: 39 fps of 60. With it off, every phase held its fresh time (7.1 ms
+  at 3024×1964, 3.2 ms at 1800×1200 and at a 3840×528 strip, 60 fps).
+  So the sparse frames `UnchangedFrameFilter` produces don't need sessions
+  replaced, as long as `RealTime` stays off.
 - In real-time mode, `kVTCompressionPropertyKey_ExpectedFrameRate` acts as a latency budget:
   VT clocks the encoder down until one frame takes ~1/rate. 60 → 120 halved
   encode time (1280×800: 16.8 → 8.6 ms). 240 gave nothing further.
@@ -228,3 +238,31 @@ them. A host whose screen is otherwise still sends about the refresh rate.
 - Sparse updates (e.g. typing) were slow for the same reason (real-time
   mode): 800×600 took ~10 ms instead of ~4.5 ms.
 
+
+## A link narrower than the stream (M6, macOS 27, loopback through dummynet)
+
+The desktop (3840×2160, a synthetic 1400×900 animation on it, ~40 Mbps)
+through a 15 Mbit/s pipe with a 1000 KB queue, the most dummynet takes
+(~0.55 s), for 30 s, after 12 s unshaped; host before and after the
+queuing-delay signal, one run each:
+
+- The queue fills within the first second, so loss arrives in the same
+  report as the delay and both builds behave alike: target 60 → 21 → 7 →
+  6 Mbps (the floor) in three seconds.
+- Before keyframes a viewer asks for were spaced, the stream then never
+  recovered while the pipe was narrow: receive p50 ~540 ms, 40–90 frames
+  lost and 4–11 keyframes a second, ~10 Mbps carried at a 6 Mbps target,
+  for all 30 s. Each loss asked for a keyframe (at most every 100 ms), and
+  a 4K keyframe overflows the queue by itself, which lost more. Unshaped
+  again, the same target carried ~5 Mbps with no loss and receive p50 9 ms
+  at once.
+- With them spaced (`HEVCEncoder.requestRecoveryKeyframe`: twice the last
+  one's crossing time at the current rate, at least 250 ms), the same run
+  recovers 4 s after the pipe narrows: 4 keyframes in all, then no loss,
+  receive p50 12–15 ms, and the target climbs back from 6 to 11 Mbps
+  inside the 15 Mbit/s pipe. Interleaved with a host from before (one run
+  each, same pipe): that one stayed at ~540 ms and ~60 lost frames a
+  second for the whole 30 s.
+- The queuing-delay signal is for slower onsets (deep Wi‑Fi or router
+  buffers that fill over seconds); in these runs every congested report
+  also had loss, so it never cut on its own.

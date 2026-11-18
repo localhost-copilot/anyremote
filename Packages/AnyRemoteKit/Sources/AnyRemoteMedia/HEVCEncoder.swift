@@ -20,6 +20,16 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 /// strip 11.6 → 3.7 ms, four strips at once 8.7 → 7.8 ms, 4K frame
 /// 9.9 → 8.7 ms with PSNR 45.4 → 46.4 dB (about 13% more bits than asked
 /// for). `RealTime` off alone encodes best (53.5 dB) but slowest (14.5 ms).
+///
+/// A watchdog gives up on a session whose frame hasn't come back after
+/// `hangAfter`: with one frame in flight, a hardware encoder that stops
+/// answering would otherwise freeze the stream for good. Sill saw both
+/// causes: the engine wedged system-wide for hours, and another process's
+/// higher-priority session (the iOS Simulator's recorder) holding it for
+/// seconds. The first hang gets a fresh hardware session, which is enough for
+/// the second cause; a fresh one that hangs too moves the stream to the
+/// software encoder (4:2:0, ~20 ms a frame at 1800×1200 on M6) and the
+/// hardware is tried again after `softwareRetryAfter`.
 public final class HEVCEncoder: @unchecked Sendable {
     public struct Configuration: Sendable {
         public var averageBitRate: Int
@@ -60,14 +70,38 @@ public final class HEVCEncoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "anyremote.encode", qos: .userInteractive)
     private let keyframeLock = NSLock()
     private var keyframeRequested = true
+    /// Guarded by `keyframeLock`: no viewer-asked keyframe before this, and
+    /// whether the keyframe due was granted to one (only those space the
+    /// next: a viewer that just opened the stream missed its first keyframe
+    /// and asks at once).
+    private var recoveryAllowedNanos: UInt64 = 0
+    private var recoveryGranted = false
+    static let minimumRecoverySpacing: UInt64 = 250_000_000
 
     // Queue-confined.
     private var session: VTCompressionSession?
     private var sessionSize: (width: Int, height: Int) = (0, 0)
     private var inFlight = false
     private var pending: CapturedFrame?
+    /// The frame inside the encoder, sent again if the session is given up on
+    /// and nothing newer waits (a still window would otherwise stay stale).
+    private var inFlightFrame: CapturedFrame?
     private var nextSequence: UInt32 = 0
     private var averageBitRate: Int
+    /// Bumped whenever a session is dropped, so an abandoned session's late
+    /// output is ignored rather than completing the current frame.
+    private var generation = 0
+    /// Counts submitted frames, for the watchdog to tell one frame from the next.
+    private var submissions = 0
+    /// Hangs since the last frame that came back.
+    private var consecutiveHangs = 0
+    /// When the stream moved to the software encoder; nil on hardware.
+    private var softwareSince: UInt64?
+    /// TEST ONLY: the next this many frames never come back, as from a hung encoder.
+    var testWithheldOutputs = 0
+
+    static let hangAfter: TimeInterval = 1
+    static let softwareRetryAfter: UInt64 = 30_000_000_000
 
     public init(configuration: Configuration = .init(), output: @escaping @Sendable (Output) -> Void) {
         self.configuration = configuration
@@ -98,6 +132,30 @@ public final class HEVCEncoder: @unchecked Sendable {
         keyframeLock.unlock()
     }
 
+    /// Thread-safe. A keyframe a viewer asks for after loss: granted unless
+    /// the last keyframe may still be on its way. Under loss each lost frame
+    /// asked for one, and on a link narrower than the stream a 4K keyframe
+    /// overflowed the queue by itself, which lost more and asked for more: at
+    /// a 6 Mbps floor through 15 Mbit/s, 4–9 keyframes and ~60 lost frames a
+    /// second, ~540 ms behind, for as long as the link stayed narrow. So the
+    /// next one waits for twice the time the last one a viewer asked for takes to cross at the
+    /// current rate (at least `minimumRecoverySpacing`); the viewer asks
+    /// again every 100 ms while it waits, so a lost one is replaced soon after.
+    /// Returns whether a keyframe is now due.
+    @discardableResult
+    public func requestRecoveryKeyframe() -> Bool {
+        keyframeLock.lock()
+        defer { keyframeLock.unlock() }
+        if keyframeRequested { return true }
+        let now = HostClock.nowNanos()
+        guard now >= recoveryAllowedNanos else { return false }
+        keyframeRequested = true
+        recoveryGranted = true
+        // Until the keyframe is out and its size known.
+        recoveryAllowedNanos = now + Self.minimumRecoverySpacing
+        return true
+    }
+
     /// Thread-safe. A keyframe was asked for and not yet started.
     public var keyframeDue: Bool {
         keyframeLock.lock()
@@ -123,7 +181,19 @@ public final class HEVCEncoder: @unchecked Sendable {
             }
             session = nil
             inFlight = false
+            inFlightFrame = nil
+            generation += 1
         }
+    }
+
+    /// Thread-safe. The stream is on the software encoder after hangs.
+    var usesSoftwareEncoder: Bool {
+        queue.sync { softwareSince != nil }
+    }
+
+    /// TEST ONLY. Thread-safe.
+    func withholdOutputs(_ count: Int) {
+        queue.sync { testWithheldOutputs = count }
     }
 
     /// Thread-safe. Latest wins: while a frame is encoding, newer captures
@@ -142,6 +212,7 @@ public final class HEVCEncoder: @unchecked Sendable {
     private func completeInFlight() {
         dispatchPrecondition(condition: .onQueue(queue))
         inFlight = false
+        inFlightFrame = nil
         if let next = pending {
             pending = nil
             submit(next)
@@ -152,6 +223,16 @@ public final class HEVCEncoder: @unchecked Sendable {
         let width = CVPixelBufferGetWidth(captured.pixelBuffer)
         let height = CVPixelBufferGetHeight(captured.pixelBuffer)
         guard width <= Int(UInt16.max), height <= Int(UInt16.max) else { return }
+        if let since = softwareSince, HostClock.nowNanos() - since >= Self.softwareRetryAfter, let old = session {
+            // Try the hardware again; one more hang sends the stream back.
+            log.notice("encoder: trying the hardware encoder again")
+            softwareSince = nil
+            consecutiveHangs = 1
+            session = nil
+            generation += 1
+            VTCompressionSessionCompleteFrames(old, untilPresentationTimeStamp: .invalid)
+            VTCompressionSessionInvalidate(old)
+        }
         if session == nil || sessionSize != (width, height) {
             if let session {
                 VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
@@ -172,6 +253,15 @@ public final class HEVCEncoder: @unchecked Sendable {
         let pts = CMTime(value: CMTimeValue(captured.captureTimeNanos), timescale: 1_000_000_000)
 
         inFlight = true
+        inFlightFrame = captured
+        submissions &+= 1
+        let submission = submissions
+        let sessionGeneration = generation
+        let withheld = testWithheldOutputs > 0
+        if withheld { testWithheldOutputs -= 1 }
+        queue.asyncAfter(deadline: .now() + Self.hangAfter) { [weak self] in
+            self?.giveUpIfHung(submission: submission)
+        }
         let submittedTime = HostClock.nowNanos()
         let status = VTCompressionSessionEncodeFrame(
             session,
@@ -185,6 +275,8 @@ public final class HEVCEncoder: @unchecked Sendable {
             guard let self else { return }
             let box = SampleBufferBox(buffer: sampleBuffer)
             self.queue.async {
+                guard sessionGeneration == self.generation, !withheld else { return }
+                self.consecutiveHangs = 0
                 defer { self.completeInFlight() }
                 guard status == noErr else {
                     log.error("encode failed: \(status)")
@@ -204,9 +296,30 @@ public final class HEVCEncoder: @unchecked Sendable {
         }
     }
 
+    /// The watchdog: the frame `submission` is still inside the encoder
+    /// `hangAfter` later. The session is let go without waiting for it
+    /// (completing or invalidating a hung session can block), and the next
+    /// frame starts a new one with a keyframe.
+    private func giveUpIfHung(submission: Int) {
+        guard inFlight, submission == submissions, let hung = session else { return }
+        consecutiveHangs += 1
+        let toSoftware = softwareSince == nil && consecutiveHangs >= 2
+        log.error("encoder \(self.sessionSize.width)x\(self.sessionSize.height) returned nothing for \(Int(Self.hangAfter * 1000)) ms (hang \(self.consecutiveHangs)): \(toSoftware ? "switching to the software encoder" : "starting a new session", privacy: .public)")
+        if toSoftware { softwareSince = HostClock.nowNanos() }
+        session = nil
+        generation += 1
+        inFlight = false
+        DispatchQueue.global(qos: .utility).async { VTCompressionSessionInvalidate(hung) }
+        requestKeyframe()
+        let next = pending ?? inFlightFrame
+        pending = nil
+        inFlightFrame = nil
+        if let next { submit(next) }
+    }
+
     private func makeSession(width: Int, height: Int) -> VTCompressionSession? {
         let specification: [CFString: Any] = [
-            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true,
+            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: softwareSince == nil,
         ]
         var created: VTCompressionSession?
         let status = VTCompressionSessionCreate(
@@ -242,7 +355,7 @@ public final class HEVCEncoder: @unchecked Sendable {
             if result != noErr { log.info("encoder property \(key as String, privacy: .public) unsupported: \(result)") }
         }
         VTCompressionSessionPrepareToEncodeFrames(created)
-        log.info("encoder session \(width)x\(height)")
+        log.info("encoder session \(width)x\(height)\(self.softwareSince == nil ? "" : " (software)", privacy: .public)")
         return created
     }
 
@@ -259,6 +372,15 @@ public final class HEVCEncoder: @unchecked Sendable {
         }
 
         let length = CMBlockBufferGetDataLength(dataBuffer)
+        if isKeyframe {
+            let crossing = UInt64(Double(length * 8) / Double(max(averageBitRate, 1)) * 1e9)
+            keyframeLock.lock()
+            if recoveryGranted, !keyframeRequested {
+                recoveryAllowedNanos = HostClock.nowNanos() + max(Self.minimumRecoverySpacing, 2 * crossing)
+                recoveryGranted = false
+            }
+            keyframeLock.unlock()
+        }
         var payload = Data(count: length)
         let copyStatus = payload.withUnsafeMutableBytes { raw in
             CMBlockBufferCopyDataBytes(dataBuffer, atOffset: 0, dataLength: length, destination: raw.baseAddress!)

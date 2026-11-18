@@ -104,6 +104,87 @@ import Testing
         let meanDifference = Double(total) / Double(samples)
         #expect(meanDifference > 100, "chroma stripes lost: mean neighbour difference \(meanDifference)")
     }
+
+    /// A frame that never comes back (a hung or preempted hardware encoder)
+    /// must not freeze the stream: the watchdog starts a new session and sends
+    /// the stuck frame again as a keyframe, with no newer frame to push it.
+    @Test(arguments: [1, 2]) func recoversFromAHungEncoder(hangs: Int) async throws {
+        let source = try Self.makeAlternatingChromaFrame()
+        let box = EncoderBox()
+        let (keyframe, elapsed) = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<(Bool, TimeInterval), Error>) in
+            let once = Once()
+            let start = Date()
+            let encoder = HEVCEncoder(configuration: .init(averageBitRate: 20_000_000)) { output in
+                guard once.claim() else { return }
+                continuation.resume(returning: (output.frame.isKeyframe, Date().timeIntervalSince(start)))
+            }
+            box.encoder = encoder
+            encoder.withholdOutputs(hangs)
+            encoder.encode(CapturedFrame(
+                pixelBuffer: source, captureTimeNanos: HostClock.nowNanos(), deliveredTimeNanos: HostClock.nowNanos(),
+                pointSize: CGSize(width: Self.width / 2, height: Self.height / 2), scale: 2))
+            DispatchQueue.global().asyncAfter(deadline: .now() + HEVCEncoder.hangAfter * Double(hangs) + 3) {
+                if once.claim() { continuation.resume(throwing: CancellationError()) }
+            }
+        }
+        let software = try #require(box.encoder).usesSoftwareEncoder
+        #expect(keyframe)
+        #expect(elapsed >= HEVCEncoder.hangAfter * Double(hangs))
+        // One hang gets a fresh hardware session; a second in a row, the software encoder.
+        #expect(software == (hangs >= 2))
+    }
+}
+
+/// Keyframes a viewer asks for after loss are spaced, so that on a narrow
+/// link a keyframe that overflows it doesn't ask for the next one at once.
+@Suite(.serialized) struct RecoveryKeyframeTests {
+    private static func frame() throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        let attributes = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
+        CVPixelBufferCreate(nil, 640, 360, kCVPixelFormatType_444YpCbCr8BiPlanarFullRange, attributes, &buffer)
+        return try #require(buffer)
+    }
+
+    /// Encodes one frame and waits for it; returns whether it was a keyframe.
+    private static func encodeOne(_ encoder: HEVCEncoder, _ outputs: Outputs, _ buffer: CVPixelBuffer) async throws -> Bool {
+        let before = outputs.count
+        encoder.encode(CapturedFrame(pixelBuffer: buffer, captureTimeNanos: HostClock.nowNanos(),
+                                     deliveredTimeNanos: HostClock.nowNanos(), pointSize: CGSize(width: 320, height: 180), scale: 2))
+        for _ in 0..<200 where outputs.count == before { try await Task.sleep(for: .milliseconds(5)) }
+        return try #require(outputs.last)
+    }
+
+    @Test func spacesKeyframesViewersAskFor() async throws {
+        let buffer = try Self.frame()
+        let outputs = Outputs()
+        let encoder = HEVCEncoder(configuration: .init(averageBitRate: 6_000_000)) { outputs.append($0.frame.isKeyframe) }
+        #expect(try await Self.encodeOne(encoder, outputs, buffer))
+        // The stream's first keyframe doesn't hold back a viewer that just opened it.
+        #expect(encoder.requestRecoveryKeyframe())
+        #expect(try await Self.encodeOne(encoder, outputs, buffer))
+        // Right after a keyframe a viewer asked for, the next request waits.
+        #expect(!encoder.requestRecoveryKeyframe())
+        #expect(try await !Self.encodeOne(encoder, outputs, buffer))
+        // A keyframe the host needs (a new viewer, a resize) never waits.
+        encoder.requestKeyframe()
+        #expect(try await Self.encodeOne(encoder, outputs, buffer))
+        try await Task.sleep(for: .nanoseconds(HEVCEncoder.minimumRecoverySpacing + 100_000_000))
+        #expect(encoder.requestRecoveryKeyframe())
+        #expect(try await Self.encodeOne(encoder, outputs, buffer))
+    }
+}
+
+private final class Outputs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Bool] = []
+    func append(_ value: Bool) { lock.lock(); values.append(value); lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return values.count }
+    var last: Bool? { lock.lock(); defer { lock.unlock() }; return values.last }
+}
+
+private final class EncoderBox: @unchecked Sendable {
+    var encoder: HEVCEncoder?
 }
 
 private final class Once: @unchecked Sendable {

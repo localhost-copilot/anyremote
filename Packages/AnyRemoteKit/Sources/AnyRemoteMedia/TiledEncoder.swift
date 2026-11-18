@@ -72,12 +72,18 @@ final class TiledEncoder: @unchecked Sendable {
     /// as a keyframe, right away (the picture may not change for a while).
     /// Each strip's receiver asks for its own: refreshing all four on every
     /// request multiplied keyframes by four under loss (2% loss: ~40 a second).
-    func requestKeyframe(streamID: UInt16? = nil) {
+    /// `recovery`: a viewer's request after loss, which a strip whose last
+    /// keyframe may still be on its way ignores (`HEVCEncoder.requestRecoveryKeyframe`).
+    func requestKeyframe(streamID: UInt16? = nil, recovery: Bool = false) {
         queue.async { [self] in
             var any = false
             for index in strips.indices where streamID == nil || strips[index].streamID == streamID {
+                if recovery {
+                    guard strips[index].encoder.requestRecoveryKeyframe() else { continue }
+                } else {
+                    strips[index].encoder.requestKeyframe()
+                }
                 strips[index].needsRefresh = true
-                strips[index].encoder.requestKeyframe()
                 any = true
             }
             // Only the strips that need it: no dirty rects.

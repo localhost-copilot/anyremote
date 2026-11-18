@@ -246,7 +246,8 @@ public final class RemoteHostClient: @unchecked Sendable {
         for (streamID, receiver) in current {
             let report = receiver.takeReport()
             control?.send(.receiverReport(streamID: streamID, framesReceived: report.framesReceived,
-                                          framesDropped: report.framesDropped))
+                                          framesDropped: report.framesDropped,
+                                          queuingMilliseconds: report.queuingMilliseconds))
         }
     }
 

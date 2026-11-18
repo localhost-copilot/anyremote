@@ -435,8 +435,9 @@ nothing behind.
   missing.
 - Two viewers opening the same *window* each get their own capture, and
   resizing it from both fights; only desktops are shared.
-- Video is sent unpaced; on lossy Wi-Fi the bitrate controller backs off but
-  there is no FEC.
+- Video is sent unpaced; on lossy or congested Wi-Fi the bitrate controller
+  backs off but there is no FEC, and below 6 Mbps it lowers neither the
+  frame rate nor the resolution.
 - While a window opened from the viewer is full screen on a virtual
   display, the viewer's other windows on that display (the same viewer
   screen) are on another Space, so their mirrors keep their last picture.
@@ -532,8 +533,14 @@ AnyRemote Microphone ← feed ← jitter buffer ←── UDP ── AAC-ELD ←
   not a new copy, which stops a write coming back through Universal
   Clipboard or a viewer of the same Mac; an offer's `origin` and `copy`
   stop one going around a ring of connections.
-- **Bitrate** — receiver reports every second; ×0.75 on loss, +10% after
-  four clean seconds; windows 6–80 Mbps, desktops up to 120 Mbps, child
+- **Bitrate** — receiver reports every second; ×0.75 on loss, and also
+  when video waits 30 ms or more in the network's queues (the fastest
+  frame of the second against the fastest of the last minute; at most once
+  every 2 s, while the queue drains), +10% after four clean seconds, none
+  while 10 ms or more is queued. Keyframes a viewer asks for after loss
+  are spaced by twice the last one's crossing time at the current rate, so
+  on a narrow link a keyframe that overflows it doesn't set off the next;
+  windows 6–80 Mbps, desktops up to 120 Mbps, child
   windows ≤20 Mbps. A shared stream runs at its viewers' lowest rate.
   **Video Quality** (the picker's toolbar, or a Mac's context menu) caps
   each stream from that Mac, 6–120 Mbps, for slow or metered networks; it
@@ -763,7 +770,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 144 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 153 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips

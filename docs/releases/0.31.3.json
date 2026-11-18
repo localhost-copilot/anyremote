@@ -1,0 +1,12 @@
+{
+  "en": [
+    "A slow connection recovers within seconds instead of staying half a second behind: AnyRemote no longer floods a slow link with full pictures after losses.",
+    "Video quality also lowers when the network starts queuing, before frames get lost.",
+    "A stuck video encoder on the other Mac no longer freezes a window: it restarts, and falls back to software encoding if needed."
+  ],
+  "zh-Hans": [
+    "网络慢时几秒内就能恢复，不会再一直落后半秒：丢帧后不再用一张张完整画面把慢速链路堵死。",
+    "网络开始排队时也会降低画质，不必等到丢帧。",
+    "对方 Mac 的视频编码器卡住时，窗口不会再冻住：会重新启动编码器，必要时改用软件编码。"
+  ]
+}
