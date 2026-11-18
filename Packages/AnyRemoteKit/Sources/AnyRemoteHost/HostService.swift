@@ -210,7 +210,7 @@ public final class HostService: @unchecked Sendable {
     /// Gives back the default input the AnyRemote Microphone replaced, if it
     /// still is the default. For quitting, when sessions can't end in time.
     public static func restoreDefaultInput() {
-        HostMicrophone.restoreDefault()
+        HostMicrophone.restoreDefault(fallback: HostMicrophone.isActiveHere)
     }
 
     /// The AnyRemote Microphone was installed or removed.

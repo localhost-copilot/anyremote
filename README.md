@@ -321,7 +321,8 @@ host needs the *AnyRemote Microphone*, a small audio driver installed from
 its Settings (it needs an administrator password, and the Mac's sound
 pauses for a moment while Core Audio restarts). While a viewer is
 connected, the AnyRemote Microphone is the host's default input, so apps
-use it without being told; the previous input comes back afterwards. The
+use it without being told; the previous input comes back afterwards (or,
+if it is gone or wasn't noted, a built-in microphone or another input). The
 viewer's microphone is open only while an app on the host actually records,
 so its recording indicator means what it says. With several viewers, the
 one that clicked or typed last is heard. The sound reaches the recording

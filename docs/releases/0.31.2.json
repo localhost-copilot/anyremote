@@ -1,0 +1,10 @@
+{
+  "en": [
+    "Only windows of apps you act on come over; windows opened by scripts or by someone at the other Mac stay there, and no longer land on the virtual display.",
+    "The other Mac gets its own microphone back as the default input after a session, even when it had been stuck on the AnyRemote Microphone."
+  ],
+  "zh-Hans": [
+    "只有你操作的 App 打开的窗口才会过来；脚本或对方 Mac 上的人打开的窗口留在那里，也不会再跑到虚拟显示器上。",
+    "会话结束后，对方 Mac 的默认输入会换回它自己的麦克风，之前一直停在 AnyRemote Microphone 上的情况也会恢复。"
+  ]
+}

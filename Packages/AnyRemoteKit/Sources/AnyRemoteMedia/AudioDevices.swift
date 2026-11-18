@@ -35,6 +35,22 @@ public enum AudioDevices {
         return uid.takeRetainedValue() as String
     }
 
+    /// The devices that can record, in Core Audio's order, without hidden ones.
+    public static var inputDevices: [AudioObjectID] {
+        var address = address(kAudioHardwarePropertyDevices)
+        var size: UInt32 = 0
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var devices = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return [] }
+        return devices.filter { device in
+            var streams = Self.address(kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput)
+            var streamSize: UInt32 = 0
+            return AudioObjectGetPropertyDataSize(device, &streams, 0, nil, &streamSize) == noErr && streamSize > 0
+                && uint32(device, kAudioDevicePropertyIsHidden) ?? 0 == 0
+        }
+    }
+
     public static var defaultInput: AudioObjectID? {
         var address = address(kAudioHardwarePropertyDefaultInputDevice)
         var device = AudioObjectID(kAudioObjectUnknown)

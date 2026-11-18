@@ -27,6 +27,15 @@ final class HostMicrophone: @unchecked Sendable {
 
     static var isInstalled: Bool { AudioDevices.device(uid: microphoneUID) != nil }
 
+    /// This process made ours the default input for its viewers, and hasn't
+    /// given it back yet.
+    private static let activeLock = NSLock()
+    nonisolated(unsafe) private static var activeHere = false
+    static var isActiveHere: Bool {
+        get { activeLock.withLock { activeHere } }
+        set { activeLock.withLock { activeHere = newValue } }
+    }
+
     private let queue: DispatchQueue
 
     // Queue-confined.
@@ -126,6 +135,7 @@ final class HostMicrophone: @unchecked Sendable {
             return
         }
         microphone = device
+        Self.isActiveHere = true
         Self.makeDefault(device)
         var address = AudioDevices.address(kAudioDevicePropertyDeviceIsRunningSomewhere)
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.runningChanged() }
@@ -144,7 +154,8 @@ final class HostMicrophone: @unchecked Sendable {
         microphone = AudioObjectID(kAudioObjectUnknown)
         recording = false
         sourceEnded()
-        Self.restoreDefault()
+        Self.restoreDefault(fallback: true)
+        Self.isActiveHere = false
     }
 
     private func runningChanged() {
@@ -219,14 +230,36 @@ final class HostMicrophone: @unchecked Sendable {
     }
 
     /// Gives back the input that was the default before ours, if ours still
-    /// is (the person may have picked another one meanwhile).
-    static func restoreDefault() {
+    /// is (the person may have picked another one meanwhile). With
+    /// `fallback`, when that input is gone or wasn't noted, another one
+    /// takes over, so ours never stays the default once no viewer offers a
+    /// microphone: it was noted by a host that ended without restoring it
+    /// (killed, or a development host with a storage of its own), and every
+    /// host after that found ours the default already and had nothing to
+    /// note. Without `fallback` (a host starting, while another may still be
+    /// using ours), only a noted input is given back.
+    static func restoreDefault(fallback: Bool = false) {
         let file = AnyRemoteStorage.directory.appendingPathComponent(previousInputFile)
         defer { try? FileManager.default.removeItem(at: file) }
         guard let ours = AudioDevices.device(uid: microphoneUID), AudioDevices.defaultInput == ours else { return }
-        guard let data = AnyRemoteStorage.read(previousInputFile),
-              let previous = AudioDevices.device(uid: String(decoding: data, as: UTF8.self)) else { return }
+        let noted = AnyRemoteStorage.read(previousInputFile)
+            .flatMap { AudioDevices.device(uid: String(decoding: $0, as: UTF8.self)) }
+        guard let previous = noted ?? (fallback ? otherInput() : nil) else {
+            if fallback { log.notice("no other input to make the default") }
+            return
+        }
         AudioDevices.setDefaultInput(previous)
-        log.notice("restored the default input")
+        log.notice("restored the default input\(noted == nil ? " (another one; the earlier one is unknown or gone)" : "", privacy: .public)")
+    }
+
+    /// The input macOS would most likely pick itself: a built-in microphone,
+    /// else the first other one there is.
+    private static func otherInput() -> AudioObjectID? {
+        let others = AudioDevices.inputDevices.filter {
+            let uid = AudioDevices.uid(of: $0)
+            return uid != microphoneUID && uid != feedUID
+        }
+        return others.first { AudioDevices.uint32($0, kAudioDevicePropertyTransportType) == kAudioDeviceTransportTypeBuiltIn }
+            ?? others.first
     }
 }
