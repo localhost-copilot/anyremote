@@ -68,6 +68,12 @@ final class StatusPanelModel {
         actions.dismiss()
         actions.showPicker()
     }
+
+    /// The picker, with this Mac's information over it.
+    func showInfo(for target: HostTarget) {
+        showPicker(for: target)
+        viewer.infoTargetID = target.id
+    }
 }
 
 /// One row of the panel's list: an app to open, or a window open over there.
@@ -260,6 +266,9 @@ private struct MacList: View {
                 VStack(spacing: 0) {
                     ForEach(Array(macs.enumerated()), id: \.element.id) { index, mac in
                         MacRow(mac: mac, model: model, isSelected: mac.id == target?.id, number: index + 1)
+                            .contextMenu {
+                                if mac.kind != .thisMac { Button("Info…") { model.showInfo(for: mac) } }
+                            }
                     }
                 }
             }
@@ -337,7 +346,8 @@ private struct PanelHostStatus {
     var text: String {
         let connection = model.connection(for: target)
         switch connection?.state {
-        case .connected?: return String(localized: "Connected")
+        case .connected?:
+            return [String(localized: "Connected"), connection?.routeLabel].compactMap { $0 }.joined(separator: " · ")
         case .connecting?: return String(localized: "Connecting…")
         case .failed(let message)?:
             if connection?.versionMismatch != nil { return String(localized: "Needs an update") }

@@ -22,7 +22,11 @@ jobs:
       - name: Tools
         run: |
           xcodebuild -version
-          brew install xcodegen
+          # Go builds the embedded Tailscale node (Tailnet/).
+          brew install xcodegen go
+      - name: Test the embedded Tailscale node
+        timeout-minutes: 10
+        run: cd Tailnet && go vet ./... && go test ./...
       - name: Test
         # The tests take a couple of minutes; a hang fails the run instead.
         timeout-minutes: 10

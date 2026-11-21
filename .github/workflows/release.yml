@@ -44,7 +44,8 @@ jobs:
       - name: Tools
         run: |
           xcodebuild -version
-          brew install xcodegen
+          # Go builds the embedded Tailscale node (Tailnet/).
+          brew install xcodegen go
 
       # A keychain of this job's own, deleted at the end.
       - name: Signing identity

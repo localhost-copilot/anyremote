@@ -13,7 +13,8 @@ private let log = Logger(subsystem: "com.localhost-copilot.anyremote", category:
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private let hostService = HostService()
-    private lazy var viewer = ViewerModel(hostService: hostService)
+    private lazy var tailnet = TailnetService(hostService: hostService)
+    private lazy var viewer = ViewerModel(hostService: hostService, tailnet: tailnet)
     private lazy var hostSettings = HostSettingsModel(service: hostService)
     private let keyForwarder = KeyForwarder()
     private let remoteMenuBar = RemoteMenuBar()
@@ -63,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 log.error("host failed to start: \(error.localizedDescription, privacy: .public)")
             }
         }
+        tailnet.start()
         statusMenu = StatusMenuController(
             settings: hostSettings, viewer: viewer,
             actions: .init(showPicker: { [weak self] in self?.showHosts() },
@@ -165,7 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 640),
                                   styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.title = String(localized: "AnyRemote Settings")
-            window.contentView = NSHostingView(rootView: HostSettingsView(model: hostSettings))
+            window.contentView = NSHostingView(rootView: HostSettingsView(model: hostSettings, tailnet: tailnet))
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window
@@ -247,9 +249,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         guard menu.items.contains(connectionItem) else { return }
         let line: String?
         if let mirror = keyMirror {
-            line = [mirror.connection.hostName, mirror.connectionStatus.summary].compactMap { $0 }.joined(separator: " · ")
+            line = [mirror.connection.hostName, mirror.connection.routeLabel, mirror.connectionStatus.summary]
+                .compactMap { $0 }.joined(separator: " · ")
         } else if let desktop = keyDesktop {
-            line = [desktop.connection.hostName, desktop.connectionStatus.summary].compactMap { $0 }.joined(separator: " · ")
+            line = [desktop.connection.hostName, desktop.connection.routeLabel, desktop.connectionStatus.summary]
+                .compactMap { $0 }.joined(separator: " · ")
         } else {
             line = nil
         }

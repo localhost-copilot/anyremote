@@ -41,10 +41,14 @@ public final class HostPairingClient: @unchecked Sendable {
     private let once = Once<Result<Paired, Failure>>()
     private let started = Once<Void>()
 
-    public init(endpoint: NWEndpoint, viewerName: String, viewerID: String) {
-        control = ControlConnection(connection: NWConnection(to: endpoint, using: ControlConnection.parameters()),
+    public init(route: HostRoute, viewerName: String, viewerID: String) {
+        control = ControlConnection(transport: route.makeStream(),
                                     role: .viewer(credential: nil, viewerName: viewerName, viewerID: viewerID),
                                     queue: queue, purpose: .pair)
+    }
+
+    public convenience init(endpoint: NWEndpoint, viewerName: String, viewerID: String) {
+        self.init(route: .network(endpoint), viewerName: viewerName, viewerID: viewerID)
     }
 
     /// Asks the host to show a code, and waits until pairing succeeds or fails.

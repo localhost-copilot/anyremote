@@ -1,0 +1,10 @@
+{
+  "en": [
+    "Control your Macs from any network with Tailscale: AnyRemote can join your tailnet by itself, without the Tailscale app, and still uses the local network whenever it answers.",
+    "An Info sheet for each paired Mac (⌘I) shows how it's connected and lets you rename it, set its address and route, or forget it."
+  ],
+  "zh-Hans": [
+    "借助 Tailscale，在任何网络下都能控制你的 Mac：AnyRemote 可以自己加入你的 tailnet，不需要 Tailscale App；局域网能通时仍然走局域网。",
+    "每台已配对的 Mac 都有“信息”面板（⌘I），可以查看它的连接方式，修改名称、地址和路线，或忘记这台 Mac。"
+  ]
+}

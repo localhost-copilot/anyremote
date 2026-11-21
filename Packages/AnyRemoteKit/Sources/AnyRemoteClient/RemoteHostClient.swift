@@ -58,7 +58,9 @@ public final class RemoteHostClient: @unchecked Sendable {
         case denied
     }
 
-    public let endpoint: NWEndpoint
+    /// How the host is reached: this Mac's network, or the embedded tailnet node.
+    public let route: HostRoute
+    public var endpoint: NWEndpoint { route.endpoint }
     public let clock = RemoteClock()
     private let credential: PairingCredential
     private let viewerName: String
@@ -108,10 +110,14 @@ public final class RemoteHostClient: @unchecked Sendable {
     /// Delivered on the main queue.
     public var onEvent: (@MainActor @Sendable (Event) -> Void)?
 
-    public init(endpoint: NWEndpoint, credential: PairingCredential, viewerName: String) {
-        self.endpoint = endpoint
+    public init(route: HostRoute, credential: PairingCredential, viewerName: String) {
+        self.route = route
         self.credential = credential
         self.viewerName = viewerName
+    }
+
+    public convenience init(endpoint: NWEndpoint, credential: PairingCredential, viewerName: String) {
+        self.init(route: .network(endpoint), credential: credential, viewerName: viewerName)
     }
 
     /// Round trip of the latest ping, in milliseconds. Thread-safe, and never
@@ -129,8 +135,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
                 connectContinuation = continuation
-                let connection = NWConnection(to: endpoint, using: ControlConnection.parameters())
-                let control = ControlConnection(connection: connection,
+                let control = ControlConnection(transport: route.makeStream(),
                                                 role: .viewer(credential: credential, viewerName: viewerName), queue: queue)
                 control.onSecured = { [weak self, weak control] info in
                     self?.secured(info)
@@ -179,16 +184,28 @@ public final class RemoteHostClient: @unchecked Sendable {
         sealer = DatagramSealer(key: info.keys.datagramViewerToHost, sessionID: info.sessionID)
         receiverLock.lock()
         opener = DatagramOpener(key: info.keys.datagramHostToViewer, sessionID: info.sessionID)
+        reachedID = info.peerID
+        connectedAddress = control?.remoteEndpoint?.numericHost
         receiverLock.unlock()
     }
+
+    /// The host answered the hello: a failure after this is the host's
+    /// (a refusal, a version), not the route's. Thread-safe.
+    public var reachedHost: Bool { reachedHostID != nil }
+    /// The ID the host answered the hello with. Thread-safe.
+    public var reachedHostID: String? { receiverLock.withLock { reachedID } }
+    private var reachedID: String? // under receiverLock
+
+    /// The numeric address the control connection reached, once it did. Thread-safe.
+    public var connectedHost: String? { receiverLock.withLock { connectedAddress } }
+    private var connectedAddress: String? // under receiverLock
 
     private func didConnect(_ welcome: HostWelcome) {
         self.welcome = welcome
         lastPongNanos = HostClock.nowNanos()
         // Video comes back to the address our keepalives come from.
-        if let host = control?.remoteEndpoint?.numericHost,
-           let address = SocketAddress.resolve(host: host, port: welcome.datagramPort),
-           let socket = try? DatagramSocket(for: address, queue: socketQueue) {
+        if let (socket, address) = try? route.makeDatagramSocket(connectedHost: control?.remoteEndpoint?.numericHost,
+                                                                 port: welcome.datagramPort, queue: socketQueue) {
             socket.onReceive = { [weak self] batch in self?.route(batch) }
             socket.resume()
             self.socket = socket
@@ -438,7 +455,7 @@ public final class RemoteHostClient: @unchecked Sendable {
         let token = SessionKeys.randomNonce()
         control?.send(.transferToken(token))
         let transferQueue = DispatchQueue(label: "anyremote.client.transfer", qos: .userInitiated)
-        let connection = ControlConnection(connection: NWConnection(to: endpoint, using: ControlConnection.parameters(bulk: true)),
+        let connection = ControlConnection(transport: route.makeStream(bulk: true),
                                            role: .viewer(credential: credential, viewerName: viewerName), queue: transferQueue)
         let channel = FileTransferChannel(connection: connection, ready: false)
         connection.onSecured = { [weak connection, weak channel] _ in

@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "AnyRemoteHost", targets: ["AnyRemoteHost"]),
         .library(name: "AnyRemoteClient", targets: ["AnyRemoteClient"]),
         .library(name: "AnyRemoteUpdate", targets: ["AnyRemoteUpdate"]),
+        .library(name: "AnyRemoteTailnet", targets: ["AnyRemoteTailnet"]),
         .executable(name: "anyremote-bench", targets: ["anyremote-bench"]),
     ],
     targets: [
@@ -36,6 +37,20 @@ let package = Package(
         .target(name: "AnyRemoteClient", dependencies: ["AnyRemoteWire", "AnyRemoteMedia", "AnyRemoteNetwork"]),
         // Software update: release manifest, download, signature checks, install.
         .target(name: "AnyRemoteUpdate", dependencies: ["AnyRemoteWire"]),
+        // The embedded Tailscale node's C interface. Its functions are Go
+        // (Tailnet/), built by scripts/build-tailnet.sh and linked by the app
+        // alone: nothing else here depends on this, so the package builds
+        // and tests without Go.
+        .target(name: "CAnyRemoteTailnet"),
+        .target(
+            name: "AnyRemoteTailnet",
+            dependencies: ["CAnyRemoteTailnet", "AnyRemoteNetwork"],
+            linkerSettings: [
+                .linkedLibrary("anyremotetailnet"), .linkedLibrary("resolv"),
+                .linkedFramework("CoreFoundation"), .linkedFramework("Security"),
+                .linkedFramework("IOKit"), .linkedFramework("SystemConfiguration"),
+            ]
+        ),
         // Reproducible workloads for latency measurements.
         .target(name: "AnyRemoteDiagnostics"),
         .executableTarget(

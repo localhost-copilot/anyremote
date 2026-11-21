@@ -31,7 +31,7 @@ struct HostsView: View {
         .onAppear {
             if model.selection.flatMap(model.target(id:)) == nil { model.selection = model.preferredTargetID }
         }
-        .onChange(of: model.myMacs.map(\.id) + model.newNearby.map(\.id)) {
+        .onChange(of: model.myMacs.map(\.id) + model.newNearby.map(\.id) + model.newOnTailnet.map(\.id)) {
             if model.selection.flatMap(model.target(id:)) == nil { model.selection = model.preferredTargetID }
         }
     }
@@ -42,9 +42,6 @@ struct HostsView: View {
 private struct Sidebar: View {
     @Bindable var model: ViewerModel
     @Binding var addingHost: Bool
-    @State private var renaming: HostTarget?
-    @State private var editingAddress: HostTarget?
-    @State private var choosingQuality: HostTarget?
 
     var body: some View {
         List(selection: $model.selection) {
@@ -68,10 +65,8 @@ private struct Sidebar: View {
                                 Toggle("Let “\(target.name)” Control This Mac", isOn: Binding(
                                     get: { model.sharesBack(target) },
                                     set: { model.setSharesBack(target, $0) }))
-                                Button("Rename…") { renaming = target }
-                                Button("Edit Address…") { editingAddress = target }
                                 if model.pairedHost(for: target) != nil {
-                                    Button("Video Quality…") { choosingQuality = target }
+                                    Button("Info…") { model.infoTargetID = target.id }
                                 }
                                 Divider()
                                 Button("Forget This Mac", role: .destructive) { model.forget(target) }
@@ -88,6 +83,17 @@ private struct Sidebar: View {
                     HostRow(target: target, model: model).tag(target.id)
                 }
             }
+            if model.tailnet.phase == .running {
+                Section("Tailscale") {
+                    if model.newOnTailnet.isEmpty {
+                        Text("No other Macs found").foregroundStyle(.secondary).font(.callout)
+                            .help("Macs on your tailnet appear here while AnyRemote runs on them.")
+                    }
+                    ForEach(model.newOnTailnet) { target in
+                        HostRow(target: target, model: model).tag(target.id)
+                    }
+                }
+            }
         }
         .safeAreaInset(edge: .bottom) {
             Button { addingHost = true } label: {
@@ -98,9 +104,19 @@ private struct Sidebar: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         }
-        .sheet(item: $renaming) { target in RenameSheet(target: target, model: model) }
-        .sheet(item: $editingAddress) { target in AddressSheet(target: target, model: model) }
-        .sheet(item: $choosingQuality) { target in VideoQualityView(target: target, model: model, showsDone: true) }
+        .sheet(item: Binding(get: { model.infoTargetID.flatMap(model.target(id:)) },
+                             set: { model.infoTargetID = $0?.id })) { target in HostInfoSheet(target: target, model: model) }
+        .background {
+            // ⌘I: the selected Mac's information, while this window is key.
+            Button("Info…") {
+                if let id = model.selection, let target = model.target(id: id), model.pairedHost(for: target) != nil {
+                    model.infoTargetID = id
+                }
+            }
+            .keyboardShortcut("i")
+            .opacity(0)
+            .frame(width: 0, height: 0)
+        }
     }
 }
 
@@ -127,13 +143,29 @@ private struct HostRow: View {
         .padding(.vertical, 2)
     }
 
-    private var status: (text: String, color: Color) {
+    private var status: HostStatus { HostStatus(target, model: model) }
+}
+
+/// A Mac's one-line status and the colour of the dot before it, as the
+/// sidebar and the info sheet show it.
+@MainActor
+struct HostStatus {
+    let text: String
+    let color: Color
+
+    init(_ target: HostTarget, model: ViewerModel) {
+        (text, color) = Self.make(target, model: model)
+    }
+
+    private static func make(_ target: HostTarget, model: ViewerModel) -> (String, Color) {
         let connection = model.connection(for: target)
         switch connection?.state {
         case .connected?:
             let count = connection?.listing?.windows.count
             let text = count.map { $0 == 1 ? String(localized: "Connected · 1 window") : String(localized: "Connected · \($0) windows") }
-            return (text ?? String(localized: "Connected"), .green)
+                ?? String(localized: "Connected")
+            guard let route = connection?.routeLabel else { return (text, .green) }
+            return ("\(text) · \(route)", connection?.isRelayed == true ? .orange : .green)
         case .connecting?:
             return (String(localized: "Connecting…"), .orange)
         case .failed(let message)?:
@@ -147,6 +179,14 @@ private struct HostRow: View {
         }
         if !model.isPaired(target) { return (String(localized: "Needs pairing"), .gray) }
         switch target.kind {
+        case .tailnet:
+            // Which way it goes shows once connected; the LAN may well do.
+            let address = model.pairedHost(for: target)?.tailnetAddress
+                ?? { if case let .hostPort(host, _) = target.endpoint { return "\(host)" } else { return nil } }()
+            if let address, model.tailnet.peer(at: address)?.online == false {
+                return (String(localized: "Offline"), .gray.opacity(0.5))
+            }
+            return (String(localized: "Online"), .blue)
         case .offline: return (String(localized: "Offline"), .gray.opacity(0.5))
         case .saved: return (model.pairedHost(for: target)?.address ?? String(localized: "Connect by address"), .gray)
         case .discovered, .thisMac: return (String(localized: "Online"), .blue)
@@ -1122,68 +1162,6 @@ private struct AddHostSheet: View {
         .padding(22)
         .frame(width: 440)
         .onAppear { model.lastError = nil }
-    }
-}
-
-private struct RenameSheet: View {
-    let target: HostTarget
-    let model: ViewerModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Rename “\(target.name)”").font(.headline)
-            TextField("Name", text: $name).frame(width: 300).onSubmit(save)
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("OK", action: save).keyboardShortcut(.defaultAction).disabled(name.isEmpty)
-            }
-        }
-        .padding(20)
-        .onAppear { name = target.name }
-    }
-
-    private func save() {
-        model.rename(target, to: name)
-        dismiss()
-    }
-}
-
-private struct AddressSheet: View {
-    let target: HostTarget
-    let model: ViewerModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var address = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Address of “\(target.name)”").font(.headline)
-            Text("Where this Mac connects to it. Change it when that Mac is on another subnet or got a new IP address; the default port is 47800.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            TextField("Address", text: $address, prompt: Text("192.168.1.20 or mac-mini.local"))
-                .frame(width: 340).onSubmit(save)
-            if let error = model.lastError {
-                Text(FriendlyText.message(error)).foregroundStyle(.red).font(.callout)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save", action: save).keyboardShortcut(.defaultAction)
-                    .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 380)
-        .onAppear {
-            model.lastError = nil
-            address = model.pairedHost(for: target)?.address ?? ""
-        }
-    }
-
-    private func save() {
-        if model.setAddress(target, to: address) { dismiss() }
     }
 }
 

@@ -770,7 +770,7 @@ open AnyRemote.xcodeproj            # or build from the command line:
 xcodebuild -project AnyRemote.xcodeproj -scheme AnyRemote -configuration Debug \
     -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 
-swift test --package-path Packages/AnyRemoteKit     # 153 tests incl. VT and AAC-ELD round trips and network sessions
+swift test --package-path Packages/AnyRemoteKit     # 162 tests incl. VT and AAC-ELD round trips and network sessions
 swift build -c release --package-path Packages/AnyRemoteKit --product anyremote-bench
 Packages/AnyRemoteKit/.build/release/anyremote-bench --network --synthetic 940x700 --seconds 6
 Packages/AnyRemoteKit/.build/release/anyremote-bench --tiles [--strips 4]   # full frame vs strips
@@ -905,6 +905,7 @@ against this Mac's own host service unless `--connect` is given.
   `-DesktopFitsWindow NO` turns dynamic resolution off for one launch.
 - `--permission-guide` — Settings with the permission card
 - `--settings` — opens Settings
+- `--host-info <name>` — opens the picker with that paired Mac's info sheet
 - `--status-panel` — opens the menu bar panel and prints its frame for `screencapture -R`
 - `--open <app> --gesture-test` — hands the mirror pinch, rotate and smart
   zoom events made as the window server makes them; the host app gets them

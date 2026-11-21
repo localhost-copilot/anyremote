@@ -23,13 +23,17 @@ public enum RemoteUpdateRequest {
         }
     }
 
-    /// Returns the version the host is relaunching with. The host answers
-    /// once it has downloaded and checked the update, which may take minutes.
     public static func send(to endpoint: NWEndpoint, credential: PairingCredential, viewerName: String,
                             timeout: TimeInterval = 600) async throws -> String {
+        try await send(to: .network(endpoint), credential: credential, viewerName: viewerName, timeout: timeout)
+    }
+
+    /// Returns the version the host is relaunching with. The host answers
+    /// once it has downloaded and checked the update, which may take minutes.
+    public static func send(to route: HostRoute, credential: PairingCredential, viewerName: String,
+                            timeout: TimeInterval = 600) async throws -> String {
         let queue = DispatchQueue(label: "anyremote.update-request")
-        let parameters = ControlConnection.parameters(bulk: true)
-        let control = ControlConnection(connection: NWConnection(to: endpoint, using: parameters),
+        let control = ControlConnection(transport: route.makeStream(bulk: true),
                                         role: .viewer(credential: credential, viewerName: viewerName), queue: queue,
                                         purpose: .update)
         let once = Once<Result<String, Failure>>()

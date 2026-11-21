@@ -17,6 +17,9 @@ struct HostTarget: Hashable, Identifiable, Sendable {
         case saved
         /// Paired over Bonjour and not advertised right now.
         case offline
+        /// On the tailnet: a paired Mac that isn't on this network, or one
+        /// running AnyRemote that the embedded node found there.
+        case tailnet
     }
 
     var id: String
@@ -25,11 +28,16 @@ struct HostTarget: Hashable, Identifiable, Sendable {
     var endpoint: NWEndpoint
     var hostID: String?
     var savedID: String?
+    /// Reached through the embedded tailnet node rather than this Mac's
+    /// own network (which carries the tailnet when the Tailscale app runs).
+    var viaTailnetNode = false
 
     static func endpoint(fromAddress address: String) -> NWEndpoint? {
         var host = address.trimmingCharacters(in: .whitespaces)
         var port = AnyRemoteService.defaultPort
-        if let colon = host.lastIndex(of: ":"), !host.hasSuffix("]"), host.filter({ $0 == ":" }).count == 1 {
+        // "host:port", "[ipv6]:port"; a bare IPv6 address has several colons.
+        if let colon = host.lastIndex(of: ":"), !host.hasSuffix("]"),
+           host.hasPrefix("[") || host.filter({ $0 == ":" }).count == 1 {
             guard let parsed = UInt16(host[host.index(after: colon)...]) else { return nil }
             port = parsed
             host = String(host[..<colon])
@@ -107,9 +115,9 @@ final class HostConnection {
     /// Sound statistics of the last second, while the host's sound plays here.
     @ObservationIgnored private(set) var audioReport: AudioStreamReceiver.Report?
 
-    init(target: HostTarget, credential: PairingCredential) {
+    init(target: HostTarget, route: HostRoute, credential: PairingCredential) {
         self.target = target
-        client = RemoteHostClient(endpoint: target.endpoint, credential: credential, viewerName: ComputerNameProvider.name)
+        client = RemoteHostClient(route: route, credential: credential, viewerName: ComputerNameProvider.name)
         // The host's virtual display for remote windows takes this size, so
         // they can grow as large as this screen and fill it in full screen.
         // The screen being worked on (its key window: where Connect was
@@ -136,6 +144,55 @@ final class HostConnection {
     var savedName: String?
 
     var hostName: String { savedName ?? welcome?.hostName ?? target.name }
+
+    // MARK: Which way the connection goes
+
+    /// The tailnet node's view of the peer, for a connection through it.
+    @ObservationIgnored weak var tailnet: TailnetService?
+
+    /// Goes over the tailnet: through the embedded node, or to a tailnet
+    /// address the Tailscale app routes.
+    var isTailnet: Bool {
+        client.route.isTailnet || client.connectedHost.map(TailnetAddress.isTailnet) == true
+    }
+
+    /// How the embedded node reaches the peer right now; nil through the
+    /// Tailscale app (which doesn't say) and on the LAN. A path often
+    /// starts relayed and turns direct within seconds.
+    var tailnetPath: TailnetStatus.Path? {
+        guard case let .tailnet(_, host, _) = client.route else { return nil }
+        return tailnet?.peer(at: host)?.path
+    }
+
+    /// Relayed through a DERP server: higher latency, little bandwidth.
+    var isRelayed: Bool { tailnetPath == .derp }
+
+    /// For status lines next to "Connected": nil on the LAN, the usual case.
+    var routeLabel: String? {
+        guard state == .connected, isTailnet else { return nil }
+        return isRelayed ? String(localized: "Tailscale relay") : String(localized: "Tailscale")
+    }
+
+    /// Which way, for the info sheet: "Local network", "Tailscale, direct"…
+    var routePath: String {
+        guard isTailnet else { return String(localized: "Local network") }
+        switch tailnetPath {
+        case .direct?: return String(localized: "Tailscale, direct")
+        case .peerRelay?: return String(localized: "Tailscale, peer relay")
+        case .derp?:
+            var region: String?
+            if case let .tailnet(_, host, _) = client.route { region = tailnet?.peer(at: host)?.relay }
+            return region.map { String(localized: "Tailscale relay (\($0))") } ?? String(localized: "Tailscale relay")
+        default: return String(localized: "Tailscale")
+        }
+    }
+
+    /// For the statistics panel: the whole story.
+    var routeDescription: String {
+        guard isTailnet else { return routePath }
+        let way = client.route.isTailnet ? String(localized: "built-in node") : String(localized: "Tailscale app")
+        return "\(routePath) · \(way)"
+    }
 
     /// The other Mac's AnyRemote, once it said: in the welcome, or when it
     /// refused another protocol.

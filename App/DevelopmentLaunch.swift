@@ -20,6 +20,9 @@ import SwiftUI
 ///         [--shortcut-test]                 post ⌘Tab and ⌘Space and print what the desktop forwards
 ///     -DesktopFitsWindow NO                 turn dynamic resolution off for this launch
 ///     --connect host[:port] --code CODE     connect to another Mac
+///         [--tailnet]                       through the embedded Tailscale node, waiting for it to join
+///                                           the tailnet first (ANYREMOTE_TAILNET_AUTHKEY, else it prints
+///                                           the sign-in URL)
 ///     --discovery-test                      print the hosts Bonjour finds
 ///     --open <application> --gesture-test   pinch, rotate and smart-zoom the mirror (as AppKit would
 ///                                           deliver them) so the host app gets them
@@ -31,6 +34,7 @@ import SwiftUI
 ///     --notification-test                   post a notification on this Mac and print what the
 ///                                           viewer receives, the Dock badges, and an open request
 ///     --permission-guide                    show Settings and the permission guide card
+///     --host-info <name>                    show the picker with that paired Mac's info sheet
 ///     --video-caps <Mbps|auto,…>            after connecting, cap the video from the host at each
 ///                                           value in turn, 8 s apart (needs a paired --connect host)
 ///     --desktop --resize-stress <seconds>   resize the desktop window every frame, like a drag
@@ -62,6 +66,20 @@ enum DevelopmentLaunch {
         }
         if arguments.contains("--settings") {
             app.showSettings()
+            return true
+        }
+        if let name = value("--host-info") {
+            // A paired Mac's info sheet over the picker, for a screenshot.
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                let model = app.viewerModel
+                guard let target = model.myMacs.first(where: { $0.name == name }) else {
+                    print("dev: no paired Mac named \(name)"); return
+                }
+                model.selection = target.id
+                app.showHosts()
+                model.infoTargetID = target.id
+            }
             return true
         }
         if arguments.contains("--status-panel") {
@@ -310,8 +328,13 @@ enum DevelopmentLaunch {
                 }
                 // A host paired at this address keeps its settings (such as the video cap).
                 let paired = model.pairedStore.all.first { $0.address == connectAddress }
-                target = HostTarget(id: "dev:\(connectAddress)", name: connectAddress, kind: .saved, endpoint: endpoint,
-                                    savedID: paired?.id)
+                var devTarget = HostTarget(id: "dev:\(connectAddress)", name: connectAddress, kind: .saved,
+                                           endpoint: endpoint, savedID: paired?.id)
+                if arguments.contains("--tailnet") {
+                    guard await DevelopmentTailnet.join(model.tailnet) else { return }
+                    devTarget.viaTailnetNode = model.tailnet.routesThroughNode
+                }
+                target = devTarget
                 if arguments.contains("--pair") {
                     let hostID = await DevelopmentPairing.run(target, model: model, codeFile: value("--pair-code-file"),
                                                               typo: arguments.contains("--pair-typo"))
@@ -939,6 +962,37 @@ enum MenuTest {
     }
 }
 
+
+/// `--tailnet`: turns the embedded Tailscale node on for this launch and
+/// waits until it's on the tailnet.
+@MainActor
+enum DevelopmentTailnet {
+    static func join(_ tailnet: TailnetService) async -> Bool {
+        tailnet.enableForThisLaunch()
+        var shownURL: URL?
+        for _ in 0..<2400 {
+            switch tailnet.phase {
+            case .running, .systemTailscale:
+                print("dev: on the tailnet\(tailnet.systemConnected ? " (through the Tailscale app)" : ""), as "
+                      + (tailnet.status?.device?.preferredAddress ?? "this Mac"))
+                return true
+            case .needsLogin(let url?) where url != shownURL:
+                print("dev: sign in to Tailscale: \(url)")
+                shownURL = url
+            case .needsApproval:
+                print("dev: waiting for the device to be approved in the admin console")
+            case .failed(let message):
+                print("dev: the tailnet node failed: \(message)")
+                return false
+            default:
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        print("dev: the tailnet node didn't join within 10 minutes")
+        return false
+    }
+}
 
 /// `--pair [--pair-code-file <path>] [--pair-typo]`: pairs with the
 /// `--connect` Mac, typing the code the host wrote to that file

@@ -182,12 +182,14 @@ final class HostSettingsModel {
 
 struct HostSettingsView: View {
     @Bindable var model: HostSettingsModel
+    let tailnet: TailnetService
 
     var body: some View {
         Form {
             sharingSection
             if model.settings.isEnabled { permissionsSection }
             if model.settings.isEnabled { pairingSection }
+            TailscaleSettingsSection(tailnet: tailnet)
             Section("Display") {
                 Toggle(isOn: Binding(
                     get: { model.settings.virtualDisplay != .never },
@@ -411,6 +413,77 @@ struct HostSettingsView: View {
             } else {
                 Button("Turn On…") { PermissionGuide.shared.start(permission) }
             }
+        }
+    }
+}
+
+/// Settings › Tailscale: the embedded node, its sign-in and this Mac on the tailnet.
+private struct TailscaleSettingsSection: View {
+    let tailnet: TailnetService
+
+    var body: some View {
+        Section("Tailscale") {
+            Toggle(isOn: Binding(get: { tailnet.isEnabled }, set: { tailnet.setEnabled($0) })) {
+                Text("Connect Through Tailscale")
+                Text("AnyRemote joins your tailnet as a device of its own, so this Mac and the other Macs on it reach each other from any network, without the Tailscale app.")
+            }
+            if tailnet.isEnabled { state }
+        }
+    }
+
+    @ViewBuilder
+    private var state: some View {
+        switch tailnet.phase {
+        case .off:
+            EmptyView()
+        case .systemTailscale:
+            Label("The Tailscale app is connected on this Mac, and AnyRemote uses it.", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.secondary)
+        case .starting:
+            HStack {
+                ProgressView().controlSize(.small)
+                Text("Starting…").foregroundStyle(.secondary)
+            }
+        case .needsLogin:
+            HStack {
+                Text("Sign in to Tailscale in your browser to add this Mac to your tailnet.")
+                Spacer()
+                Button("Sign In…") { tailnet.signIn() }.buttonStyle(.borderedProminent)
+            }
+        case .needsApproval:
+            Label("Signed in. The tailnet’s admin has to approve this Mac in the Tailscale admin console.",
+                  systemImage: "hourglass")
+        case .running:
+            running
+        case .failed(let message):
+            Label("Couldn’t start Tailscale: \(message)", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    @ViewBuilder
+    private var running: some View {
+        if let user = tailnet.status?.user {
+            LabeledContent("Signed In As") { Text(verbatim: user) }
+        }
+        if let device = tailnet.status?.device {
+            LabeledContent("This Mac") {
+                Text(verbatim: [device.name, device.preferredAddress].compactMap { $0 }.joined(separator: " · "))
+                    .textSelection(.enabled)
+            }
+            if let expiry = device.keyExpiry {
+                let soon = expiry.timeIntervalSinceNow < 14 * 24 * 3600
+                Text("Its key expires on \(expiry.formatted(date: .abbreviated, time: .omitted)). Turn off key expiry for this device in the Tailscale admin console, so other Macs can still reach it after that.")
+                    .font(.callout).foregroundStyle(soon ? .orange : .secondary)
+            }
+        }
+        HStack {
+            Text(tailnet.anyRemoteMacs.isEmpty
+                 ? String(localized: "No other Mac on the tailnet runs AnyRemote yet.")
+                 : String(localized: "Macs on the tailnet running AnyRemote: \(ListFormatter.localizedString(byJoining: tailnet.anyRemoteMacs.map(\.name)))"))
+                .font(.callout).foregroundStyle(.secondary)
+            Spacer()
+            Button("Sign Out") { tailnet.signOut() }
         }
     }
 }

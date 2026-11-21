@@ -123,7 +123,7 @@ public final class ControlConnection: @unchecked Sendable {
     static let pairingContext = Data("anyremote pairing v1".utf8)
 
     public let queue: DispatchQueue
-    private let connection: NWConnection
+    private let transport: any StreamTransport
     private let role: Role
     private let purpose: HandshakePurpose
     private let protocolVersion: UInt16
@@ -185,16 +185,27 @@ public final class ControlConnection: @unchecked Sendable {
     public var onData: (@Sendable (Data) -> Void)?
     public var onClose: (@Sendable (Error?) -> Void)?
 
-    public var remoteEndpoint: NWEndpoint? { connection.currentPath?.remoteEndpoint }
+    public var remoteEndpoint: NWEndpoint? { transport.remoteEndpoint }
+    /// The largest IP packet the connection's path carries, once connected.
+    public var pathMTU: Int? { transport.pathMTU }
+    /// The connection goes through the embedded tailnet node.
+    public var isTailnet: Bool { transport.isTailnet }
 
     /// `protocolVersion` is only overridden by tests.
-    public init(connection: NWConnection, role: Role, queue: DispatchQueue, purpose: HandshakePurpose = .session,
+    public init(transport: any StreamTransport, role: Role, queue: DispatchQueue, purpose: HandshakePurpose = .session,
                 protocolVersion: UInt16 = anyRemoteProtocolVersion) {
-        self.connection = connection
+        self.transport = transport
         self.role = role
         self.queue = queue
         self.purpose = purpose
         self.protocolVersion = protocolVersion
+    }
+
+    public convenience init(connection: NWConnection, role: Role, queue: DispatchQueue,
+                            purpose: HandshakePurpose = .session,
+                            protocolVersion: UInt16 = anyRemoteProtocolVersion) {
+        self.init(transport: NetworkStreamTransport(connection), role: role, queue: queue, purpose: purpose,
+                  protocolVersion: protocolVersion)
     }
 
     /// `bulk`: the transfer connection, which moves files rather than input.
@@ -213,7 +224,7 @@ public final class ControlConnection: @unchecked Sendable {
     }
 
     public func start() {
-        connection.stateUpdateHandler = { [weak self] state in
+        transport.stateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
             case .ready:
@@ -230,16 +241,11 @@ public final class ControlConnection: @unchecked Sendable {
                 self.receive()
             case .failed(let error):
                 self.finish(error)
-            case .waiting(let error):
-                // Refused or unreachable: report instead of waiting forever.
-                self.finish(error)
             case .cancelled:
                 self.finish(nil)
-            default:
-                break
             }
         }
-        connection.start(queue: queue)
+        transport.start(queue: queue)
     }
 
     /// Thread-safe.
@@ -249,8 +255,7 @@ public final class ControlConnection: @unchecked Sendable {
             do {
                 let body = try sealer.seal(try ControlCoding.encode(message))
                 self.sealer = sealer
-                connection.send(content: ControlFrame.encode(kind: .sealed, body: body),
-                                completion: .contentProcessed { _ in })
+                transport.send(ControlFrame.encode(kind: .sealed, body: body)) {}
             } catch {
                 log.error("send failed: \(String(describing: error), privacy: .public)")
             }
@@ -265,8 +270,7 @@ public final class ControlConnection: @unchecked Sendable {
             do {
                 let body = try sealer.seal(data)
                 self.sealer = sealer
-                connection.send(content: ControlFrame.encode(kind: .sealedData, body: body),
-                                completion: .contentProcessed { _ in completion?() })
+                transport.send(ControlFrame.encode(kind: .sealedData, body: body)) { completion?() }
             } catch {
                 log.error("send failed: \(String(describing: error), privacy: .public)")
                 completion?()
@@ -280,24 +284,22 @@ public final class ControlConnection: @unchecked Sendable {
             guard !closed else { return }
             if let message, var sealer, let body = try? sealer.seal(try ControlCoding.encode(message)) {
                 self.sealer = sealer
-                connection.send(content: ControlFrame.encode(kind: .sealed, body: body),
-                                completion: .contentProcessed { [weak self] _ in self?.connection.cancel() })
+                transport.send(ControlFrame.encode(kind: .sealed, body: body)) { [weak self] in self?.transport.cancel() }
             } else {
-                connection.cancel()
+                transport.cancel()
             }
         }
     }
 
     private func sendHandshake(_ message: HandshakeMessage, thenClose: Bool = false) {
         guard let body = try? ControlCoding.encode(message) else { return }
-        connection.send(content: ControlFrame.encode(kind: .handshake, body: body),
-                        completion: .contentProcessed { [weak self] _ in
-                            if thenClose { self?.connection.cancel() }
-                        })
+        transport.send(ControlFrame.encode(kind: .handshake, body: body)) { [weak self] in
+            if thenClose { self?.transport.cancel() }
+        }
     }
 
     private func receive() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, isComplete, error in
+        transport.receive(maximumLength: 1 << 20) { [weak self] data, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
                 do {
@@ -544,14 +546,14 @@ public final class ControlConnection: @unchecked Sendable {
                 throw ConnectionError.handshake("unexpected pairing result")
             }
             closed = true
-            connection.cancel()
+            transport.cancel()
             onPaired?(credential, state.hostID, state.hostName)
             onClose?(nil)
 
         case let (.viewer, .updateStarted(version)):
             guard purpose == .update, updateNonces != nil else { throw ConnectionError.handshake("unexpected update") }
             closed = true
-            connection.cancel()
+            transport.cancel()
             onUpdateStarted?(version)
             onClose?(nil)
 
@@ -572,7 +574,7 @@ public final class ControlConnection: @unchecked Sendable {
 
         case let (_, .failure(reason, host)):
             closed = true
-            connection.cancel()
+            transport.cancel()
             if let host { peerVersion = host }
             // Only a refusal over versions turns into `incompatible`; hosts
             // from before protocol 20 say so in words alone.
@@ -644,7 +646,7 @@ public final class ControlConnection: @unchecked Sendable {
 
     private func fail(_ error: Error) {
         log.error("control connection failed: \(String(describing: error), privacy: .public)")
-        connection.cancel()
+        transport.cancel()
         finish(error)
     }
 
@@ -652,7 +654,7 @@ public final class ControlConnection: @unchecked Sendable {
         guard !closed else { return }
         closed = true
         endPairing()
-        connection.cancel()
+        transport.cancel()
         onClose?(error)
     }
 }

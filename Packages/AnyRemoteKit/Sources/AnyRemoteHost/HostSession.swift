@@ -109,6 +109,12 @@ final class StreamAudience: @unchecked Sendable {
     func send(_ datagrams: [Data]) {
         for session in sessions { session.send(datagrams: datagrams) }
     }
+
+    /// Sizes the stream's datagrams for the narrowest of its viewers' paths:
+    /// one viewer across the tailnet makes them smaller for all.
+    func fitDatagrams(_ sender: WindowStreamSender) {
+        if let size = sessions.map(\.videoDatagramSize).min() { sender.maximumDatagramSize = size }
+    }
 }
 
 /// Host side of one connected viewer.
@@ -135,7 +141,9 @@ final class HostSession: @unchecked Sendable {
     private let datagramLock = NSLock()
     private var datagramOpener: DatagramOpener?
     private var datagramSealer: DatagramSealer?
-    private var peerAddress: SocketAddress?
+    /// Where video goes: the address the viewer's keepalives come from, on
+    /// the socket they arrived on (this Mac's own, or the tailnet node's).
+    private var peer: (socket: DatagramSocket, address: SocketAddress)?
     private var noDatagramsReports = 0
 
     // Queue-confined.
@@ -483,8 +491,10 @@ final class HostSession: @unchecked Sendable {
             let displays = HostWindows.displays(virtualDisplayIDs: service?.virtualDisplayIDs ?? [])
             let missing = Self.missingPermissions()
             let welcome = HostWelcome(hostID: service?.settings.hostID ?? "", hostName: ComputerName.current,
-                                      datagramPort: service?.datagramPort ?? 0, displays: displays,
-                                      missingPermissions: missing, version: service?.versionInfo)
+                                      datagramPort: service?.datagramPort(viaTailnet: self.connection.isTailnet) ?? 0,
+                                      displays: displays, missingPermissions: missing, version: service?.versionInfo,
+                                      tailnetAddresses: service?.tailnetAddresses,
+                                      localAddresses: LocalAddresses.current())
             self.connection.send(.welcome(welcome))
         }
     }
@@ -511,16 +521,26 @@ final class HostSession: @unchecked Sendable {
 
     // MARK: Datagrams
 
+    /// The largest datagram for this viewer's video, before sealing: what
+    /// its path carries without IP fragments. On Ethernet that's the 1400
+    /// bytes AnyRemote always sent; across the tailnet's 1280-byte tunnel,
+    /// 1252 (IPv4). Thread-safe.
+    var videoDatagramSize: Int {
+        var ipv6 = false
+        if case let .hostPort(host, _)? = connection.remoteEndpoint, case .ipv6 = host { ipv6 = true }
+        return PathMTU.datagramPayload(mtu: connection.pathMTU, ipv6: ipv6) - DatagramEnvelope.overhead
+    }
+
     /// Called on the service's socket queue.
-    func handleDatagram(_ datagram: Data, from address: SocketAddress) {
+    func handleDatagram(_ datagram: Data, from address: SocketAddress, via socket: DatagramSocket) {
         datagramLock.lock()
         guard var opener = datagramOpener, let plaintext = try? opener.open(datagram) else {
             datagramLock.unlock()
             return
         }
         datagramOpener = opener
-        let isNewPeer = peerAddress != address
-        if plaintext == DatagramKind.keepaliveDatagram { peerAddress = address }
+        let isNewPeer = peer?.address != address || peer?.socket !== socket
+        if plaintext == DatagramKind.keepaliveDatagram { peer = (socket, address) }
         datagramLock.unlock()
         if plaintext.count >= 2, plaintext[plaintext.startIndex + 1] == DatagramKind.microphone {
             service?.microphone.receive(plaintext, from: sessionID)
@@ -535,13 +555,13 @@ final class HostSession: @unchecked Sendable {
     /// Thread-safe.
     fileprivate func send(datagrams: [Data]) {
         datagramLock.lock()
-        let peer = peerAddress
+        let peer = peer
         let sealer = datagramSealer
         datagramLock.unlock()
-        guard let peer, let sealer, let socket = service?.socket else { return }
+        guard let peer, let sealer else { return }
         for datagram in datagrams {
             guard let sealed = try? sealer.seal(datagram) else { continue }
-            socket.send(sealed, to: peer)
+            peer.socket.send(sealed, to: peer.address)
         }
     }
 
@@ -660,7 +680,9 @@ final class HostSession: @unchecked Sendable {
             switch host {
             case let .ipv4(ip): address = "\(ip)".components(separatedBy: "%").first
             case let .name(name, _): address = name
-            // An IPv6 peer is reached over Bonjour.
+            // A tailnet address is stable; another IPv6 peer (link-local) is
+            // reached over Bonjour.
+            case let .ipv6(ip) where TailnetAddress.isTailnet("\(ip)"): address = "[\(ip)]"
             default: break
             }
         }
@@ -811,7 +833,7 @@ final class HostSession: @unchecked Sendable {
             displayID: displayID, excludingProcessID: Self.isLoopback ? getpid() : nil,
             exceptingWindowIDs: service?.includedOwnWindowIDs ?? [], streamID: streamID,
             tileStreamIDs: tileStreamIDs, configuration: configuration,
-            maximumDatagramSize: 1400 - DatagramEnvelope.overhead
+            maximumDatagramSize: videoDatagramSize
         ) { [weak audience] datagrams in
             audience?.send(datagrams)
         }
@@ -851,6 +873,7 @@ final class HostSession: @unchecked Sendable {
         }
         streams[streamID] = stream
         audience.add(self)
+        audience.fitDatagrams(stream.sender)
         // This viewer's cap may be below what the others let the stream run at.
         stream.viewerBitRates[sessionID] = ViewerRateControl(bitRate: min(stream.bitRate, bitRateCeiling(for: .display)))
         applyLowestBitRate(stream)
@@ -1023,7 +1046,7 @@ final class HostSession: @unchecked Sendable {
         let backdrop = role == .child || role == .popup
         let sender = WindowStreamSender(
             window: window, streamID: streamID, configuration: configuration,
-            maximumDatagramSize: 1400 - DatagramEnvelope.overhead, backdrop: backdrop
+            maximumDatagramSize: videoDatagramSize, backdrop: backdrop
         ) { [weak self] datagrams in
             self?.send(datagrams: datagrams)
         }
@@ -1132,6 +1155,7 @@ final class HostSession: @unchecked Sendable {
         if let audience = stream.audience {
             let wasLeader = audience.leader === self
             audience.remove(self)
+            audience.fitDatagrams(stream.sender)
             stream.viewerBitRates[sessionID] = nil
             stream.desktopSizes[sessionID] = nil
             if let leader = audience.leader {
@@ -1341,7 +1365,7 @@ final class HostSession: @unchecked Sendable {
 
     private func sendReports() {
         datagramLock.lock()
-        let destination = peerAddress?.description ?? "none"
+        let destination = peer?.address.description ?? "none"
         datagramLock.unlock()
         if destination == "none", !streams.isEmpty {
             noDatagramsReports += 1

@@ -18,6 +18,7 @@ final class ConnectionStatus {
     private var isLossy = false
     private var slowSeconds = 0
     private var goodSeconds = 0
+    private var relayed = false
     private var banner: NSView?
     private var bannerLabel: NSTextField?
 
@@ -34,7 +35,11 @@ final class ConnectionStatus {
     }
 
     /// Called once a second with the latest statistics.
-    func update(viewer: PipelineStats.Summary, host: HostStreamReport?, roundTrip: Double?, in content: NSView) {
+    /// `relayed`: through a Tailscale relay, which the banner then names as
+    /// the likely reason.
+    func update(viewer: PipelineStats.Summary, host: HostStreamReport?, roundTrip: Double?, relayed: Bool = false,
+                in content: NSView) {
+        self.relayed = relayed
         latency = Self.latency(viewer: viewer, host: host, roundTrip: roundTrip)
         framesPerSecond = viewer.framesPerSecond
         let late = (latency ?? 0) > Self.slowLatency
@@ -68,8 +73,9 @@ final class ConnectionStatus {
 
     private func showBanner(_ show: Bool, in content: NSView) {
         if show {
-            let text = isLossy ? String(localized: "Unstable connection")
+            var text = isLossy ? String(localized: "Unstable connection")
                 : String(format: String(localized: "Slow connection · %lld ms"), Int((latency ?? 0).rounded()))
+            if relayed { text += " · " + String(localized: "via a Tailscale relay") }
             if let bannerLabel {
                 bannerLabel.stringValue = text
                 return

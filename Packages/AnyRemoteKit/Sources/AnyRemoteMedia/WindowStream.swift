@@ -22,6 +22,15 @@ public final class WindowStreamSender: @unchecked Sendable {
     private var makeWindowCapture: ((SCWindow, Int) -> WindowCaptureSession)?
     /// Frames a second captured at most. Owner's queue, like `capture`.
     private var frameRate: Int
+    private let datagramLimit: DatagramSizeLimit
+
+    /// The largest datagram frames are split into: what the path to the
+    /// viewer carries unfragmented (for a shared display, the narrowest
+    /// path of its viewers). Thread-safe; applies from the next frame.
+    public var maximumDatagramSize: Int {
+        get { datagramLimit.value }
+        set { datagramLimit.value = newValue }
+    }
 
     /// Called on the capture queue when SCK stops the stream on its own
     /// (window closed, display gone, permission revoked).
@@ -86,6 +95,8 @@ public final class WindowStreamSender: @unchecked Sendable {
         self.streamID = streamID
         self.stats = stats
         self.frameRate = configuration.expectedFrameRate
+        let datagramLimit = DatagramSizeLimit(maximumDatagramSize)
+        self.datagramLimit = datagramLimit
         let emit: @Sendable (UInt16, HEVCEncoder.Output) -> Void = { streamID, output in
             stats.record(.capture, from: output.deliveredTimeNanos, to: output.capturedTimeNanos)
             stats.record(.encodeWait, from: output.deliveredTimeNanos, to: output.submittedTimeNanos)
@@ -98,7 +109,7 @@ public final class WindowStreamSender: @unchecked Sendable {
                                   countsFrame: frame.tile?.isFirstOfFrame ?? true)
                 send(try VideoFragmenter.fragment(bytes, streamID: streamID,
                                                   frameSequence: frame.sequence,
-                                                  maximumDatagramSize: maximumDatagramSize))
+                                                  maximumDatagramSize: datagramLimit.value))
             } catch {
                 log.error("frame framing failed: \(String(describing: error), privacy: .public)")
             }
@@ -435,4 +446,17 @@ private final class DecodedAt: @unchecked Sendable {
     private var nanos: UInt64 = 0
     func note(_ value: UInt64) { lock.lock(); nanos = value; lock.unlock() }
     var value: UInt64 { lock.lock(); defer { lock.unlock() }; return nanos }
+}
+
+/// A datagram size read on encoder queues and set from the owner's.
+final class DatagramSizeLimit: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Int
+
+    init(_ value: Int) { stored = value }
+
+    var value: Int {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
 }

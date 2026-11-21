@@ -250,15 +250,25 @@ public struct HostWelcome: Codable, Equatable, Sendable {
     public var missingPermissions: [String]
     /// The host's AnyRemote, so a newer viewer can offer to update it.
     public var version: AppVersionInfo?
+    /// The host's addresses on its tailnet (Tailscale), IPv4 first, so the
+    /// viewer can reach it there when it isn't on the same network. Nil
+    /// from hosts before 0.32 and hosts on no tailnet.
+    public var tailnetAddresses: [String]?
+    /// Its IPv4 addresses on local networks, for a viewer on a routed subnet
+    /// that Bonjour doesn't reach. Nil from hosts before 0.32.
+    public var localAddresses: [String]?
 
     public init(hostID: String, hostName: String, datagramPort: UInt16, displays: [DisplaySummary],
-                missingPermissions: [String], version: AppVersionInfo? = nil) {
+                missingPermissions: [String], version: AppVersionInfo? = nil, tailnetAddresses: [String]? = nil,
+                localAddresses: [String]? = nil) {
         self.hostID = hostID
         self.hostName = hostName
         self.datagramPort = datagramPort
         self.displays = displays
         self.missingPermissions = missingPermissions
         self.version = version
+        self.tailnetAddresses = tailnetAddresses
+        self.localAddresses = localAddresses
     }
 }
 

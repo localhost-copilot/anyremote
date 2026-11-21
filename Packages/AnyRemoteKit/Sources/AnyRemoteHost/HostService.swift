@@ -64,6 +64,11 @@ public final class HostService: @unchecked Sendable {
 
     private var listener: ControlListener?
     private(set) var socket: DatagramSocket?
+    /// The embedded tailnet node, while it runs: viewers on the tailnet
+    /// connect through it as well as through this Mac's own network.
+    private var tailnet: (any TailnetSockets)?
+    private var tailnetListener: TailnetListener?
+    private var tailnetSocket: DatagramSocket?
     private var pending: [UInt32: HostSession] = [:]
     /// Admitted sessions, longest-connected first.
     private var viewers: [HostSession] = []
@@ -147,13 +152,19 @@ public final class HostService: @unchecked Sendable {
         // After a crash, the AnyRemote Microphone may still be the default input.
         queue.async { HostMicrophone.restoreDefault() }
         let settings = settingsStore.settings
-        let socket = try DatagramSocket(bindingPort: 0, queue: socketQueue)
-        socket.onReceive = { [weak self] batch in self?.route(batch) }
+        // Video and sound on the control port's number when it's free, so a
+        // firewall or a tailnet's access rules need one port, TCP and UDP.
+        let port = options.port ?? settings.port
+        let socket = try (port == 0 ? nil : try? DatagramSocket(bindingPort: port, queue: socketQueue))
+            ?? DatagramSocket(bindingPort: 0, queue: socketQueue)
+        socket.onReceive = { [weak self, weak socket] batch in
+            if let socket { self?.route(batch, via: socket) }
+        }
         socket.resume()
-        let listener = try ControlListener(port: options.port ?? settings.port,
+        let listener = try ControlListener(port: port,
                                            serviceName: options.advertise ? ComputerName.current : nil,
                                            hostID: settings.hostID, queue: queue)
-        listener.onConnection = { [weak self] connection in self?.accept(connection) }
+        listener.onConnection = { [weak self] connection in self?.accept(NetworkStreamTransport(connection)) }
         listener.onStateChange = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -172,7 +183,56 @@ public final class HostService: @unchecked Sendable {
         lock.lock()
         self.socket = socket
         self.listener = listener
+        let tailnet = self.tailnet
         lock.unlock()
+        if let tailnet { startTailnet(tailnet) }
+    }
+
+    /// Hosts on the embedded tailnet node as well (nil: no longer). Viewers
+    /// that reach this Mac through the Tailscale app need none of this:
+    /// they arrive through this Mac's own network.
+    public func setTailnet(_ sockets: (any TailnetSockets)?) {
+        lock.lock()
+        let running = listener != nil
+        let unchanged = sockets === tailnet
+        tailnet = sockets
+        lock.unlock()
+        guard !unchanged else { return }
+        stopTailnet()
+        if running, let sockets { startTailnet(sockets) }
+    }
+
+    private func startTailnet(_ sockets: any TailnetSockets) {
+        let port = options.port ?? settingsStore.settings.port
+        do {
+            let listener = try TailnetListener(sockets: sockets, port: port, queue: queue)
+            listener.onConnection = { [weak self] transport in self?.accept(transport) }
+            let opened = try (port == 0 ? nil : try? sockets.openDatagram(port: port)) ?? sockets.openDatagram(port: 0)
+            let socket = DatagramSocket(tailnetDescriptor: opened.descriptor, port: opened.port, queue: socketQueue) {
+                [weak sockets] in sockets?.closeDatagram(port: opened.port)
+            }
+            socket.onReceive = { [weak self, weak socket] batch in
+                if let socket { self?.route(batch, via: socket) }
+            }
+            socket.resume()
+            listener.start()
+            lock.withLock {
+                tailnetListener = listener
+                tailnetSocket = socket
+            }
+            log.notice("host listening on the tailnet, port \(port) (udp \(opened.port))")
+        } catch {
+            log.error("host can't listen on the tailnet: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func stopTailnet() {
+        let (listener, socket) = lock.withLock {
+            defer { tailnetListener = nil; tailnetSocket = nil }
+            return (tailnetListener, tailnetSocket)
+        }
+        listener?.cancel()
+        socket?.cancel()
     }
 
     public func stop() {
@@ -188,11 +248,27 @@ public final class HostService: @unchecked Sendable {
         sessions.forEach { $0.end(reason: "Remote control was turned off.", notifyViewer: true) }
         listener?.cancel()
         socket?.cancel()
+        stopTailnet()
         updateStatus { $0 = Status() }
     }
 
     public var port: UInt16? { listener?.port }
-    var datagramPort: UInt16 { socket?.localPort ?? 0 }
+
+    /// Where a viewer sends its datagrams: the port of the socket on the
+    /// route it connected by.
+    func datagramPort(viaTailnet: Bool) -> UInt16 {
+        lock.withLock { (viaTailnet ? tailnetSocket : socket)?.localPort ?? 0 }
+    }
+
+    /// This Mac's tailnet addresses, the embedded node's and the Tailscale
+    /// app's (either may be off), IPv4 first; nil when on no tailnet.
+    var tailnetAddresses: [String]? {
+        let node = lock.withLock { tailnet }?.addresses ?? []
+        var seen = Set<String>()
+        let all = (node + TailnetAddress.systemAddresses()).filter { seen.insert($0).inserted }
+        let sorted = all.filter { !$0.contains(":") } + all.filter { $0.contains(":") }
+        return sorted.isEmpty ? nil : sorted
+    }
 
     /// Ends every viewer's session (one's, given its ID), e.g. from the host's own UI.
     public func disconnectViewer(id: UInt32? = nil) {
@@ -239,11 +315,11 @@ public final class HostService: @unchecked Sendable {
 
     // MARK: Sessions
 
-    private func accept(_ connection: NWConnection) {
+    private func accept(_ transport: any StreamTransport) {
         let sessionID = UInt32.random(in: 1...UInt32.max)
         let store = settingsStore
         let control = ControlConnection(
-            connection: connection,
+            transport: transport,
             role: .host(credentials: { id in
                             let settings = store.settings
                             guard settings.isEnabled else { return .disabled }
@@ -412,14 +488,14 @@ public final class HostService: @unchecked Sendable {
         }
     }
 
-    private func route(_ batch: [(Data, SocketAddress)]) {
+    private func route(_ batch: [(Data, SocketAddress)], via socket: DatagramSocket) {
         lock.lock()
         let sessions = viewers
         lock.unlock()
         guard !sessions.isEmpty else { return }
         for (datagram, address) in batch {
             let id = DatagramEnvelope.sessionID(of: datagram)
-            sessions.first { $0.sessionID == id }?.handleDatagram(datagram, from: address)
+            sessions.first { $0.sessionID == id }?.handleDatagram(datagram, from: address, via: socket)
         }
     }
 

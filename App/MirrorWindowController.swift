@@ -501,10 +501,11 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate, Remote
         """)
         if let content = window?.contentView {
             connectionStatus.update(viewer: summary, host: hostReport, roundTrip: connection.client.roundTripMilliseconds,
-                                    in: content)
+                                    relayed: connection.isRelayed, in: content)
         }
+        lines.append("route \(connection.routeDescription)")
         let text = lines.joined(separator: "\n")
-        statisticsHUD.update(.init(title: connection.hostName, viewer: summary, host: hostReport,
+        statisticsHUD.update(.init(title: "\(connection.hostName) · \(connection.routeDescription)", viewer: summary, host: hostReport,
                                    roundTrip: connection.client.roundTripMilliseconds,
                                    videoBlocked: udp.received == 0 || hostReport?.videoDestination == "none"))
         if ProcessInfo.processInfo.environment["ANYREMOTE_STATS_STDOUT"] == "1" {

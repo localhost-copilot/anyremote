@@ -2,6 +2,17 @@ import AnyRemoteNetwork
 import AnyRemoteWire
 import Foundation
 
+/// Which ways AnyRemote may reach a paired Mac.
+public enum RoutePreference: String, Codable, Sendable, CaseIterable {
+    /// Every way at once; the local network when it answers.
+    case automatic
+    /// Never through Tailscale.
+    case localOnly
+    /// Always through Tailscale: for networks where a local connection
+    /// opens but video doesn't get through.
+    case tailnetOnly
+}
+
 /// A Mac this one has paired with (or that offered the way back).
 public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
     /// The host's stable ID once known; before the first connection, the address.
@@ -26,10 +37,19 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
     public var maximumBitRate: Int?
     /// Frames a second to show that Mac's windows at; nil: 60.
     public var frameRate: Int?
+    /// Its address on the tailnet, as it last said: where it's reached when
+    /// it isn't on this network.
+    public var tailnetAddress: String?
+    /// Its addresses on local networks, as it last said: tried before the
+    /// tailnet when it isn't seen nearby (Bonjour stays within a subnet).
+    public var localAddresses: [String]?
+    /// Nil: automatic.
+    public var routePreference: RoutePreference?
 
     public init(id: String, name: String, address: String?, bonjourName: String?, credential: PairingCredential?,
                 lastConnected: Date? = nil, fromPeer: Bool = false, sharesBack: Bool = true,
-                maximumBitRate: Int? = nil, frameRate: Int? = nil) {
+                maximumBitRate: Int? = nil, frameRate: Int? = nil, tailnetAddress: String? = nil,
+                localAddresses: [String]? = nil) {
         self.id = id
         self.name = name
         self.address = address
@@ -40,11 +60,13 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
         self.sharesBack = sharesBack
         self.maximumBitRate = maximumBitRate
         self.frameRate = frameRate
+        self.tailnetAddress = tailnetAddress
+        self.localAddresses = localAddresses
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, address, bonjourName, credential, pairingCode, lastConnected, fromPeer, sharesBack,
-             maximumBitRate, frameRate
+             maximumBitRate, frameRate, tailnetAddress, localAddresses, routePreference
     }
 
     public init(from decoder: Decoder) throws {
@@ -63,6 +85,9 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
         sharesBack = try container.decodeIfPresent(Bool.self, forKey: .sharesBack) ?? true
         maximumBitRate = try container.decodeIfPresent(Int.self, forKey: .maximumBitRate)
         frameRate = try container.decodeIfPresent(Int.self, forKey: .frameRate)
+        tailnetAddress = try container.decodeIfPresent(String.self, forKey: .tailnetAddress)
+        localAddresses = try container.decodeIfPresent([String].self, forKey: .localAddresses)
+        routePreference = try? container.decodeIfPresent(RoutePreference.self, forKey: .routePreference)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -77,6 +102,9 @@ public struct PairedHost: Codable, Hashable, Sendable, Identifiable {
         try container.encode(sharesBack, forKey: .sharesBack)
         try container.encodeIfPresent(maximumBitRate, forKey: .maximumBitRate)
         try container.encodeIfPresent(frameRate, forKey: .frameRate)
+        try container.encodeIfPresent(tailnetAddress, forKey: .tailnetAddress)
+        try container.encodeIfPresent(localAddresses, forKey: .localAddresses)
+        try container.encodeIfPresent(routePreference, forKey: .routePreference)
     }
 }
 
